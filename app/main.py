@@ -71,17 +71,14 @@ def should_analyze(text: str) -> bool:
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-    except Exception as e:
-        logger.exception("❌ Cannot parse telegram JSON")
+    data = await request.json()
+    message = data.get("message") or data.get("edited_message")
+    if not message:
         return {"ok": True}
-    logger.info(f"✅ TELEGRAM HIT: keys={list(data.keys())}")
-
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
-
     logger.info(f"✅ MSG chat_id={chat_id} text={text}")
+
 
     # quick help
     if text.strip().lower() in ["/start", "help", "/help"]:
