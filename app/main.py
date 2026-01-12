@@ -21,20 +21,29 @@ def _send_message(chat_id: int, text: str):
 def health():
     return {"ok": True}
 
+import logging
+logger = logging.getLogger("uvicorn.error")
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.exception("❌ Cannot parse telegram JSON")
+        return {"ok": True}
 
-    message = data.get("message")
+    logger.info(f"✅ TELEGRAM HIT: keys={list(data.keys())}")
+
+    message = data.get("message") or data.get("edited_message")
     if not message:
         return {"ok": True}
 
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
-
-    # xử lý phân tích XAU ở đây
+    logger.info(f"✅ MSG chat_id={chat_id} text={text}")
 
     return {"ok": True}
+
 
 
     update = await request.json()
