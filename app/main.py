@@ -22,14 +22,20 @@ def health():
     return {"ok": True}
 
 @app.post("/telegram/webhook")
-async def telegram_webhook(
-    request: Request,
-    x_telegram_bot_api_secret_token: str | None = Header(default=None)
-):
-    # Optional webhook secret verification
-    if TELEGRAM_SECRET_TOKEN:
-        if x_telegram_bot_api_secret_token != TELEGRAM_SECRET_TOKEN:
-            raise HTTPException(status_code=403, detail="Invalid secret token")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+
+    message = data.get("message")
+    if not message:
+        return {"ok": True}
+
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "")
+
+    # xử lý phân tích XAU ở đây
+
+    return {"ok": True}
+
 
     update = await request.json()
     message = update.get("message") or update.get("edited_message")
