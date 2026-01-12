@@ -4,7 +4,7 @@ import requests
 from fastapi import FastAPI, Request, HTTPException
 import logging
 
-from app.analysis import Candle, analyze_pro, format_signal
+from app.pro_analysis import Candle, analyze_pro, format_signal
 
 logger = logging.getLogger("uvicorn.error")
 
