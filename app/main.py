@@ -59,7 +59,16 @@ def fetch_twelvedata_candles(symbol: str, interval: str, outputsize: int = 200):
     # No timestamp numeric in free sometimes; we can just use index
     for i, v in enumerate(values):
         o = float(v["open"]); h = float(v["high"]); l = float(v["low"]); c = float(v["close"])
-        candles.append(Candle(ts=i, o=o, h=h, l=l, c=c))
+        candles.append(
+            Candle(
+                ts=i,
+                open=o,
+                high=h,
+                low=l,
+                close=c
+            )
+        )
+
     return candles
 
 def should_analyze(text: str) -> bool:
