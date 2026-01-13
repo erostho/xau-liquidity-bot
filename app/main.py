@@ -94,7 +94,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     # Acknowledge quickly (optional)
-    send_telegram(chat_id, "⏳ Đang lấy nến M15/H1 và phân tích...")
+    send_telegram(chat_id, "⏳ Đang phân tích dữ liệu...")
 
     try:
         m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
