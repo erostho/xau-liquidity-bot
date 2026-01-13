@@ -158,6 +158,6 @@ async def telegram_webhook(request: Request):
 
     except Exception as e:
         logger.exception("Analysis failed")
-        send_telegram(chat_id, f"❌ Lỗi khi phân tích: `{str(e)}`\nKiểm tra `TWELVEDATA_API_KEY` và SYMBOL.")
+        send_telegram_long(chat_id, f"❌ Lỗi khi phân tích: `{str(e)}`\nKiểm tra `TWELVEDATA_API_KEY` và SYMBOL.")
 
     return {"ok": True}
