@@ -23,7 +23,14 @@ app = FastAPI()
 def health():
     return {"ok": True}
 
-
+def send_telegram(chat_id: int, text: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    requests.post(url, json=payload, timeout=10)
 def send_telegram_long(chat_id: int, text: str, max_len: int = 3800):
     """
     Telegram limit is 4096 chars. Use 3800 for safety (markdown, emojis, etc).
@@ -134,7 +141,7 @@ async def telegram_webhook(request: Request):
 
     # quick help
     if text.strip().lower() in ["/start", "help", "/help"]:
-        send_telegram_long(chat_id,
+        send_telegram(chat_id,
             "🤖 *XAU PRO Bot*\n"
             "Gõ: `XAU now` hoặc `SELL hay BUY?`\n"
             "Bot sẽ trả: Bias + ⭐ + Entry/TP/SL + lý do.\n"
@@ -142,11 +149,11 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     if not should_analyze(text):
-        send_telegram_long(chat_id, "Gõ `XAU now` hoặc `SELL hay BUY?` để mình phân tích *PRO* nhé.")
+        send_telegram(chat_id, "Gõ `XAU now` hoặc `SELL hay BUY?` để mình phân tích *PRO* nhé.")
         return {"ok": True}
 
     # Acknowledge quickly (optional)
-    send_telegram_long(chat_id, "⏳ Đang phân tích dữ liệu...")
+    send_telegram(chat_id, "⏳ Đang phân tích dữ liệu...")
 
     try:
         m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
