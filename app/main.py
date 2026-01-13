@@ -134,7 +134,7 @@ async def telegram_webhook(request: Request):
 
     # quick help
     if text.strip().lower() in ["/start", "help", "/help"]:
-        send_telegram(chat_id,
+        send_telegram_long(chat_id,
             "🤖 *XAU PRO Bot*\n"
             "Gõ: `XAU now` hoặc `SELL hay BUY?`\n"
             "Bot sẽ trả: Bias + ⭐ + Entry/TP/SL + lý do.\n"
@@ -142,11 +142,11 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     if not should_analyze(text):
-        send_telegram(chat_id, "Gõ `XAU now` hoặc `SELL hay BUY?` để mình phân tích *PRO* nhé.")
+        send_telegram_long(chat_id, "Gõ `XAU now` hoặc `SELL hay BUY?` để mình phân tích *PRO* nhé.")
         return {"ok": True}
 
     # Acknowledge quickly (optional)
-    send_telegram(chat_id, "⏳ Đang phân tích dữ liệu...")
+    send_telegram_long(chat_id, "⏳ Đang phân tích dữ liệu...")
 
     try:
         m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
