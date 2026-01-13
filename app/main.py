@@ -24,12 +24,55 @@ def health():
     return {"ok": True}
 
 
-def send_telegram(chat_id: int, text: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    r = requests.post(url, json=payload, timeout=15)
-    if r.status_code >= 400:
-        logger.error(f"sendMessage failed {r.status_code}: {r.text}")
+def send_telegram_long(chat_id: int, text: str, max_len: int = 3800):
+    """
+    Telegram limit is 4096 chars. Use 3800 for safety (markdown, emojis, etc).
+    Split by lines to keep formatting nice.
+    """
+    if not text:
+        return
+
+    # normalize
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    if len(text) <= max_len:
+        return send_telegram(chat_id, text)
+
+    lines = text.split("\n")
+    chunks = []
+    cur = ""
+
+    for line in lines:
+        # If one line is insanely long, hard-split it
+        if len(line) > max_len:
+            # flush current
+            if cur:
+                chunks.append(cur.rstrip())
+                cur = ""
+            # split that line
+            start = 0
+            while start < len(line):
+                chunks.append(line[start:start + max_len])
+                start += max_len
+            continue
+
+        # normal line append
+        candidate = (cur + "\n" + line) if cur else line
+        if len(candidate) > max_len:
+            chunks.append(cur.rstrip())
+            cur = line
+        else:
+            cur = candidate
+
+    if cur:
+        chunks.append(cur.rstrip())
+
+    # send chunks with small headers
+    total = len(chunks)
+    for i, part in enumerate(chunks, start=1):
+        prefix = f"({i}/{total})\n" if total > 1 else ""
+        send_telegram(chat_id, prefix + part)
+
 
 def fetch_twelvedata_candles(symbol: str, interval: str, outputsize: int = 200):
     # TwelveData time_series
@@ -111,7 +154,7 @@ async def telegram_webhook(request: Request):
 
         sig = analyze_pro(SYMBOL, m15, h1)
         reply = format_signal(sig)
-        send_telegram(chat_id, reply)
+        send_telegram_long(chat_id, reply)
 
     except Exception as e:
         logger.exception("Analysis failed")
