@@ -1,355 +1,583 @@
-# app/analysis.py
+# app/pro_analysis.py
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 import math
-import statistics
 
+
+# =========================
+# Data model
+# =========================
 @dataclass
 class Candle:
-    ts: int
-    o: float
-    h: float
-    l: float
-    c: float
-
-@dataclass
-class Signal:
-    symbol: str
-    tf: str
-    htf: str
-    bias: str          # "BUY" | "SELL" | "WAIT"
-    stars: int         # 1..5
-    entry: str
-    sl: str
-    tp1: str
-    tp2: str
-    summary: str
-    reasons: List[str]
-    levels: List[str]
-    risk_notes: List[str]
+    ts: int          # unix seconds
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
 
 
-# ---------- basic indicator helpers ----------
-
+# =========================
+# Helpers: indicators
+# =========================
 def _ema(values: List[float], period: int) -> List[float]:
-    if len(values) < period:
-        return []
-    k = 2 / (period + 1)
-    ema = []
-    prev = sum(values[:period]) / period
-    ema.append(prev)
-    for v in values[period:]:
-        prev = v * k + prev * (1 - k)
-        ema.append(prev)
-    # align length to input (pad front with None conceptually)
-    pad = [ema[0]] * (period - 1)
-    return pad + ema
+    if not values or period <= 1:
+        return values[:]
+    k = 2.0 / (period + 1.0)
+    out = []
+    ema = values[0]
+    out.append(ema)
+    for v in values[1:]:
+        ema = v * k + ema * (1 - k)
+        out.append(ema)
+    return out
 
-def _rsi(closes: List[float], period: int = 14) -> List[float]:
-    if len(closes) < period + 1:
-        return []
-    gains = []
-    losses = []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i-1]
-        gains.append(max(diff, 0.0))
-        losses.append(max(-diff, 0.0))
-    # Wilder smoothing
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-    rsis = [50.0] * (period)  # padding
-    def rsi_from(ag, al):
-        if al == 0:
-            return 100.0
-        rs = ag / al
-        return 100 - (100 / (1 + rs))
-    rsis.append(rsi_from(avg_gain, avg_loss))
-    for i in range(period, len(gains)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        rsis.append(rsi_from(avg_gain, avg_loss))
-    return rsis
+
+def _rsi(values: List[float], period: int = 14) -> float:
+    if len(values) < period + 2:
+        return 50.0
+    gains = 0.0
+    losses = 0.0
+    # Wilder smoothing initial
+    for i in range(1, period + 1):
+        chg = values[i] - values[i - 1]
+        if chg >= 0:
+            gains += chg
+        else:
+            losses -= chg
+    avg_gain = gains / period
+    avg_loss = losses / period if losses != 0 else 1e-9
+    # Continue smoothing
+    for i in range(period + 1, len(values)):
+        chg = values[i] - values[i - 1]
+        gain = chg if chg > 0 else 0.0
+        loss = -chg if chg < 0 else 0.0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+    rs = avg_gain / (avg_loss if avg_loss != 0 else 1e-9)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return float(max(0.0, min(100.0, rsi)))
+
+
+def _true_range(c: Candle, prev_close: float) -> float:
+    return max(
+        c.high - c.low,
+        abs(c.high - prev_close),
+        abs(c.low - prev_close),
+    )
+
 
 def _atr(candles: List[Candle], period: int = 14) -> float:
     if len(candles) < period + 2:
-        return 0.0
+        # fallback: average range
+        if not candles:
+            return 0.0
+        ranges = [c.high - c.low for c in candles[-min(len(candles), period):]]
+        return float(sum(ranges) / max(1, len(ranges)))
     trs = []
     for i in range(1, len(candles)):
-        c = candles[i]
-        p = candles[i-1]
-        tr = max(c.h - c.l, abs(c.h - p.c), abs(c.l - p.c))
-        trs.append(tr)
+        trs.append(_true_range(candles[i], candles[i - 1].close))
     # Wilder ATR
     atr = sum(trs[:period]) / period
     for tr in trs[period:]:
         atr = (atr * (period - 1) + tr) / period
-    return atr
-
-def _swing_levels(candles: List[Candle], lookback: int = 60) -> Tuple[float, float]:
-    window = candles[-lookback:] if len(candles) >= lookback else candles[:]
-    hi = max(c.h for c in window)
-    lo = min(c.l for c in window)
-    return hi, lo
-
-def _last(candles: List[Candle], n: int = 1) -> List[Candle]:
-    return candles[-n:] if len(candles) >= n else candles[:]
-
-def _is_bull_engulf(prev: Candle, cur: Candle) -> bool:
-    return (cur.c > cur.o) and (prev.c < prev.o) and (cur.c >= prev.o) and (cur.o <= prev.c)
-
-def _is_bear_engulf(prev: Candle, cur: Candle) -> bool:
-    return (cur.c < cur.o) and (prev.c > prev.o) and (cur.o >= prev.c) and (cur.c <= prev.o)
-
-def _wick_ratio(c: Candle) -> Tuple[float, float, float]:
-    body = abs(c.c - c.o)
-    upper = c.h - max(c.c, c.o)
-    lower = min(c.c, c.o) - c.l
-    rng = max(c.h - c.l, 1e-9)
-    return upper / rng, lower / rng, body / rng
-
-def _fmt(x: float) -> str:
-    # XAU on your broker looks like 4xxx.xxx -> keep 3 decimals
-    return f"{x:.3f}"
+    return float(atr)
 
 
-# ---------- PRO logic ----------
+def _swing_high_low(candles: List[Candle], lookback: int = 80) -> Tuple[float, float]:
+    if not candles:
+        return (0.0, 0.0)
+    window = candles[-min(len(candles), lookback):]
+    hi = max(c.high for c in window)
+    lo = min(c.low for c in window)
+    return float(hi), float(lo)
 
-def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle]) -> Signal:
-    closes15 = [c.c for c in m15]
-    closes60 = [c.c for c in h1]
 
-    ema20_15 = _ema(closes15, 20)
-    ema50_15 = _ema(closes15, 50)
-    ema20_60 = _ema(closes60, 20)
-    ema50_60 = _ema(closes60, 50)
+def _pct(a: float, b: float) -> float:
+    if b == 0:
+        return 0.0
+    return (a - b) / b * 100.0
 
-    rsi15 = _rsi(closes15, 14)
-    atr15 = _atr(m15, 14)
 
-    last15 = m15[-1]
-    prev15 = m15[-2] if len(m15) >= 2 else last15
+# =========================
+# Helpers: price action cues
+# =========================
+def _body(c: Candle) -> float:
+    return abs(c.close - c.open)
 
-    # Levels
-    hi15, lo15 = _swing_levels(m15, 80)
-    hi60, lo60 = _swing_levels(h1, 80)
 
-    # Trend bias (HTF first)
-    htf_trend = "UP" if (ema20_60 and ema50_60 and ema20_60[-1] > ema50_60[-1]) else "DOWN"
-    ltf_trend = "UP" if (ema20_15 and ema50_15 and ema20_15[-1] > ema50_15[-1]) else "DOWN"
+def _range(c: Candle) -> float:
+    return max(1e-9, c.high - c.low)
 
-    # Liquidity sweep detection (simple but effective)
-    # "sweep high": current high breaks recent swing high but closes back below
-    recent_hi = max(c.h for c in m15[-20:])
-    recent_lo = min(c.l for c in m15[-20:])
-    sweep_high = (last15.h > recent_hi) and (last15.c < recent_hi)
-    sweep_low = (last15.l < recent_lo) and (last15.c > recent_lo)
 
-    # Candle quality
-    up_w, lo_w, body = _wick_ratio(last15)
-    two_sided_wick = (up_w > 0.30 and lo_w > 0.30 and body < 0.35)  # indecision
-    strong_bull = (last15.c > last15.o) and (body > 0.55)
-    strong_bear = (last15.c < last15.o) and (body > 0.55)
+def _upper_wick(c: Candle) -> float:
+    return c.high - max(c.open, c.close)
 
-    bull_engulf = _is_bull_engulf(prev15, last15)
-    bear_engulf = _is_bear_engulf(prev15, last15)
 
-    # "Structure" proxy: last 6 closes staircase
-    last6 = closes15[-6:] if len(closes15) >= 6 else closes15
-    lower_highs = sum(1 for i in range(1, len(last6)) if last6[i] <= last6[i-1]) >= 4
-    higher_lows = sum(1 for i in range(1, len(last6)) if last6[i] >= last6[i-1]) >= 4
+def _lower_wick(c: Candle) -> float:
+    return min(c.open, c.close) - c.low
 
-    # RSI context
-    rsi_now = rsi15[-1] if rsi15 else 50.0
-    rsi_overbought = rsi_now >= 70
-    rsi_oversold = rsi_now <= 30
 
-    # Score components (0..1 each)
-    score = 0
-    reasons: List[str] = []
-    levels: List[str] = []
-    risk_notes: List[str] = []
+def _is_rejection(c: Candle, direction: str, wick_ratio: float = 0.45) -> bool:
+    # direction: "sell" => upper wick heavy; "buy" => lower wick heavy
+    r = _range(c)
+    if direction == "sell":
+        return (_upper_wick(c) / r) >= wick_ratio and (c.close <= c.open)
+    if direction == "buy":
+        return (_lower_wick(c) / r) >= wick_ratio and (c.close >= c.open)
+    return False
 
-    # HTF alignment
-    score += 1
-    reasons.append(f"H1 trend: **{htf_trend}** (EMA20 vs EMA50)")
-    if (htf_trend == "UP" and ltf_trend == "UP") or (htf_trend == "DOWN" and ltf_trend == "DOWN"):
-        score += 1
-        reasons.append("M15 đồng pha với H1 (trend alignment)")
+
+def _is_engulfing(prev: Candle, cur: Candle, direction: str) -> bool:
+    # direction: "bull" or "bear"
+    if direction == "bull":
+        return (cur.close > cur.open) and (cur.open <= prev.close) and (cur.close >= prev.open)
+    if direction == "bear":
+        return (cur.close < cur.open) and (cur.open >= prev.close) and (cur.close <= prev.open)
+    return False
+
+
+def _spike_then_retrace(candles: List[Candle], atr: float) -> str:
+    """
+    crude regime label:
+    - SPIKE → HỒI if last 8 bars include one bar range > 1.8*ATR and then price retraces > 0.35*ATR
+    - TREND if EMAs aligned strongly later (handled elsewhere)
+    - RANGE otherwise
+    """
+    if len(candles) < 12 or atr <= 0:
+        return "RANGE"
+
+    last = candles[-8:]
+    spike_idx = None
+    for i, c in enumerate(last):
+        if _range(c) >= 1.8 * atr:
+            spike_idx = i
+            break
+    if spike_idx is None:
+        return "RANGE"
+
+    spike_c = last[spike_idx]
+    # after spike, did we retrace meaningfully?
+    after = last[spike_idx + 1:]
+    if not after:
+        return "RANGE"
+
+    spike_dir_up = spike_c.close > spike_c.open
+    if spike_dir_up:
+        peak = spike_c.high
+        trough_after = min(c.low for c in after)
+        retr = peak - trough_after
     else:
-        risk_notes.append("M15 lệch pha H1 → dễ bị giật ngược")
+        low = spike_c.low
+        peak_after = max(c.high for c in after)
+        retr = peak_after - low
 
-    # Liquidity behavior
-    if sweep_high:
-        score += 1
-        reasons.append("M15 có dấu hiệu **sweep đỉnh** (break high rồi đóng lại dưới) → thiên về SELL")
-    if sweep_low:
-        score += 1
-        reasons.append("M15 có dấu hiệu **sweep đáy** (break low rồi đóng lại trên) → thiên về BUY")
+    if retr >= 0.35 * atr:
+        return "SPIKE → HỒI"
+    return "RANGE"
 
-    # Candle confirmation
-    if bear_engulf:
-        score += 1
-        reasons.append("Có **bearish engulfing** → lực bán xác nhận")
-    if bull_engulf:
-        score += 1
-        reasons.append("Có **bullish engulfing** → lực mua xác nhận")
 
-    if strong_bear:
-        score += 1
-        reasons.append("Nến đỏ thân lớn (momentum sell)")
-    if strong_bull:
-        score += 1
-        reasons.append("Nến xanh thân lớn (momentum buy)")
-    if two_sided_wick:
-        risk_notes.append("Nến râu 2 đầu → lưỡng lự/giằng co, dễ quét SL hai đầu")
+def _sideways_count(candles: List[Candle], n: int = 6, band: float = 0.25) -> bool:
+    """
+    detect chop: last n candles closes in tight band relative to ATR-ish proxy (avg range).
+    band = 0.25 => 25% of avg range
+    """
+    if len(candles) < n:
+        return False
+    last = candles[-n:]
+    closes = [c.close for c in last]
+    hi = max(closes)
+    lo = min(closes)
+    avg_r = sum((_range(c) for c in last)) / n
+    if avg_r <= 0:
+        return True
+    return (hi - lo) <= band * avg_r
 
-    # RSI filter
-    reasons.append(f"RSI(14) M15: **{rsi_now:.1f}**")
-    if rsi_overbought:
-        score += 1
-        reasons.append("RSI quá mua → SELL có lợi thế nếu có setup đảo chiều")
-    if rsi_oversold:
-        score += 1
-        reasons.append("RSI quá bán → BUY có lợi thế nếu có setup đảo chiều")
 
-    # Structure proxy
-    if lower_highs:
-        score += 1
-        reasons.append("Giá tạo chuỗi đóng cửa yếu dần (lower-high-ish) → nghiêng SELL")
-    if higher_lows:
-        score += 1
-        reasons.append("Giá tạo chuỗi đóng cửa mạnh dần (higher-low-ish) → nghiêng BUY")
+def _session_label() -> str:
+    # Keep stable label; caller can override.
+    return "Phiên Mỹ"
 
-    # Core levels
-    levels.append(f"Swing High (M15 ~80): { _fmt(hi15) }")
-    levels.append(f"Swing Low  (M15 ~80): { _fmt(lo15) }")
-    levels.append(f"Swing High (H1  ~80): { _fmt(hi60) }")
-    levels.append(f"Swing Low  (H1  ~80): { _fmt(lo60) }")
 
-    # Decide bias
-    # Rule: if sweep_high or bear signals dominate => SELL; if sweep_low or bull dominate => BUY; else WAIT.
-    sell_votes = 0
-    buy_votes = 0
+# =========================
+# Core PRO analysis
+# =========================
+def analyze_pro(
+    m15: List[Candle],
+    h1: List[Candle],
+    symbol: str = "XAUUSD",
+    session: Optional[str] = None,
+) -> Dict:
+    """
+    Returns a dict used by format_signal().
+    Assumes m15/h1 are sorted oldest->newest.
+    """
+    session = session or _session_label()
 
-    if sweep_high: sell_votes += 2
-    if bear_engulf: sell_votes += 2
-    if strong_bear: sell_votes += 1
-    if lower_highs: sell_votes += 1
-    if htf_trend == "DOWN": sell_votes += 1
-    if rsi_overbought: sell_votes += 1
+    if len(m15) < 50 or len(h1) < 50:
+        return {
+            "symbol": symbol,
+            "tf": "M15",
+            "session": session,
+            "context_lines": ["- Thiếu dữ liệu nến để phân tích (cần >=50 candles mỗi TF)."],
+            "position_lines": [],
+            "liquidity_lines": [],
+            "quality_lines": [],
+            "recommendation": "CHỜ",
+            "bias": "NEUTRAL",
+            "stars": 1,
+            "entry": None,
+            "sl": None,
+            "tp1": None,
+            "tp2": None,
+            "notes": ["- Hãy thử lại sau ~5–10 phút."],
+            "levels": [],
+        }
 
-    if sweep_low: buy_votes += 2
-    if bull_engulf: buy_votes += 2
-    if strong_bull: buy_votes += 1
-    if higher_lows: buy_votes += 1
-    if htf_trend == "UP": buy_votes += 1
-    if rsi_oversold: buy_votes += 1
+    # ---------- Indicators
+    m15_closes = [c.close for c in m15]
+    h1_closes = [c.close for c in h1]
 
-    if abs(sell_votes - buy_votes) <= 1 and two_sided_wick:
-        bias = "WAIT"
+    ema20_h1 = _ema(h1_closes, 20)
+    ema50_h1 = _ema(h1_closes, 50)
+    ema20_m15 = _ema(m15_closes, 20)
+    ema50_m15 = _ema(m15_closes, 50)
+
+    rsi_m15 = _rsi(m15_closes, 14)
+    atr_m15 = _atr(m15, 14)
+    atr_h1 = _atr(h1, 14)
+
+    last_m15 = m15[-1]
+    prev_m15 = m15[-2]
+
+    # ---------- Trend context (H1)
+    h1_trend_up = ema20_h1[-1] > ema50_h1[-1]
+    h1_trend_down = ema20_h1[-1] < ema50_h1[-1]
+
+    # Trend strength (slope)
+    def slope(arr: List[float], k: int = 8) -> float:
+        if len(arr) < k + 1:
+            return 0.0
+        return (arr[-1] - arr[-k-1]) / max(1e-9, abs(arr[-k-1]))
+
+    s20 = slope(ema20_h1, 8)
+    s50 = slope(ema50_h1, 8)
+
+    h1_strength = "mạnh"
+    if abs(s20) < 0.0006 and abs(s50) < 0.0004:
+        h1_strength = "yếu dần"
+
+    # ---------- Alignment (M15 with H1)
+    m15_up = ema20_m15[-1] > ema50_m15[-1]
+    m15_down = ema20_m15[-1] < ema50_m15[-1]
+    alignment = (h1_trend_up and m15_up) or (h1_trend_down and m15_down)
+
+    # ---------- Market regime (M15)
+    regime = _spike_then_retrace(m15, atr_m15)
+    if regime == "RANGE" and _sideways_count(m15, 8, 0.22):
+        regime = "RANGE (đi ngang)"
+
+    # ---------- Structure levels
+    m15_swh, m15_swl = _swing_high_low(m15, 80)
+    h1_swh, h1_swl = _swing_high_low(h1, 80)
+    price = last_m15.close
+
+    # ---------- Positioning
+    # where are we in the recent range?
+    m15_pos = 0.5 if (m15_swh - m15_swl) <= 1e-9 else (price - m15_swl) / (m15_swh - m15_swl)
+    near_top = m15_pos >= 0.78
+    near_bottom = m15_pos <= 0.22
+
+    position_lines: List[str] = []
+    if near_top:
+        position_lines.append("- Giá gần đỉnh phiên / vùng kháng cự ngắn hạn")
+    elif near_bottom:
+        position_lines.append("- Giá gần đáy phiên / vùng hỗ trợ ngắn hạn")
     else:
-        bias = "SELL" if sell_votes > buy_votes else "BUY"
+        position_lines.append("- Giá đang ở giữa cấu trúc (không quá đẹp)")
 
-    # Stars: map score -> 1..5
-    # score roughly 1..9+, clamp
-    stars = int(max(1, min(5, round(score / 2))))  # 2 points ~ 1 star
-    # enforce: WAIT => at most 3 stars
-    if bias == "WAIT":
-        stars = min(stars, 3)
+    # retest zone heuristic: use last impulse pivot on M15
+    # build a soft "zone" from last 12 bars: local swing high/low
+    last12 = m15[-12:]
+    z_hi = max(c.high for c in last12)
+    z_lo = min(c.low for c in last12)
+    # compress zone a bit to avoid too wide
+    zone_mid = (z_hi + z_lo) / 2.0
+    zone_half = max(0.15 * atr_m15, 0.25 * (z_hi - z_lo))
+    supply_lo = zone_mid
+    supply_hi = zone_mid + zone_half
+    demand_hi = zone_mid
+    demand_lo = zone_mid - zone_half
 
-    # Entry/SL/TP logic (ATR + structure)
-    px = last15.c
-    if atr15 <= 0:
-        atr15 = max((hi15 - lo15) / 20, 1.0)
+    # Are we retesting supply/demand?
+    if near_top and (supply_lo <= price <= supply_hi):
+        position_lines.append(f"- Retest vùng phân phối {supply_lo:.3f}–{supply_hi:.3f}")
+    elif near_bottom and (demand_lo <= price <= demand_hi):
+        position_lines.append(f"- Retest vùng cầu {demand_lo:.3f}–{demand_hi:.3f}")
 
-    # adaptive ATR multiple by confidence
-    k_sl = 1.2 if stars <= 2 else (1.0 if stars == 3 else 0.9)
-    sl_dist = atr15 * k_sl
+    # ---------- Liquidity cues (price-action inference)
+    liquidity_lines: List[str] = []
+    # 1) failed break / no follow-through:
+    broke_high = last_m15.high > m15_swh * 0.9995  # loose
+    # Actually we use last 6 bars: if we made a new high then closed back under prior high -> possible sell-limits
+    last6 = m15[-6:]
+    prev_range_high = max(c.high for c in m15[-20:-6])
+    made_new_high = max(c.high for c in last6) > prev_range_high
+    close_below = last_m15.close < prev_range_high
+    if made_new_high and close_below:
+        liquidity_lines.append("- 🔴 Dấu hiệu SELL limit lớn phía trên (break high nhưng đóng lại dưới vùng)")
+        liquidity_lines.append("- Break trước đó không follow-through")
 
-    # Entry style
-    # - If reversal setup (sweep + rejection), prefer limit at 50% of signal candle
-    # - If momentum (strong body), prefer market on close
-    sig = last15
-    mid_sig = (sig.o + sig.c) / 2
+    # 2) sweep: wick above recent high then close down (bear sweep)
+    recent_high = max(c.high for c in m15[-20:-1])
+    if last_m15.high > recent_high and last_m15.close < recent_high:
+        liquidity_lines.append("- Sweep đỉnh (liquidity grab) rồi đóng ngược lại")
 
-    if bias == "SELL":
-        prefer_limit = sweep_high or (two_sided_wick and rsi_overbought)
-        entry_px = mid_sig if prefer_limit else px
-        sl_px = max(sig.h, entry_px + sl_dist)
-        # TP: TP1=1R, TP2=2R but not beyond swing low
-        r = sl_px - entry_px
-        tp1_px = entry_px - r * 1.0
-        tp2_px = entry_px - r * 2.0
-        # clamp to meaningful supports
-        tp2_px = max(tp2_px, lo15)  # don’t demand too deep beyond local low
-        entry = f"{_fmt(entry_px)} ({'SELL limit @ 50% nến' if prefer_limit else 'SELL market/close'})"
-        sl = _fmt(sl_px)
-        tp1 = _fmt(tp1_px)
-        tp2 = _fmt(tp2_px)
-        summary = "Ưu tiên SELL khi hồi lên vùng kháng cự/supply, tránh SELL đuổi khi nến râu dài."
-        if prefer_limit:
-            risk_notes.append("Nếu giá không hồi về entry limit → bỏ lệnh, tránh FOMO")
-        if htf_trend == "UP":
-            risk_notes.append("H1 đang UP: SELL chỉ là pullback/counter-trend → giảm lot, chốt nhanh TP1")
-    elif bias == "BUY":
-        prefer_limit = sweep_low or (two_sided_wick and rsi_oversold)
-        entry_px = mid_sig if prefer_limit else px
-        sl_px = min(sig.l, entry_px - sl_dist)
-        r = entry_px - sl_px
-        tp1_px = entry_px + r * 1.0
-        tp2_px = entry_px + r * 2.0
-        tp2_px = min(tp2_px, hi15)
-        entry = f"{_fmt(entry_px)} ({'BUY limit @ 50% nến' if prefer_limit else 'BUY market/close'})"
-        sl = _fmt(sl_px)
-        tp1 = _fmt(tp1_px)
-        tp2 = _fmt(tp2_px)
-        summary = "Ưu tiên BUY ở demand/đáy quét (sweep), hạn chế BUY ngay sát đỉnh cũ."
-        if prefer_limit:
-            risk_notes.append("Nếu giá không hồi về entry limit → bỏ lệnh, tránh FOMO")
-        if htf_trend == "DOWN":
-            risk_notes.append("H1 đang DOWN: BUY chỉ là hồi kỹ thuật → giảm lot, chốt nhanh TP1")
+    # 3) absorption / rejection candle
+    if _is_rejection(last_m15, "sell", wick_ratio=0.42):
+        liquidity_lines.append("- Nến từ chối phía trên rõ (upper wick dài)")
+
+    if not liquidity_lines:
+        # provide neutral liquidity read
+        liquidity_lines.append("- Chưa thấy dấu hiệu thanh khoản quá rõ (ưu tiên chờ nến xác nhận)")
+
+    # ---------- Setup quality + scoring
+    quality_lines: List[str] = []
+    stars = 1
+    # alignment
+    if alignment:
+        stars += 1
+        quality_lines.append("- Đồng pha M15 với H1 (trend alignment)")
     else:
-        entry = f"{_fmt(px)} (WAIT)"
-        sl = "-"
-        tp1 = "-"
-        tp2 = "-"
-        summary = "Thị trường đang giằng co/không đủ hợp lưu. Chờ nến xác nhận (engulfing mạnh) hoặc break cấu trúc."
-        risk_notes.append("WAIT ưu tiên hơn vì nến râu 2 đầu / sideway dễ quét SL")
+        quality_lines.append("- M15 chưa đồng pha hoàn toàn với H1 (cẩn trọng)")
 
-    # Add current key zone suggestion
-    levels.append(f"Giá hiện tại: {_fmt(px)} | ATR(14)~{atr15:.3f}")
+    # liquidity cue present?
+    liq_strong = any("SELL limit lớn" in x or "Sweep" in x or "từ chối" in x for x in liquidity_lines)
+    if liq_strong:
+        stars += 1
 
-    return Signal(
-        symbol=symbol,
-        tf="M15",
-        htf="H1",
-        bias=bias,
-        stars=stars,
-        entry=entry,
-        sl=sl,
-        tp1=tp1,
-        tp2=tp2,
-        summary=summary,
-        reasons=reasons[:10],
-        levels=levels[:8],
-        risk_notes=risk_notes[:6],
-    )
+    # candle confirmation:
+    bearish_engulf = _is_engulfing(prev_m15, last_m15, "bear")
+    bullish_engulf = _is_engulfing(prev_m15, last_m15, "bull")
+    if bearish_engulf or bullish_engulf or _is_rejection(last_m15, "sell", 0.42) or _is_rejection(last_m15, "buy", 0.42):
+        stars += 1
+        if bearish_engulf:
+            quality_lines.append("- Nến bearish engulfing / đảo chiều ngắn hạn")
+        elif bullish_engulf:
+            quality_lines.append("- Nến bullish engulfing / đảo chiều ngắn hạn")
+        else:
+            quality_lines.append("- Nến từ chối rõ")
+
+    # positioning bonus
+    if near_top or near_bottom:
+        stars += 1
+        quality_lines.append("- Vị trí đẹp (gần cực trị range)")
+
+    stars = max(1, min(5, stars))
+
+    # RR planning + ATR SL budget
+    # We'll propose both BUY and SELL candidates, then select based on context/liquidity/position.
+    # ---------- Bias decision
+    # baseline bias from H1 trend:
+    bias = "NEUTRAL"
+    if h1_trend_up:
+        bias = "BUY"
+    elif h1_trend_down:
+        bias = "SELL"
+
+    # But if near_top + strong sell-liquidity cues => favor SELL even if H1 bullish but weak.
+    favor_sell = near_top and liq_strong
+    favor_buy = near_bottom and liq_strong
+
+    # if H1 bullish but weak + near_top => more willing to sell retrace
+    if h1_trend_up and h1_strength == "yếu dần" and near_top:
+        favor_sell = True
+
+    recommendation = "CHỜ"
+    rec_side = None  # "SELL" or "BUY"
+
+    if favor_sell and not favor_buy:
+        recommendation = "🔴 SELL"
+        rec_side = "SELL"
+    elif favor_buy and not favor_sell:
+        recommendation = "🟢 BUY"
+        rec_side = "BUY"
+    else:
+        # fallback: follow H1 if alignment and RSI supports
+        if alignment and bias == "BUY" and rsi_m15 >= 52:
+            recommendation = "🟢 BUY"
+            rec_side = "BUY"
+        elif alignment and bias == "SELL" and rsi_m15 <= 48:
+            recommendation = "🔴 SELL"
+            rec_side = "SELL"
+        else:
+            recommendation = "CHỜ"
+            rec_side = None
+
+    # ---------- Entry / SL / TP (ATR + structure)
+    entry = None
+    sl = None
+    tp1 = None
+    tp2 = None
+    notes: List[str] = []
+
+    # ATR budget in "$" (XAU points)
+    # We set a "professional" stop: between 1.2–1.6 ATR but capped by nearest structure.
+    sl_atr = 1.35 * atr_m15
+    # If user wants "$12" style, their broker digits differ; still ok as points.
+    quality_lines.append(f"- ATR cho phép SL ~ {sl_atr:.3f}")
+
+    if rec_side == "SELL":
+        entry = price  # market/close
+        # SL above recent swing high + buffer
+        recent_local_high = max(c.high for c in m15[-10:])
+        sl_struct = recent_local_high + 0.18 * atr_m15
+        # choose tighter of (struct) but ensure not too tight
+        sl = max(entry + 0.85 * atr_m15, sl_struct)
+        # TP targets: toward mid/low structure
+        tp1 = entry - (sl - entry) * 1.2  # ~RR 1:1.2
+        tp2 = entry - (sl - entry) * 2.0  # ~RR 1:2
+        # clamp TP to swing low if closer for realism
+        tp2 = min(tp2, m15_swl + 0.10 * atr_m15)
+
+        # Notes / invalidation
+        invalidate = recent_local_high + 0.05 * atr_m15
+        notes.append(f"- Không SELL nếu M15 đóng > {invalidate:.3f}")
+        if _sideways_count(m15, 8, 0.20):
+            notes.append("- Bỏ kèo nếu giá đi ngang thêm (chop tăng rủi ro quét SL)")
+    elif rec_side == "BUY":
+        entry = price
+        recent_local_low = min(c.low for c in m15[-10:])
+        sl_struct = recent_local_low - 0.18 * atr_m15
+        sl = min(entry - 0.85 * atr_m15, sl_struct)
+        tp1 = entry + (entry - sl) * 1.2
+        tp2 = entry + (entry - sl) * 2.0
+        tp2 = max(tp2, m15_swh - 0.10 * atr_m15)
+
+        invalidate = recent_local_low - 0.05 * atr_m15
+        notes.append(f"- Không BUY nếu M15 đóng < {invalidate:.3f}")
+        if _sideways_count(m15, 8, 0.20):
+            notes.append("- Bỏ kèo nếu giá đi ngang thêm (chop tăng rủi ro quét SL)")
+    else:
+        notes.append("- Chờ nến M15 xác nhận (engulfing/rejection rõ) trước khi vào.")
+
+    # RR line (if plan exists)
+    if entry is not None and sl is not None and tp2 is not None:
+        risk = abs(sl - entry)
+        reward = abs(tp2 - entry)
+        rr = (reward / risk) if risk > 0 else 0.0
+        quality_lines.append(f"- RR ~ {rr:.2f}")
+
+    # ---------- Context lines (exact style you want)
+    context_lines: List[str] = []
+    context_lines.append(f"- Thị trường: {regime}")
+    if h1_trend_up:
+        context_lines.append(f"- H1: bullish nhưng lực {h1_strength}")
+    elif h1_trend_down:
+        context_lines.append(f"- H1: bearish nhưng lực {h1_strength}")
+    else:
+        context_lines.append("- H1: sideway / chưa rõ xu hướng")
+
+    # Add one more “pro” supporting stats (kept short)
+    # RSI mention optional but useful
+    context_lines.append(f"- RSI(14) M15: {rsi_m15:.1f}")
+
+    # ---------- Levels
+    levels = [
+        f"- Swing High (M15 ~80): {m15_swh:.3f}",
+        f"- Swing Low  (M15 ~80): {m15_swl:.3f}",
+        f"- Swing High (H1  ~80): {h1_swh:.3f}",
+        f"- Swing Low  (H1  ~80): {h1_swl:.3f}",
+        f"- Giá hiện tại: {price:.3f} | ATR(14)~{atr_m15:.3f}",
+    ]
+
+    return {
+        "symbol": symbol,
+        "tf": "M15",
+        "session": session,
+
+        "context_lines": context_lines,
+        "position_lines": position_lines,
+        "liquidity_lines": liquidity_lines,
+        "quality_lines": quality_lines,
+
+        "recommendation": recommendation,
+        "bias": (rec_side or bias),
+        "stars": stars,
+
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+
+        "notes": notes,
+        "levels": levels,
+    }
 
 
-def format_signal(sig: Signal) -> str:
-    stars = "⭐" * sig.stars + "☆" * (5 - sig.stars)
-    head = f"📊 *{sig.symbol}* — *{sig.tf}* (HTF: {sig.htf})\n"
-    bias = f"🎯 *Bias:* *{sig.bias}*   {stars}\n"
-    plan = (
-        f"\n*📌 Kế hoạch lệnh*\n"
-        f"• Entry: `{sig.entry}`\n"
-        f"• SL: `{sig.sl}`\n"
-        f"• TP1: `{sig.tp1}`\n"
-        f"• TP2: `{sig.tp2}`\n"
-    )
-    reasons = "\n*🧠 Hợp lưu chính*\n" + "\n".join([f"• {r}" for r in sig.reasons])
-    lv = "\n\n*🧱 Mốc giá quan trọng*\n" + "\n".join([f"• {x}" for x in sig.levels])
-    risk = "\n\n*⚠️ Lưu ý rủi ro*\n" + "\n".join([f"• {x}" for x in sig.risk_notes]) if sig.risk_notes else ""
-    tail = f"\n\n*📝 Tóm tắt:* {sig.summary}"
-    return head + bias + plan + reasons + lv + risk + tail
+# =========================
+# Formatting (100% layout you agreed)
+# =========================
+def format_signal(sig: Dict) -> str:
+    symbol = sig.get("symbol", "XAUUSD")
+    tf = sig.get("tf", "M15")
+    session = sig.get("session", "Phiên Mỹ")
+
+    context_lines = sig.get("context_lines", [])
+    position_lines = sig.get("position_lines", [])
+    liquidity_lines = sig.get("liquidity_lines", [])
+    quality_lines = sig.get("quality_lines", [])
+
+    recommendation = sig.get("recommendation", "CHỜ")
+    stars_n = int(sig.get("stars", 1))
+    stars_n = max(1, min(5, stars_n))
+    stars = "⭐️" * stars_n + "☆" * (5 - stars_n)
+
+    entry = sig.get("entry", None)
+    sl = sig.get("sl", None)
+    tp1 = sig.get("tp1", None)
+    tp2 = sig.get("tp2", None)
+
+    notes = sig.get("notes", [])
+    levels = sig.get("levels", [])
+
+    def f(x: Optional[float]) -> str:
+        return "..." if x is None else f"{x:.3f}"
+
+    # EXACT layout (as you wrote)
+    out = []
+    out.append(f"📊 {symbol} | {tf} | {session}")
+    out.append("")
+    out.append("Context:")
+    for line in context_lines:
+        out.append(line)
+    out.append("")
+    out.append("Vị trí:")
+    for line in position_lines:
+        out.append(line)
+    out.append("")
+    out.append("Thanh khoản:")
+    for line in liquidity_lines:
+        out.append(line)
+    out.append("")
+    out.append("Chất lượng setup:")
+    for line in quality_lines:
+        out.append(line)
+    out.append("")
+    out.append(f"🎯 Khuyến nghị: {recommendation}")
+    out.append(f"Độ tin cậy: {stars} ({stars_n}/5)")
+    out.append("")
+    out.append(f"ENTRY: {f(entry)}")
+    out.append(f"SL: {f(sl)} | TP1: {f(tp1)} | TP2: {f(tp2)}")
+    out.append("")
+    out.append("⚠️ Lưu ý:")
+    for line in notes:
+        out.append(line)
+    out.append("")
+    out.append("Mốc giá quan trọng:")
+    for line in levels:
+        out.append(line)
+
+    return "\n".join(out)
