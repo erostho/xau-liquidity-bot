@@ -109,6 +109,8 @@ def send_telegram_long(chat_id: int, text: str, max_len: int = 3800):
 
     # normalize
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    symbol = detect_symbol_from_text(text)
+
 
     if len(text) <= max_len:
         return send_telegram(chat_id, text)
@@ -193,8 +195,9 @@ def should_analyze(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
         return False
-    keywords = ["xau", "gold", "buy", "sell", "now", "scalp", "trend", "tp", "sl"]
+    keywords = ["xau", "gold", "btc", "bitcoin", "buy", "sell", "now", "scalp", "trend", "tp", "sl"]
     return any(k in t for k in keywords)
+
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
