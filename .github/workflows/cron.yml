@@ -1,0 +1,14 @@
+name: XAU 15m Cron
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # mỗi 15 phút
+  workflow_dispatch:        # cho phép bấm chạy tay
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Render cron endpoint
+        run: |
+          curl -sS "https://xau-liquidity-bot.onrender.com/cron/run?token=${{ secrets.CRON_SECRET }}"
