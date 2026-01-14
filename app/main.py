@@ -3,7 +3,6 @@ import os
 import requests
 from fastapi import FastAPI, Request, HTTPException
 import logging
-
 from app.pro_analysis import Candle, analyze_pro, format_signal
 
 logger = logging.getLogger("uvicorn.error")
@@ -18,8 +17,7 @@ if not TWELVEDATA_API_KEY:
     logger.warning("Missing TWELVEDATA_API_KEY")
 
 app = FastAPI()
-from fastapi import FastAPI, Request, HTTPException
-import os
+
 
 # ... app = FastAPI() đã có
 
@@ -29,15 +27,32 @@ async def cron_run(token: str = ""):
     if not secret or token != secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # chạy phân tích & gửi telegram ở đây
-    # ví dụ:
-    # m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
-    # h1  = fetch_twelvedata_candles(SYMBOL, "1h", 220)
-    # sig = analyze_pro(SYMBOL, m15, h1)
-    # msg = format_signal(sig)
-    # send_telegram_long(ADMIN_CHAT_ID, msg)
+    admin_chat_id = int(os.getenv("ADMIN_CHAT_ID", "0"))
+    if admin_chat_id == 0:
+        raise HTTPException(status_code=400, detail="Missing ADMIN_CHAT_ID")
 
-    return {"ok": True, "msg": "cron executed"}
+    logger.info(f"[CRON] triggered admin_chat_id={admin_chat_id}")
+
+    try:
+        # (optional) heartbeat để bạn biết chắc cron có gửi
+        send_telegram(admin_chat_id, "💓 CRON HIT: Đang phân tích XAU...")
+
+        m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
+        h1  = fetch_twelvedata_candles(SYMBOL, "1h", 220)
+
+        sig = analyze_pro(SYMBOL, m15, h1)
+        msg = format_signal(sig)
+
+        send_telegram_long(admin_chat_id, msg)
+        logger.info("[CRON] sent telegram ok")
+
+        return {"ok": True, "sent_to": admin_chat_id}
+
+    except Exception as e:
+        logger.exception("[CRON] analysis failed")
+        send_telegram_long(admin_chat_id, f"❌ CRON lỗi: `{str(e)}`")
+        return {"ok": False, "error": str(e)}
+
 
 @app.get("/health")
 def health():
@@ -45,12 +60,12 @@ def health():
 
 def send_telegram(chat_id: int, text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    requests.post(url, json=payload, timeout=10)
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    r = requests.post(url, json=payload, timeout=10)
+    if r.status_code != 200:
+        logger.error(f"[TG] failed {r.status_code}: {r.text}")
+    return r
+
 def send_telegram_long(chat_id: int, text: str, max_len: int = 3800):
     """
     Telegram limit is 4096 chars. Use 3800 for safety (markdown, emojis, etc).
