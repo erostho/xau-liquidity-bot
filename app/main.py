@@ -54,10 +54,11 @@ async def cron_run(token: str = ""):
     for item in SYMBOLS:
         symbol = item["name"]
         try:
+            symbol = pick_symbol_from_text(text)
             m15 = fetch_twelvedata_candles(symbol, "15min", 220)
             h1  = fetch_twelvedata_candles(symbol, "1h", 220)
-
             sig = analyze_pro(symbol, m15, h1)
+
             stars = int(sig.get("stars", 0))
             if stars < MIN_STARS:
                 logger.info(f"[CRON] {symbol} skip: stars={stars} < {MIN_STARS}")
@@ -220,7 +221,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     # Acknowledge quickly (optional)
-    send_telegram(chat_id, "⏳ Đang phân tích dữ liệu...")
+    send_telegram(chat_id, f"⏳ Đang phân tích *{symbol}* ...")
 
     try:
         m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
