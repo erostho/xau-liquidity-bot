@@ -4,12 +4,17 @@ import requests
 from fastapi import FastAPI, Request, HTTPException
 import logging
 from app.pro_analysis import Candle, analyze_pro, format_signal
-
 logger = logging.getLogger("uvicorn.error")
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 SYMBOL = os.getenv("SYMBOL", "XAU/USD")
+
+SYMBOLS = [
+    {"name": "XAU/USD", "tf": "15min"},
+    {"name": "BTC/USDT", "tf": "15min"},
+]
+MIN_STARS = 3
+
 
 if not TELEGRAM_TOKEN:
     logger.warning("Missing TELEGRAM_BOT_TOKEN")
@@ -17,6 +22,7 @@ if not TWELVEDATA_API_KEY:
     logger.warning("Missing TWELVEDATA_API_KEY")
 
 app = FastAPI()
+
 @app.get("/cron/run")
 async def cron_run(token: str = ""):
     secret = os.getenv("CRON_SECRET", "")
@@ -27,45 +33,46 @@ async def cron_run(token: str = ""):
     if admin_chat_id == 0:
         raise HTTPException(status_code=400, detail="Missing ADMIN_CHAT_ID")
 
-    MIN_STARS = 3  # ⭐⭐⭐ trở lên mới gửi
+    logger.info("[CRON] multi-symbol scan started")
 
-    logger.info(f"[CRON] triggered admin_chat_id={admin_chat_id}")
+    results = []
 
-    try:
-        m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
-        h1  = fetch_twelvedata_candles(SYMBOL, "1h", 220)
+    for item in SYMBOLS:
+        symbol = item["name"]
+        try:
+            m15 = fetch_twelvedata_candles(symbol, "15min", 220)
+            h1  = fetch_twelvedata_candles(symbol, "1h", 220)
 
-        sig = analyze_pro(SYMBOL, m15, h1)
+            sig = analyze_pro(symbol, m15, h1)
 
-        # 🔴 CHỐT LOGIC Ở ĐÂY
-        if sig.stars < MIN_STARS:
+            if int(sig.get("stars", 0)) < MIN_STARS:
+                stars = int(sig.get("stars", 0))
+                logger.info(f"[CRON] {symbol} skip: stars={stars} < {MIN_STARS}")
+                continue
+
+            msg = format_signal(sig)
+            send_telegram_long(admin_chat_id, msg)
+
             logger.info(
-                f"[CRON] skip telegram: stars={sig.stars} < {MIN_STARS}"
+                f"[CRON] {symbol} sent telegram stars={sig.stars}"
             )
-            return {
-                "ok": True,
-                "skip": True,
+
+            results.append({
+                "symbol": symbol,
                 "stars": sig.stars
-            }
+            })
 
-        # ⭐ ĐỦ SAO → MỚI GỬI
-        msg = format_signal(sig)
-        send_telegram_long(admin_chat_id, msg)
+        except Exception as e:
+            logger.exception(f"[CRON] {symbol} failed")
+            send_telegram_long(
+                admin_chat_id,
+                f"❌ {symbol} cron error:\n`{str(e)}`"
+            )
 
-        logger.info(f"[CRON] sent telegram stars={sig.stars}")
-        return {
-            "ok": True,
-            "sent": True,
-            "stars": sig.stars
-        }
-
-    except Exception as e:
-        logger.exception("[CRON] analysis failed")
-        send_telegram_long(
-            admin_chat_id,
-            f"❌ CRON lỗi khi phân tích:\n`{str(e)}`"
-        )
-        return {"ok": False, "error": str(e)}
+    return {
+        "ok": True,
+        "sent": results
+    }
 
 
 
