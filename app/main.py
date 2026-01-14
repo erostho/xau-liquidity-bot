@@ -11,7 +11,7 @@ SYMBOL = os.getenv("SYMBOL", "XAU/USD")
 
 SYMBOLS = [
     {"name": "XAU/USD", "tf": "15min"},
-    {"name": "BTC/USDT", "tf": "15min"},
+    {"name": "BTC/USD", "tf": "15min"},
 ]
 MIN_STARS = 3
 
