@@ -18,6 +18,26 @@ if not TWELVEDATA_API_KEY:
     logger.warning("Missing TWELVEDATA_API_KEY")
 
 app = FastAPI()
+from fastapi import FastAPI, Request, HTTPException
+import os
+
+# ... app = FastAPI() đã có
+
+@app.get("/cron/run")
+async def cron_run(token: str = ""):
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or token != secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # chạy phân tích & gửi telegram ở đây
+    # ví dụ:
+    # m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
+    # h1  = fetch_twelvedata_candles(SYMBOL, "1h", 220)
+    # sig = analyze_pro(SYMBOL, m15, h1)
+    # msg = format_signal(sig)
+    # send_telegram_long(ADMIN_CHAT_ID, msg)
+
+    return {"ok": True, "msg": "cron executed"}
 
 @app.get("/health")
 def health():
