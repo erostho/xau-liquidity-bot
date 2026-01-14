@@ -28,6 +28,14 @@ def pick_symbol_from_text(text: str) -> str:
             return sym
     # mặc định nếu user không nói rõ: dùng XAU (hoặc SYMBOL env cũ)
     return os.getenv("SYMBOL_DEFAULT", SYMBOL)
+def detect_symbol_from_text(text: str) -> str:
+    t = (text or "").strip().lower()
+    # ưu tiên BTC nếu có chữ btc
+    if "btc" in t:
+        return "BTC/USD"      # hoặc "BTC/USDT" tùy TwelveData bạn dùng cái nào chạy được
+    if "xau" in t or "gold" in t:
+        return "XAU/USD"
+    return SYMBOL  # fallback default
 
 MIN_STARS = 3
 if not TELEGRAM_TOKEN:
@@ -115,6 +123,7 @@ async def cron_run(token: str = ""):
     for item in SYMBOLS:
         symbol = item["name"]
         try:
+            symbol = detect_symbol_from_text(text)
             m15 = fetch_twelvedata_candles(symbol, "15min", 220)
             h1  = fetch_twelvedata_candles(symbol, "1h", 220)
             sig = analyze_pro(symbol, m15, h1)
