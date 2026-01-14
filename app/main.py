@@ -17,10 +17,6 @@ if not TWELVEDATA_API_KEY:
     logger.warning("Missing TWELVEDATA_API_KEY")
 
 app = FastAPI()
-
-
-# ... app = FastAPI() đã có
-
 @app.get("/cron/run")
 async def cron_run(token: str = ""):
     secret = os.getenv("CRON_SECRET", "")
@@ -31,27 +27,46 @@ async def cron_run(token: str = ""):
     if admin_chat_id == 0:
         raise HTTPException(status_code=400, detail="Missing ADMIN_CHAT_ID")
 
+    MIN_STARS = 3  # ⭐⭐⭐ trở lên mới gửi
+
     logger.info(f"[CRON] triggered admin_chat_id={admin_chat_id}")
 
     try:
-        # (optional) heartbeat để bạn biết chắc cron có gửi
-        send_telegram(admin_chat_id, "💓 CRON HIT: Đang phân tích XAU...")
-
         m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
         h1  = fetch_twelvedata_candles(SYMBOL, "1h", 220)
 
         sig = analyze_pro(SYMBOL, m15, h1)
+
+        # 🔴 CHỐT LOGIC Ở ĐÂY
+        if sig.stars < MIN_STARS:
+            logger.info(
+                f"[CRON] skip telegram: stars={sig.stars} < {MIN_STARS}"
+            )
+            return {
+                "ok": True,
+                "skip": True,
+                "stars": sig.stars
+            }
+
+        # ⭐ ĐỦ SAO → MỚI GỬI
         msg = format_signal(sig)
-
         send_telegram_long(admin_chat_id, msg)
-        logger.info("[CRON] sent telegram ok")
 
-        return {"ok": True, "sent_to": admin_chat_id}
+        logger.info(f"[CRON] sent telegram stars={sig.stars}")
+        return {
+            "ok": True,
+            "sent": True,
+            "stars": sig.stars
+        }
 
     except Exception as e:
         logger.exception("[CRON] analysis failed")
-        send_telegram_long(admin_chat_id, f"❌ CRON lỗi: `{str(e)}`")
+        send_telegram_long(
+            admin_chat_id,
+            f"❌ CRON lỗi khi phân tích:\n`{str(e)}`"
+        )
         return {"ok": False, "error": str(e)}
+
 
 
 @app.get("/health")
