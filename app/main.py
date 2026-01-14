@@ -44,19 +44,15 @@ async def cron_run(token: str = ""):
             h1  = fetch_twelvedata_candles(symbol, "1h", 220)
 
             sig = analyze_pro(symbol, m15, h1)
-
-            if int(sig.get("stars", 0)) < MIN_STARS:
-                stars = int(sig.get("stars", 0))
+            stars = int(sig.get("stars", 0))
+            if stars < MIN_STARS:
                 logger.info(f"[CRON] {symbol} skip: stars={stars} < {MIN_STARS}")
                 continue
-
             msg = format_signal(sig)
             send_telegram_long(admin_chat_id, msg)
-
             logger.info(
-                f"[CRON] {symbol} sent telegram stars={sig.stars}"
+                f"[CRON] {symbol} sent telegram stars={stars}"
             )
-
             results.append({
                 "symbol": symbol,
                 "stars": sig.stars
