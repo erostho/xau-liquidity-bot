@@ -13,9 +13,23 @@ SYMBOLS = [
     {"name": "XAU/USD", "tf": "15min"},
     {"name": "BTC/USD", "tf": "15min"},
 ]
+# Map user text -> symbol TwelveData
+SYMBOL_MAP = {
+    "xau": os.getenv("SYMBOL_XAU", "XAU/USD"),
+    "gold": os.getenv("SYMBOL_XAU", "XAU/USD"),
+    "btc": os.getenv("SYMBOL_BTC", "BTC/USD"),
+    "bitcoin": os.getenv("SYMBOL_BTC", "BTC/USD"),
+}
+
+def pick_symbol_from_text(text: str) -> str:
+    t = (text or "").strip().lower()
+    for k, sym in SYMBOL_MAP.items():
+        if k in t:
+            return sym
+    # mặc định nếu user không nói rõ: dùng XAU (hoặc SYMBOL env cũ)
+    return os.getenv("SYMBOL_DEFAULT", SYMBOL)
+
 MIN_STARS = 3
-
-
 if not TELEGRAM_TOKEN:
     logger.warning("Missing TELEGRAM_BOT_TOKEN")
 if not TWELVEDATA_API_KEY:
