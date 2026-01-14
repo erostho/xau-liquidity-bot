@@ -2,7 +2,8 @@ name: XAU 15m Cron
 
 on:
   schedule:
-    - cron: "1-59/15 * * * *"   # chạy ở phút 01,16,31,46 (UTC)
+    - cron: "1,16,31,46 * * * *" # chạy ở phút 01,16,31,46 (UTC)
+
   workflow_dispatch:        # cho phép bấm chạy tay
 
 jobs:
