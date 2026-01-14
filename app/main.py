@@ -37,6 +37,67 @@ if not TWELVEDATA_API_KEY:
 
 app = FastAPI()
 
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+def send_telegram(chat_id: int, text: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    r = requests.post(url, json=payload, timeout=10)
+    if r.status_code != 200:
+        logger.error(f"[TG] failed {r.status_code}: {r.text}")
+    return r
+
+def send_telegram_long(chat_id: int, text: str, max_len: int = 3800):
+    """
+    Telegram limit is 4096 chars. Use 3800 for safety (markdown, emojis, etc).
+    Split by lines to keep formatting nice.
+    """
+    if not text:
+        return
+
+    # normalize
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    if len(text) <= max_len:
+        return send_telegram(chat_id, text)
+
+    lines = text.split("\n")
+    chunks = []
+    cur = ""
+
+    for line in lines:
+        # If one line is insanely long, hard-split it
+        if len(line) > max_len:
+            # flush current
+            if cur:
+                chunks.append(cur.rstrip())
+                cur = ""
+            # split that line
+            start = 0
+            while start < len(line):
+                chunks.append(line[start:start + max_len])
+                start += max_len
+            continue
+
+        # normal line append
+        candidate = (cur + "\n" + line) if cur else line
+        if len(candidate) > max_len:
+            chunks.append(cur.rstrip())
+            cur = line
+        else:
+            cur = candidate
+
+    if cur:
+        chunks.append(cur.rstrip())
+
+    # send chunks with small headers
+    total = len(chunks)
+    for i, part in enumerate(chunks, start=1):
+        prefix = f"({i}/{total})\n" if total > 1 else ""
+        send_telegram(chat_id, prefix + part)
+
 @app.get("/cron/run")
 async def cron_run(token: str = ""):
     secret = os.getenv("CRON_SECRET", "")
@@ -84,72 +145,6 @@ async def cron_run(token: str = ""):
         "ok": True,
         "sent": results
     }
-
-
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-def send_telegram(chat_id: int, text: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    r = requests.post(url, json=payload, timeout=10)
-    if r.status_code != 200:
-        logger.error(f"[TG] failed {r.status_code}: {r.text}")
-    return r
-
-def send_telegram_long(chat_id: int, text: str, max_len: int = 3800):
-    """
-    Telegram limit is 4096 chars. Use 3800 for safety (markdown, emojis, etc).
-    Split by lines to keep formatting nice.
-    """
-    if not text:
-        return
-
-    # normalize
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    symbol = detect_symbol_from_text(text)
-
-
-    if len(text) <= max_len:
-        return send_telegram(chat_id, text)
-
-    lines = text.split("\n")
-    chunks = []
-    cur = ""
-
-    for line in lines:
-        # If one line is insanely long, hard-split it
-        if len(line) > max_len:
-            # flush current
-            if cur:
-                chunks.append(cur.rstrip())
-                cur = ""
-            # split that line
-            start = 0
-            while start < len(line):
-                chunks.append(line[start:start + max_len])
-                start += max_len
-            continue
-
-        # normal line append
-        candidate = (cur + "\n" + line) if cur else line
-        if len(candidate) > max_len:
-            chunks.append(cur.rstrip())
-            cur = line
-        else:
-            cur = candidate
-
-    if cur:
-        chunks.append(cur.rstrip())
-
-    # send chunks with small headers
-    total = len(chunks)
-    for i, part in enumerate(chunks, start=1):
-        prefix = f"({i}/{total})\n" if total > 1 else ""
-        send_telegram(chat_id, prefix + part)
-
 
 def fetch_twelvedata_candles(symbol: str, interval: str, outputsize: int = 200):
     # TwelveData time_series
