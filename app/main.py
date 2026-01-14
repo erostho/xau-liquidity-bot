@@ -123,7 +123,8 @@ async def cron_run(token: str = ""):
     for item in SYMBOLS:
         symbol = item["name"]
         try:
-            symbol = detect_symbol_from_text(text)
+            #symbol = detect_symbol_from_text(text)
+            symbol = pick_symbol_from_text(text)
             m15 = fetch_twelvedata_candles(symbol, "15min", 220)
             h1  = fetch_twelvedata_candles(symbol, "1h", 220)
             sig = analyze_pro(symbol, m15, h1)
@@ -228,7 +229,7 @@ async def telegram_webhook(request: Request):
     send_telegram(chat_id, f"⏳ Đang phân tích..")
 
     try:
-        symbol = pick_symbol_from_text(text)
+
         m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
         h1 = fetch_twelvedata_candles(SYMBOL, "1h", 220)
 
