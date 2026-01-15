@@ -7,7 +7,7 @@ from app.pro_analysis import Candle, analyze_pro, format_signal
 from app.data_source import get_best_data_source
 import time
 from typing import Dict, Any, Optional, List
-
+from app.data_source import get_candles
 logger = logging.getLogger("uvicorn.error")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
@@ -305,12 +305,15 @@ async def telegram_webhook(request: Request):
     send_telegram(chat_id, f"⏳ Đang phân tích..")
 
     try:
-        symbol = detect_symbol_from_text(text)   # <-- lấy BTC/XAU từ tin nhắn
-        src, src_name = get_best_data_source(TWELVEDATA_API_KEY)
-        m15 = src.get_candles(symbol, "15m", 220)
-        h1  = src.get_candles(symbol, "1h", 220)
+        symbol = detect_symbol_from_text(text)  # ví dụ trả "BTC/USD" hoặc "XAU/USD"
+
+        m15, src15 = get_candles(symbol, "M15", 220)
+        h1,  src1  = get_candles(symbol, "H1", 220)
+
         sig = analyze_pro(symbol, m15, h1)
-        sig["notes"].insert(0, f"Nguồn dữ liệu: {src_name}")
+        sig["notes"] = (sig.get("notes") or [])
+        sig["notes"].insert(0, f"Nguồn dữ liệu: {src15}")  # show ở Telegram
+
         reply = format_signal(sig)
         send_telegram_long(chat_id, reply)
 
