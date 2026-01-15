@@ -215,7 +215,7 @@ async def telegram_webhook(request: Request):
     # quick help
     if text.strip().lower() in ["/start", "help", "/help"]:
         send_telegram(chat_id,
-            "🤖 *XAU PRO Bot*\n"
+            "🤖 *PRO Bot*\n"
             "Gõ: `XAU now` hoặc `SELL hay BUY?`\n"
             "Bot sẽ trả: Bias + ⭐ + Entry/TP/SL + lý do.\n"
         )
@@ -229,16 +229,18 @@ async def telegram_webhook(request: Request):
     send_telegram(chat_id, f"⏳ Đang phân tích..")
 
     try:
-        symbol = detect_symbol_from_text(text)
-        #symbol = pick_symbol_from_text(text)
-        m15 = fetch_twelvedata_candles(SYMBOL, "15min", 220)
-        h1 = fetch_twelvedata_candles(SYMBOL, "1h", 220)
-        sig = analyze_pro(SYMBOL, m15, h1)
+        symbol = detect_symbol_from_text(text)   # <-- lấy BTC/XAU từ tin nhắn
+
+        m15 = fetch_twelvedata_candles(symbol, "15min", 220)  # <-- dùng symbol
+        h1  = fetch_twelvedata_candles(symbol, "1h", 220)     # <-- dùng symbol
+
+        sig = analyze_pro(symbol, m15, h1)        # <-- dùng symbol
         reply = format_signal(sig)
         send_telegram_long(chat_id, reply)
 
     except Exception as e:
         logger.exception("Analysis failed")
-        send_telegram_long(chat_id, f"❌ Lỗi khi phân tích: `{str(e)}`\nKiểm tra `TWELVEDATA_API_KEY` và SYMBOL.")
+        send_telegram_long(chat_id, f"❌ Lỗi khi phân tích: {str(e)}")
+
 
     return {"ok": True}
