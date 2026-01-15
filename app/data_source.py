@@ -4,7 +4,6 @@ import time
 import logging
 import requests
 from typing import Dict, Any, List, Tuple, Optional
-
 from app.pro_analysis import Candle
 
 logger = logging.getLogger("uvicorn.error")
@@ -20,8 +19,17 @@ MT5_SYMBOL_XAU = os.getenv("MT5_SYMBOL_XAU", "XAUUSDm")
 MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDm")
 
 # How "fresh" MT5 data must be to be trusted (seconds)
-MT5_MAX_AGE_SEC = int(os.getenv("MT5_MAX_AGE_SEC", "1800"))  # 30 minutes default
+MT5_MAX_AGE_SEC = int(os.getenv("MT5_MAX_AGE_SEC", "1200"))  # 20 minutes default
 
+def _tf_seconds(tf: str) -> int:
+    tf2 = _tf_alias(tf)
+    if tf2 == "15min":
+        return 15 * 60
+    if tf2 == "5min":
+        return 5 * 60
+    if tf2 == "1h":
+        return 60 * 60
+    return 0
 
 def _norm_symbol(s: str) -> str:
     return (s or "").strip()
@@ -117,12 +125,23 @@ def _get_mt5_cached(symbol: str, tf: str, limit: int) -> Optional[List[Candle]]:
             continue
         age = now - int(item.get("ts", 0))
         if age > MT5_MAX_AGE_SEC:
-            # too old => ignore
             continue
 
         candles = item.get("candles") or []
-        if len(candles) >= 20:  # basic sanity
-            return candles[-limit:]
+        if len(candles) < 20:
+            continue
+
+        # ✅ NEW: check cây nến cuối có quá cũ không
+        tf_sec = _tf_seconds(tf2)
+        last_ts = int(getattr(candles[-1], "ts", 0) or 0)
+
+        # cho phép trễ ~ 2 cây nến
+        if tf_sec and last_ts > 0:
+            if now - last_ts > (2 * tf_sec + 60):
+                continue
+
+        return candles[-limit:]
+
     return None
 
 
