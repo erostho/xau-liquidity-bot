@@ -170,7 +170,8 @@ async def cron_run(token: str = ""):
     for item in SYMBOLS:
         symbol = item["name"]
         try:
-            src, src_name = get_data_source(TWELVEDATA_API_KEY)
+            #src, src_name = get_data_source(TWELVEDATA_API_KEY)
+            src_name = get_data_source(symbol, tf)
             # 1) ưu tiên MT5 cache (Exness)
             m15, src15 = get_candles(symbol, "15min", 220)
             h1,  srcH1 = get_candles(symbol, "1h", 220)
