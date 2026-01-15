@@ -183,9 +183,7 @@ def get_candles(symbol: str, tf: str, limit: int = 220) -> Tuple[List[Candle], s
     return td, "TWELVEDATA_FALLBACK"
 
 
-def get_data_source(symbol: str = "", tf: str = "") -> str:
-    """
-    For compatibility with your main.py import.
-    """
-    mt5 = _get_mt5_cached(symbol or "XAU/USD", tf or "15min", 50)
+def get_data_source(symbol="XAU/USD", tf="15min") -> str:
+    mt5 = _get_mt5_cached(symbol, tf, 50)
     return "MT5" if mt5 else "TWELVEDATA_FALLBACK"
+
