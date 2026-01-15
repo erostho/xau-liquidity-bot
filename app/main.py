@@ -172,8 +172,11 @@ async def cron_run(token: str = ""):
         try:
             src, src_name = get_best_data_source(TWELVEDATA_API_KEY)
             # 1) ưu tiên MT5 cache (Exness)
-            m15 = _get_mt5_cached_candles(symbol, "M15", max_age_sec=180)
-            h1  = _get_mt5_cached_candles(symbol, "H1",  max_age_sec=600)
+            m15, src15 = get_candles(symbol, "15min", 220)
+            h1,  srcH1 = get_candles(symbol, "1h", 220)
+            sig = analyze_pro(symbol, m15, h1)
+            sig["data_source"] = f"{src15}/{srcH1}"
+
             source = "EXNESS_MT5_PUSH" if (m15 and h1) else "TWELVEDATA_FALLBACK"
             
             # 2) fallback nếu MT5 chưa có
