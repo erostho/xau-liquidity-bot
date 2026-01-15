@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import math
+from app.risk import calc_smart_sl_tp
 
 # =========================
 # Data model
@@ -313,62 +314,80 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
 
     recommendation = "🔴 SELL" if bias == "SELL" else "🟢 BUY"
 
-    # =========================
-    # Entry retest + SL liquidity + confirm nhanh
+    # Entry RETEST (giữ logic vào lệnh của mày)
     # =========================
     if atr15 is None:
         atr15 = max(1e-6, (last15.high - last15.low))
 
-    # --- Tunables (mục tiêu 5-10 kèo/ngày) ---
-    RETEST_K = 0.35          # 0.25..0.55
-    BUF_K = 0.25             # 0.15..0.35
-    TP2_R = 1.6              # 1.4..2.0
-    MIN_RISK_ATR = 1.2       # SL tối thiểu theo ATR
-
-    def _min_buf(sym: str) -> float:
-        s = (sym or "").upper()
-        if "XAU" in s:
-            return 0.30
-        if "BTC" in s:
-            return 30.0
-        return 0.0
-
-    buf = max(BUF_K * atr15, _min_buf(symbol))
-
-    swing_hi = sh15 if sh15 is not None else last15.high
-    swing_lo = sl15 if sl15 is not None else last15.low
+    RETEST_K = 0.35  # 0.25..0.55 (mục tiêu 5-10 kèo/ngày)
 
     if bias == "SELL":
         entry = last_close + RETEST_K * atr15
-
-        sl_liq = max(swing_hi, last15.high) + buf
-        sl_atr = entry + (MIN_RISK_ATR * atr15)
-        sl = max(sl_liq, sl_atr)
-
-        r = abs(sl - entry)
-        tp1 = entry - 1.0 * r
-        tp2 = entry - TP2_R * r
-
+        liq_level = sh15  # SELL dùng swing high làm liquidity line
         notes.append("Entry RETEST: chờ giá hồi lên vùng entry rồi mới SELL.")
         notes.append("Confirm nhanh: upper-wick từ chối HOẶC phá đáy nhỏ của 3 nến gần nhất.")
         if sh15 is not None:
             notes.append(f"Không SELL nếu M15 đóng > {_fmt(sh15)}")
-
-    else:  # BUY
+    else:
         entry = last_close - RETEST_K * atr15
-
-        sl_liq = min(swing_lo, last15.low) - buf
-        sl_atr = entry - (MIN_RISK_ATR * atr15)
-        sl = min(sl_liq, sl_atr)
-
-        r = abs(entry - sl)
-        tp1 = entry + 1.0 * r
-        tp2 = entry + TP2_R * r
-
+        liq_level = sl15  # BUY dùng swing low làm liquidity line
         notes.append("Entry RETEST: chờ giá hồi xuống vùng entry rồi mới BUY.")
         notes.append("Confirm nhanh: lower-wick từ chối HOẶC phá đỉnh nhỏ của 3 nến gần nhất.")
         if sl15 is not None:
             notes.append(f"Không BUY nếu M15 đóng < {_fmt(sl15)}")
+
+    # =========================
+    # SMART SL/TP (SL = MIN(Liq, ATR, Risk))
+    # =========================
+    import os
+    equity_usd = float(os.getenv("EQUITY_USD", "1000"))
+    risk_pct   = float(os.getenv("RISK_PCT", "0.0075"))  # 0.005..0.01
+
+    plan = calc_smart_sl_tp(
+        symbol=symbol,
+        side=bias,  # "SELL"/"BUY"
+        entry=float(entry),
+        atr=float(atr15),
+        liquidity_level=float(liq_level) if liq_level is not None else None,
+        equity_usd=equity_usd,
+        risk_pct=risk_pct,
+        # mày có thể tune thêm nếu muốn:
+        # atr_k=1.0, max_atr_k=1.25, buf_atr_k=0.25,
+        # contract_size=100.0
+    )
+
+    # Nếu risk engine báo "không trade được" => CHỜ để tránh SL ngu / cháy
+    if not plan.get("ok"):
+        notes.append(f"❌ Bỏ kèo: {plan.get('reason', 'risk check failed')}")
+        return {
+            "symbol": symbol,
+            "tf": "M15",
+            "session": session_name,
+            "context_lines": context_lines,
+            "position_lines": position_lines,
+            "liquidity_lines": liquidity_lines,
+            "quality_lines": quality_lines + ["(Bỏ kèo do SL/risk không hợp lệ)"],
+            "recommendation": "CHỜ",
+            "stars": 1,     # để cron MIN_STARS>=3 tự skip
+            "entry": None,
+            "sl": None,
+            "tp1": None,
+            "tp2": None,
+            "lot": None,
+            "notes": notes,
+            "levels": levels,
+        }
+
+    sl  = float(plan["sl"])
+    tp1 = float(plan["tp1"])
+    tp2 = float(plan["tp2"])
+    lot = float(plan.get("lot", 0.01))
+
+    # thêm info cho rõ lý do SL
+    quality_lines.append("RR ~ 1:2")
+    quality_lines.append(f"SL = MIN(Liq, ATR, Risk) | R~{plan['r']:.2f}")
+    quality_lines.append(f"Risk: {plan['risk_usd']:.2f}$ ({plan['risk_pct']*100:.2f}%) | Lot gợi ý: {lot:.2f}")
+
 
     # Rating stars from score
     stars = 1
@@ -380,10 +399,6 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         stars = 3
     elif score >= 2:
         stars = 2
-
-    # Quality notes (giữ style template)
-    quality_lines.append("RR ~ 1:2")
-    quality_lines.append(f"SL theo liquidity + buffer ~{_fmt(buf)} | RETEST {RETEST_K}*ATR")
 
     return {
         "symbol": symbol,
@@ -399,6 +414,7 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         "sl": float(sl),
         "tp1": float(tp1),
         "tp2": float(tp2),
+        "lot": float(lot),
         "notes": notes,
         "levels": levels,
     }
