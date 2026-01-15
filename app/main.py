@@ -205,7 +205,7 @@ async def cron_run(token: str = ""):
 
     return {
         "ok": True,
-        "sent": results
+        #"sent": results
     }
 
 def fetch_twelvedata_candles(symbol: str, interval: str, outputsize: int = 200):
