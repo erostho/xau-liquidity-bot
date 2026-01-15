@@ -4,6 +4,8 @@ import requests
 from fastapi import FastAPI, Request, HTTPException
 import logging
 from app.pro_analysis import Candle, analyze_pro, format_signal
+from app.data_source import get_best_data_source
+
 logger = logging.getLogger("uvicorn.error")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
@@ -126,9 +128,11 @@ async def cron_run(token: str = ""):
     for item in SYMBOLS:
         symbol = item["name"]
         try:
-            m15 = fetch_twelvedata_candles(symbol, "15min", 220)
-            h1  = fetch_twelvedata_candles(symbol, "1h", 220)
+            src, src_name = get_best_data_source(TWELVEDATA_API_KEY)
+            m15 = src.get_candles(symbol, "15m", 220)
+            h1  = src.get_candles(symbol, "1h", 220)
             sig = analyze_pro(symbol, m15, h1)
+            sig["notes"].insert(0, f"Nguồn dữ liệu: {src_name}")
             stars = int(sig.get("stars", 0))
             if stars < MIN_STARS:
                 logger.info(f"[CRON] {symbol} skip: stars={stars} < {MIN_STARS}")
@@ -230,11 +234,11 @@ async def telegram_webhook(request: Request):
 
     try:
         symbol = detect_symbol_from_text(text)   # <-- lấy BTC/XAU từ tin nhắn
-
-        m15 = fetch_twelvedata_candles(symbol, "15min", 220)  # <-- dùng symbol
-        h1  = fetch_twelvedata_candles(symbol, "1h", 220)     # <-- dùng symbol
-
-        sig = analyze_pro(symbol, m15, h1)        # <-- dùng symbol
+        src, src_name = get_best_data_source(TWELVEDATA_API_KEY)
+        m15 = src.get_candles(symbol, "15m", 220)
+        h1  = src.get_candles(symbol, "1h", 220)
+        sig = analyze_pro(symbol, m15, h1)
+        sig["notes"].insert(0, f"Nguồn dữ liệu: {src_name}")
         reply = format_signal(sig)
         send_telegram_long(chat_id, reply)
 
