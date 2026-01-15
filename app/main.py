@@ -170,23 +170,25 @@ async def cron_run(token: str = ""):
     for item in SYMBOLS:
         symbol = item["name"]
         try:
-            #src, src_name = get_data_source(TWELVEDATA_API_KEY)
-            src_name = get_data_source(symbol, tf)
-            # 1) ưu tiên MT5 cache (Exness)
+            # 1) Lấy MT5 cache trước
             m15, src15 = get_candles(symbol, "15min", 220)
             h1,  srcH1 = get_candles(symbol, "1h", 220)
-            sig = analyze_pro(symbol, m15, h1)
-            sig["data_source"] = f"{src15}/{srcH1}"
-            sig["notes"] = [f"Nguồn dữ liệu: {source}"] + (sig.get("notes"))
-            source = "EXNESS_MT5_PUSH" if (m15 and h1) else "TWELVEDATA_FALLBACK"
             
-            # 2) fallback nếu MT5 chưa có
+            # 2) Nếu MT5 chưa có thì fallback TwelveData
             if not m15 or not h1:
                 m15 = fetch_twelvedata_candles(symbol, "15min", 220)
                 h1  = fetch_twelvedata_candles(symbol, "1h", 220)
+                source = "TWELVEDATA_FALLBACK"
+            else:
+                source = "EXNESS_MT5_PUSH"
+            
+            # 3) Phân tích
             sig = analyze_pro(symbol, m15, h1)
-            sig["notes"] = [f"Nguồn dữ liệu: {source}"] + (sig.get("notes") or [])
-
+            
+            # 4) Gắn nguồn cho message (an toàn)
+            sig["source"] = f"{src15}/{srcH1}"  # nếu MT5 có thì sẽ là MT5/MT5, còn không thì có thể None/None
+            notes = sig.get("notes") or []
+            sig["notes"] = [f"Nguồn dữ liệu: {source}"] + notes
             stars = int(sig.get("stars", 0))
             if stars < MIN_STARS:
                 logger.info(f"[CRON] {symbol} skip: stars={stars} < {MIN_STARS}")
