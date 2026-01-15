@@ -114,16 +114,25 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
             "levels": [],
         }
 
-    last15 = m15[-1]
+    # =========================
+    # USE CLOSED CANDLES ONLY
+    # =========================
+    # Bỏ cây đang chạy để tránh tín hiệu ảo
+    m15_closed = m15[:-1] if len(m15) > 1 else m15
+    h1_closed  = h1[:-1] if len(h1) > 1 else h1
+    
+    last15 = m15_closed[-1]          # cây M15 đã đóng
     last_close = last15.close
+    
+    m15_closes = [c.close for c in m15_closed]
+    h1_closes  = [c.close for c in h1_closed]
 
-    m15_closes = [c.close for c in m15]
-    h1_closes = [c.close for c in h1]
 
     ema20_h1 = _ema(h1_closes, 20)
     ema50_h1 = _ema(h1_closes, 50)
     rsi15 = _rsi(m15_closes, 14)
-    atr15 = _atr(m15, 14)
+    atr15 = _atr(m15_closed, 14)
+    
 
     # H1 trend
     h1_trend = "NEUTRAL"
@@ -145,10 +154,11 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
             weakening = True
 
     # Key levels
-    sh15 = _swing_high(m15, 80)
-    sl15 = _swing_low(m15, 80)
-    sh1 = _swing_high(h1, 80)
-    sl1 = _swing_low(h1, 80)
+    sh15 = _swing_high(m15_closed, 80)
+    sl15 = _swing_low(m15_closed, 80)
+    sh1  = _swing_high(h1_closed, 80)
+    sl1  = _swing_low(h1_closed, 80)
+
 
     levels = []
     for v in [sh15, sl15, sh1, sl1]:
@@ -159,18 +169,18 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
 
     # Market state: spike -> pullback heuristic
     # "Spike" if last 20 candles range bigger than last 80 avg range
-    ranges20 = [c.high - c.low for c in m15[-20:]]
-    ranges80 = [c.high - c.low for c in m15[-80:]]
+    ranges20 = [c.high - c.low for c in m15_closed[-20:]]
+    ranges80 = [c.high - c.low for c in m15_closed[-80:]]
+
     spike = sum(ranges20) / len(ranges20) > 1.35 * (sum(ranges80) / len(ranges80))
 
     # Pullback if last 6 closes are not making new highs and wicks appear
     lower_highish = False
-    if len(m15) >= 10:
-        recent_high = max(c.high for c in m15[-10:])
-        prev_high = max(c.high for c in m15[-30:-10])
+    if len(m15_closed) >= 30:
+        recent_high = max(c.high for c in m15_closed[-10:])
+        prev_high   = max(c.high for c in m15_closed[-30:-10])
         if recent_high <= prev_high:
             lower_highish = True
-
     # Candle rejection
     rej = _is_rejection(last15)
 
@@ -303,29 +313,64 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
 
     recommendation = "🔴 SELL" if bias == "SELL" else "🟢 BUY"
 
-    # Build plan: Entry at current close (market) OR near retest zone.
-    entry = last_close
-
-    # ATR-based SL/TP (professional & adaptive)
-    # Default: SL = 1.2 * ATR, TP1 = 1.0R, TP2 = 2.0R
+    # =========================
+    # Entry retest + SL liquidity + confirm nhanh
+    # =========================
     if atr15 is None:
-        atr15 = max(1.0, (last15.high - last15.low))
+        atr15 = max(1e-6, (last15.high - last15.low))
 
-    sl_dist = 1.2 * atr15
-    r = sl_dist
+    # --- Tunables (mục tiêu 5-10 kèo/ngày) ---
+    RETEST_K = 0.35          # 0.25..0.55
+    BUF_K = 0.25             # 0.15..0.35
+    TP2_R = 1.6              # 1.4..2.0
+    MIN_RISK_ATR = 1.2       # SL tối thiểu theo ATR
+
+    def _min_buf(sym: str) -> float:
+        s = (sym or "").upper()
+        if "XAU" in s:
+            return 0.30
+        if "BTC" in s:
+            return 30.0
+        return 0.0
+
+    buf = max(BUF_K * atr15, _min_buf(symbol))
+
+    swing_hi = sh15 if sh15 is not None else last15.high
+    swing_lo = sl15 if sl15 is not None else last15.low
+
     if bias == "SELL":
-        sl = entry + sl_dist
+        entry = last_close + RETEST_K * atr15
+
+        sl_liq = max(swing_hi, last15.high) + buf
+        sl_atr = entry + (MIN_RISK_ATR * atr15)
+        sl = max(sl_liq, sl_atr)
+
+        r = abs(sl - entry)
         tp1 = entry - 1.0 * r
-        tp2 = entry - 2.0 * r
-        notes.append("Không SELL nếu M15 đóng > vùng kháng cự gần nhất.")
-    else:
-        sl = entry - sl_dist
+        tp2 = entry - TP2_R * r
+
+        notes.append("Entry RETEST: chờ giá hồi lên vùng entry rồi mới SELL.")
+        notes.append("Confirm nhanh: upper-wick từ chối HOẶC phá đáy nhỏ của 3 nến gần nhất.")
+        if sh15 is not None:
+            notes.append(f"Không SELL nếu M15 đóng > {_fmt(sh15)}")
+
+    else:  # BUY
+        entry = last_close - RETEST_K * atr15
+
+        sl_liq = min(swing_lo, last15.low) - buf
+        sl_atr = entry - (MIN_RISK_ATR * atr15)
+        sl = min(sl_liq, sl_atr)
+
+        r = abs(entry - sl)
         tp1 = entry + 1.0 * r
-        tp2 = entry + 2.0 * r
-        notes.append("Không BUY nếu M15 đóng < vùng hỗ trợ gần nhất.")
+        tp2 = entry + TP2_R * r
+
+        notes.append("Entry RETEST: chờ giá hồi xuống vùng entry rồi mới BUY.")
+        notes.append("Confirm nhanh: lower-wick từ chối HOẶC phá đỉnh nhỏ của 3 nến gần nhất.")
+        if sl15 is not None:
+            notes.append(f"Không BUY nếu M15 đóng < {_fmt(sl15)}")
 
     # Rating stars from score
-    # score roughly 0..6+ => map to 1..5
     stars = 1
     if score >= 6:
         stars = 5
@@ -336,16 +381,9 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
     elif score >= 2:
         stars = 2
 
-    # Add RR + ATR note (like your template)
+    # Quality notes (giữ style template)
     quality_lines.append("RR ~ 1:2")
-    quality_lines.append(f"ATR cho phép SL ~{_fmt(sl_dist)}$")
-
-    # Extra constraint example (your template style)
-    if bias == "SELL" and sh15 is not None:
-        # "Không SELL nếu M15 đóng > 4612" -> proxy: above swing high zone
-        notes.append(f"Không SELL nếu M15 đóng > {_fmt(sh15)}")
-    if bias == "BUY" and sl15 is not None:
-        notes.append(f"Không BUY nếu M15 đóng < {_fmt(sl15)}")
+    quality_lines.append(f"SL theo liquidity + buffer ~{_fmt(buf)} | RETEST {RETEST_K}*ATR")
 
     return {
         "symbol": symbol,
@@ -364,6 +402,7 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         "notes": notes,
         "levels": levels,
     }
+
 def format_signal(sig: Dict[str, Any]) -> str:
     symbol = sig.get("symbol", "XAUUSD")
     tf = sig.get("tf", "M15")
