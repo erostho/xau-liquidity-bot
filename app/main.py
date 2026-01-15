@@ -255,6 +255,27 @@ def should_analyze(text: str) -> bool:
     keywords = ["xau", "gold", "btc", "bitcoin", "buy", "sell", "now", "scalp", "trend", "tp", "sl"]
     return any(k in t for k in keywords)
 
+from fastapi import Body
+
+MT5_PUSH_SECRET = os.getenv("MT5_PUSH_SECRET")
+
+@app.post("/data/mt5")
+async def receive_mt5_data(payload: dict = Body(...), token: str = ""):
+    if token != MT5_PUSH_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    symbol = payload.get("symbol")
+    tf = payload.get("tf")
+    candles = payload.get("candles", [])
+
+    if not symbol or not tf or not candles:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    # TODO: lưu candles vào cache / memory / file
+    # Ví dụ đơn giản: log cho thấy đã nhận
+    logger.info(f"[MT5] Received {len(candles)} candles {symbol} {tf}")
+
+    return {"ok": True, "received": len(candles)}
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
