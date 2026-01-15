@@ -51,11 +51,14 @@ def health():
 
 def send_telegram(chat_id: int, text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
     r = requests.post(url, json=payload, timeout=10)
     if r.status_code != 200:
         logger.error(f"[TG] failed {r.status_code}: {r.text}")
-    return r
+
 
 def send_telegram_long(chat_id: int, text: str, max_len: int = 3800):
     """
