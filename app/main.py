@@ -55,23 +55,20 @@ app = FastAPI()
 # =========================
 MT5_CACHE: Dict[str, Dict[str, Any]] = {}  # key: "SYMBOL:TF" -> {"ts":..., "candles":[...]}
 
-@app.post("/mt5/push")
-async def mt5_push(payload: Dict[str, Any]):
+@app.post("/data/mt5")
+async def mt5_push(request: Request, token: str = ""):
     secret = os.getenv("MT5_PUSH_SECRET", "")
-    if not secret or payload.get("secret") != secret:
+    if not secret or token != secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    symbol = payload.get("symbol")
-    tf = payload.get("tf")
+    payload = await request.json()
+    symbol = payload.get("symbol", "")
+    tf = payload.get("tf", "")
     candles = payload.get("candles", [])
 
-    if not symbol or not tf or not isinstance(candles, list) or len(candles) == 0:
-        raise HTTPException(status_code=400, detail="Bad payload")
+    n = ingest_mt5_candles(symbol, tf, candles)
+    return {"ok": True, "stored": n}
 
-    key = f"{symbol}:{tf}"
-    MT5_CACHE[key] = {"ts": time.time(), "candles": candles}
-
-    return {"ok": True, "key": key, "count": len(candles)}
 
 @app.get("/health")
 def health():
@@ -307,21 +304,21 @@ async def telegram_webhook(request: Request):
     send_telegram(chat_id, f"⏳ Đang phân tích..")
 
     try:
-        symbol = detect_symbol_from_text(text)  # ví dụ trả "BTC/USD" hoặc "XAU/USD"
+        symbol = detect_symbol_from_text(text)
 
-        m15, src15 = get_candles(symbol, "M15", 220)
-        h1,  src1  = get_candles(symbol, "H1", 220)
+        m15, src15 = get_candles(symbol, "15min", 220)
+        h1,  srcH1 = get_candles(symbol, "1h", 220)
 
         sig = analyze_pro(symbol, m15, h1)
-        sig["notes"] = (sig.get("notes") or [])
-        sig["notes"].insert(0, f"Nguồn dữ liệu: {src15}")  # show ở Telegram
+        sig["data_source"] = f"{src15}/{srcH1}"  # để format_signal show ra
 
         reply = format_signal(sig)
         send_telegram_long(chat_id, reply)
 
     except Exception as e:
         logger.exception("Analysis failed")
-        send_telegram_long(chat_id, f"❌ Lỗi khi phân tích: {str(e)}")
+        send_telegram_long(chat_id, f"❌ Lỗi khi phân tích: `{str(e)}`")
+
 
 
     return {"ok": True}
