@@ -4,7 +4,8 @@ import requests
 from fastapi import FastAPI, Request, HTTPException
 import logging
 from app.pro_analysis import Candle, analyze_pro, format_signal
-from app.data_source import get_best_data_source
+#from app.data_source import get_best_data_source
+from app.data_source import get_data_source
 import time
 from typing import Dict, Any, Optional, List
 from app.data_source import get_candles
