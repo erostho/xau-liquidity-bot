@@ -54,6 +54,112 @@ app = FastAPI()
 # MT5 PUSH CACHE (Exness)
 # =========================
 MT5_CACHE: Dict[str, Dict[str, Any]] = {}  # key: "SYMBOL:TF" -> {"ts":..., "candles":[...]}
+import time
+
+# ===== Pending / Anti-flip state (in-memory) =====
+# key: symbol -> pending dict
+_PENDING: dict = {}
+
+# cấu hình (tune nhanh)
+PENDING_HOLD_CANDLES = int(os.getenv("PENDING_HOLD_CANDLES", "2"))   # giữ 1-2 nến M15
+FLIP_OVERRIDE_STARS  = int(os.getenv("FLIP_OVERRIDE_STARS", "5"))    # chỉ cho đảo kèo nếu >= 5 sao
+PENDING_EXPIRE_MIN   = int(os.getenv("PENDING_EXPIRE_MIN", "45"))    # quá 45' thì hủy pending
+
+def _bias_from_rec(rec: str) -> str:
+    r = (rec or "").upper()
+    if "SELL" in r: return "SELL"
+    if "BUY" in r: return "BUY"
+    return "WAIT"
+
+def _m15_closed_ts(candles) -> int:
+    # candles: list[Candle] từ fetch
+    if not candles:
+        return 0
+    return candles[-2].ts if len(candles) >= 2 else candles[-1].ts
+
+def apply_pending_antiflip(symbol: str, candle_ts: int, sig: dict) -> tuple[dict, str]:
+    """
+    Returns: (sig_used, action)
+      action:
+        - "NEW_PENDING"  : tạo pending mới
+        - "KEEP_PENDING" : giữ pending, ignore flip
+        - "REPLACE"      : replace pending (flip override)
+        - "EXPIRED"      : pending hết hạn -> xóa
+        - "NONE"         : không có pending, dùng sig bình thường
+    """
+    now = int(time.time())
+    bias = _bias_from_rec(sig.get("recommendation"))
+    stars = int(sig.get("stars", 1))
+
+    # nếu signal không phải BUY/SELL -> không tạo pending mới
+    if bias not in ("BUY", "SELL"):
+        # nếu có pending mà quá hạn -> xóa
+        p = _PENDING.get(symbol)
+        if p and (now - p.get("created_at", now)) > PENDING_EXPIRE_MIN * 60:
+            _PENDING.pop(symbol, None)
+            return sig, "EXPIRED"
+        return sig, "NONE"
+
+    p = _PENDING.get(symbol)
+
+    # ===== Không có pending -> tạo pending mới =====
+    if not p:
+        _PENDING[symbol] = {
+            "bias": bias,
+            "created_at": now,
+            "start_ts": candle_ts,
+            "last_ts": candle_ts,
+            "sig": sig,  # giữ toàn bộ entry/sl/tp/stars...
+        }
+        # thêm note để biết đang pending
+        sig = dict(sig)
+        sig.setdefault("notes", [])
+        sig["notes"].insert(0, f"🧷 PENDING: giữ kèo {bias} trong {PENDING_HOLD_CANDLES} nến M15 (anti-flip).")
+        return sig, "NEW_PENDING"
+
+    # ===== Có pending -> kiểm tra hết hạn =====
+    if (now - p.get("created_at", now)) > PENDING_EXPIRE_MIN * 60:
+        _PENDING.pop(symbol, None)
+        return sig, "EXPIRED"
+
+    pending_bias = p["bias"]
+    start_ts = p["start_ts"]
+
+    # đang trong window giữ kèo 1-2 nến?
+    in_hold_window = (candle_ts - start_ts) < PENDING_HOLD_CANDLES
+
+    # ===== Nếu tín hiệu mới đảo kèo trong window -> CHẶN (trừ khi sao rất cao) =====
+    if in_hold_window and bias != pending_bias and stars < FLIP_OVERRIDE_STARS:
+        kept = dict(p["sig"])  # dùng lại pending signal cũ (entry/sl/tp) để khỏi flip
+        kept.setdefault("notes", [])
+        kept["notes"].insert(0, f"🛡️ Anti-flip: bỏ {bias} (stars={stars}) vì đang giữ kèo {pending_bias}.")
+        p["last_ts"] = candle_ts
+        _PENDING[symbol] = p
+        return kept, "KEEP_PENDING"
+
+    # ===== Nếu đảo kèo nhưng đủ mạnh -> replace pending =====
+    if bias != pending_bias and stars >= FLIP_OVERRIDE_STARS:
+        _PENDING[symbol] = {
+            "bias": bias,
+            "created_at": now,
+            "start_ts": candle_ts,
+            "last_ts": candle_ts,
+            "sig": sig,
+        }
+        sig = dict(sig)
+        sig.setdefault("notes", [])
+        sig["notes"].insert(0, f"🔁 Flip OVERRIDE: đổi {pending_bias} → {bias} vì stars={stars} >= {FLIP_OVERRIDE_STARS}.")
+        return sig, "REPLACE"
+
+    # ===== Cùng bias -> refresh pending (update plan mới, kéo dài tuổi thọ) =====
+    p["sig"] = sig
+    p["last_ts"] = candle_ts
+    _PENDING[symbol] = p
+
+    sig = dict(sig)
+    sig.setdefault("notes", [])
+    sig["notes"].insert(0, f"🧷 PENDING: bias {bias} vẫn giữ (refresh).")
+    return sig, "KEEP_PENDING"
 
 @app.post("/data/mt5")
 async def mt5_push(request: Request, token: str = ""):
@@ -184,12 +290,14 @@ async def cron_run(token: str = ""):
             
             # 3) Phân tích
             sig = analyze_pro(symbol, m15, h1)
+            ts = _m15_closed_ts(m15)
+            sig, action = apply_pending_antiflip(symbol, ts, sig)
+            stars = int(sig.get("stars", 0))
             
             # 4) Gắn nguồn cho message (an toàn)
             sig["source"] = f"{src15}/{srcH1}"  # nếu MT5 có thì sẽ là MT5/MT5, còn không thì có thể None/None
             notes = sig.get("notes") or []
             sig["notes"] = [f"Nguồn dữ liệu: {source}"] + notes
-            stars = int(sig.get("stars", 0))
             if stars < MIN_STARS:
                 logger.info(f"[CRON] {symbol} skip: stars={stars} < {MIN_STARS}")
                 continue
@@ -316,6 +424,8 @@ async def telegram_webhook(request: Request):
         h1,  srcH1 = get_candles(symbol, "1h", 220)
 
         sig = analyze_pro(symbol, m15, h1)
+        ts = _m15_closed_ts(m15)
+        sig, action = apply_pending_antiflip(symbol, ts, sig)
         sig["data_source"] = f"{src15}/{srcH1}"  # để format_signal show ra
 
         reply = format_signal(sig)
