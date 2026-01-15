@@ -5,6 +5,8 @@ from fastapi import FastAPI, Request, HTTPException
 import logging
 from app.pro_analysis import Candle, analyze_pro, format_signal
 from app.data_source import get_best_data_source
+import time
+from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger("uvicorn.error")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -46,6 +48,28 @@ if not TWELVEDATA_API_KEY:
     logger.warning("Missing TWELVEDATA_API_KEY")
 
 app = FastAPI()
+# =========================
+# MT5 PUSH CACHE (Exness)
+# =========================
+MT5_CACHE: Dict[str, Dict[str, Any]] = {}  # key: "SYMBOL:TF" -> {"ts":..., "candles":[...]}
+
+@app.post("/mt5/push")
+async def mt5_push(payload: Dict[str, Any]):
+    secret = os.getenv("MT5_PUSH_SECRET", "")
+    if not secret or payload.get("secret") != secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    symbol = payload.get("symbol")
+    tf = payload.get("tf")
+    candles = payload.get("candles", [])
+
+    if not symbol or not tf or not isinstance(candles, list) or len(candles) == 0:
+        raise HTTPException(status_code=400, detail="Bad payload")
+
+    key = f"{symbol}:{tf}"
+    MT5_CACHE[key] = {"ts": time.time(), "candles": candles}
+
+    return {"ok": True, "key": key, "count": len(candles)}
 
 @app.get("/health")
 def health():
@@ -110,6 +134,25 @@ def send_telegram_long(chat_id: int, text: str, max_len: int = 3800):
     for i, part in enumerate(chunks, start=1):
         prefix = f"({i}/{total})\n" if total > 1 else ""
         send_telegram(chat_id, prefix + part)
+def _get_mt5_cached_candles(symbol: str, tf: str, max_age_sec: int = 120) -> Optional[List[Candle]]:
+    key = f"{symbol}:{tf}"
+    item = MT5_CACHE.get(key)
+    if not item:
+        return None
+    if time.time() - float(item.get("ts", 0)) > max_age_sec:
+        return None
+
+    out: List[Candle] = []
+    for i, c in enumerate(item.get("candles", [])):
+        out.append(Candle(
+            ts=int(c.get("ts", i)),
+            open=float(c["open"]),
+            high=float(c["high"]),
+            low=float(c["low"]),
+            close=float(c["close"]),
+            volume=float(c.get("volume", 0.0)),
+        ))
+    return out
 
 @app.get("/cron/run")
 async def cron_run(token: str = ""):
@@ -129,10 +172,18 @@ async def cron_run(token: str = ""):
         symbol = item["name"]
         try:
             src, src_name = get_best_data_source(TWELVEDATA_API_KEY)
-            m15 = src.get_candles(symbol, "15m", 220)
-            h1  = src.get_candles(symbol, "1h", 220)
+            # 1) ưu tiên MT5 cache (Exness)
+            m15 = _get_mt5_cached_candles(symbol, "M15", max_age_sec=180)
+            h1  = _get_mt5_cached_candles(symbol, "H1",  max_age_sec=600)
+            source = "EXNESS_MT5_PUSH" if (m15 and h1) else "TWELVEDATA_FALLBACK"
+            
+            # 2) fallback nếu MT5 chưa có
+            if not m15 or not h1:
+                m15 = fetch_twelvedata_candles(symbol, "15min", 220)
+                h1  = fetch_twelvedata_candles(symbol, "1h", 220)
             sig = analyze_pro(symbol, m15, h1)
-            sig["notes"].insert(0, f"Nguồn dữ liệu: {src_name}")
+            sig["notes"] = [f"Nguồn dữ liệu: {source}"] + (sig.get("notes") or [])
+
             stars = int(sig.get("stars", 0))
             if stars < MIN_STARS:
                 logger.info(f"[CRON] {symbol} skip: stars={stars} < {MIN_STARS}")
