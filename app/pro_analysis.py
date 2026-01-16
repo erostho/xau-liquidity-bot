@@ -351,10 +351,34 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         liquidity_level=float(liq_level) if liq_level is not None else None,
         equity_usd=equity_usd,
         risk_pct=risk_pct,
-        # mày có thể tune thêm nếu muốn:
         # atr_k=1.0, max_atr_k=1.25, buf_atr_k=0.25,
         # contract_size=100.0
     )
+    # Nếu risk engine báo không ok
+    if not plan.get("ok"):
+        reason = plan.get("reason", "risk_check_failed")
+    
+        # 1️⃣ GHI CHÚ – KHÔNG BỎ KÈO
+        notes.append(f"⚠️ Risk warning: {reason} (đã CLAMP SL)")
+    
+        # 2️⃣ CLAMP SL về mức an toàn theo ATR
+        MAX_SL_ATR = 1.8   # bạn có thể chỉnh: 1.5 – 2.0
+        if bias == "SELL":
+            max_sl = entry + MAX_SL_ATR * atr15
+            if sl > max_sl:
+                sl = max_sl
+        else:  # BUY
+            max_sl = entry - MAX_SL_ATR * atr15
+            if sl < max_sl:
+                sl = max_sl
+    
+        # 3️⃣ TÍNH LẠI TP THEO SL MỚI
+        r = abs(entry - sl)
+        tp1 = entry + (1.0 * r if bias == "BUY" else -1.0 * r)
+        tp2 = entry + (1.6 * r if bias == "BUY" else -1.6 * r)
+    
+        # 4️⃣ GIẢM SAO – NHƯNG VẪN BÁO KÈO
+        stars = max(1, stars - 1)
 
     sl  = float(plan["sl"])
     tp1 = float(plan["tp1"])
