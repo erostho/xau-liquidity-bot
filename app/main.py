@@ -7,6 +7,7 @@ from app.pro_analysis import Candle, analyze_pro, format_signal
 #from app.data_source import get_best_data_source
 from app.data_source import get_data_source
 import time
+import asyncio
 from app.data_source import get_candles, ingest_mt5_candles
 from typing import Dict, Any, Optional, List
 from app.data_source import get_candles
@@ -54,7 +55,9 @@ app = FastAPI()
 # MT5 PUSH CACHE (Exness)
 # =========================
 MT5_CACHE: Dict[str, Dict[str, Any]] = {}  # key: "SYMBOL:TF" -> {"ts":..., "candles":[...]}
-import time
+CRON_LOCK = asyncio.Lock()
+LAST_CRON_TS = 0
+MIN_CRON_GAP_SEC = int(os.getenv("MIN_CRON_GAP_SEC", "120"))  # 2 phút
 
 # ===== Pending / Anti-flip state (in-memory) =====
 # key: symbol -> pending dict
@@ -260,16 +263,32 @@ def _get_mt5_cached_candles(symbol: str, tf: str, max_age_sec: int = 120) -> Opt
     return out
 
 @app.get("/cron/run")
-async def cron_run(token: str = ""):
+async def cron_run(token: str = "", request: Request = None):
+    global LAST_CRON_TS
+
     secret = os.getenv("CRON_SECRET", "")
     if not secret or token != secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    admin_chat_id = int(os.getenv("ADMIN_CHAT_ID", "0"))
-    if admin_chat_id == 0:
-        raise HTTPException(status_code=400, detail="Missing ADMIN_CHAT_ID")
+    now = int(time.time())
 
-    logger.info("[CRON] multi-symbol scan started")
+    # 1️⃣ Cooldown – cron bắn dồn thì skip, trả 200 OK
+    if now - LAST_CRON_TS < MIN_CRON_GAP_SEC:
+        return {"ok": True, "skipped": True, "reason": "cooldown"}
+
+    # 2️⃣ Anti-overlap – nếu job cũ chưa xong thì skip
+    if CRON_LOCK.locked():
+        return {"ok": True, "skipped": True, "reason": "overlap"}
+
+    async with CRON_LOCK:
+        LAST_CRON_TS = int(time.time())
+
+        # (optional) log để debug
+        try:
+            client = request.client.host if request and request.client else "unknown"
+        except Exception:
+            client = "unknown"
+        logger.info(f"[CRON] start from={client}")
 
     results = []
 
