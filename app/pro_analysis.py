@@ -355,30 +355,24 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         # contract_size=100.0
     )
     # Nếu risk engine báo không ok
+    # === RISK ENGINE: KHÔNG BỎ KÈO – CHỈ CLAMP SL ===
     if not plan.get("ok"):
-        reason = plan.get("reason", "risk_check_failed")
+        notes.append(f"⚠️ Risk cảnh báo: {plan.get('reason', 'risk check failed')}")
     
-        # 1️⃣ GHI CHÚ – KHÔNG BỎ KÈO
-        notes.append(f"⚠️ Risk warning: {reason} (đã CLAMP SL)")
+        # fallback SL nếu risk engine không approve
+        max_sl_dist = plan.get("max_sl_dist") or (atr15 * 1.5)
     
-        # 2️⃣ CLAMP SL về mức an toàn theo ATR
-        MAX_SL_ATR = 1.8   # bạn có thể chỉnh: 1.5 – 2.0
         if bias == "SELL":
-            max_sl = entry + MAX_SL_ATR * atr15
-            if sl > max_sl:
-                sl = max_sl
-        else:  # BUY
-            max_sl = entry - MAX_SL_ATR * atr15
-            if sl < max_sl:
-                sl = max_sl
+            sl = entry + max_sl_dist
+        else:
+            sl = entry - max_sl_dist
     
-        # 3️⃣ TÍNH LẠI TP THEO SL MỚI
         r = abs(entry - sl)
-        tp1 = entry + (1.0 * r if bias == "BUY" else -1.0 * r)
-        tp2 = entry + (1.6 * r if bias == "BUY" else -1.6 * r)
+        tp1 = entry + r if bias == "BUY" else entry - r
+        tp2 = entry + 1.6 * r if bias == "BUY" else entry - 1.6 * r
     
-        # 4️⃣ GIẢM SAO – NHƯNG VẪN BÁO KÈO
-        stars = max(1, stars - 1)
+        quality_lines.append("⚠️ SL bị CLAMP do vượt risk cho phép")
+
 
     sl  = float(plan["sl"])
     tp1 = float(plan["tp1"])
