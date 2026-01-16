@@ -374,10 +374,21 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         quality_lines.append("⚠️ SL bị CLAMP do vượt risk cho phép")
 
 
-    sl  = float(plan["sl"])
-    tp1 = float(plan["tp1"])
-    tp2 = float(plan["tp2"])
+    # ---- SAFE APPLY RISK PLAN (no-crash, no-skip) ----
+    if not plan or not isinstance(plan, dict):
+        plan = {"ok": False, "reason": "risk plan invalid"}
+    
+    if not plan.get("ok", True):
+        quality_lines.append(f"⚠️ Risk warn: {plan.get('reason', 'risk check failed')} (vẫn báo, dùng SL/TP fallback nếu thiếu)")
+    
+    # plan có thể thiếu sl/tp => fallback về sl/tp đang tính sẵn bên trên
+    # (giả định ở phía trên bạn đã có sẵn entry, sl, tp1, tp2 theo logic cũ)
+    sl  = float(plan.get("sl",  sl))
+    tp1 = float(plan.get("tp1", tp1))
+    tp2 = float(plan.get("tp2", tp2))
     lot = float(plan.get("lot", 0.01))
+    # -----------------------------------------------
+
 
     # thêm info cho rõ lý do SL
     quality_lines.append("RR ~ 1:2")
