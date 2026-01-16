@@ -265,7 +265,7 @@ def _get_mt5_cached_candles(symbol: str, tf: str, max_age_sec: int = 120) -> Opt
 @app.get("/cron/run")
 async def cron_run(token: str = "", request: Request = None):
     global LAST_CRON_TS
-
+    admin_chat_id = int(os.getenv("ADMIN_CHAT_ID", "0"))
     secret = os.getenv("CRON_SECRET", "")
     if not secret or token != secret:
         raise HTTPException(status_code=403, detail="Forbidden")
