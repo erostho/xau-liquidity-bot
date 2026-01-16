@@ -356,28 +356,6 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         # contract_size=100.0
     )
 
-    # Nếu risk engine báo "không trade được" => CHỜ để tránh SL ngu / cháy
-    if not plan.get("ok"):
-        notes.append(f"❌ Bỏ kèo: {plan.get('reason', 'risk check failed')}")
-        return {
-            "symbol": symbol,
-            "tf": "M15",
-            "session": session_name,
-            "context_lines": context_lines,
-            "position_lines": position_lines,
-            "liquidity_lines": liquidity_lines,
-            "quality_lines": quality_lines + ["(Bỏ kèo do SL/risk không hợp lệ)"],
-            "recommendation": "CHỜ",
-            "stars": 1,     # để cron MIN_STARS>=3 tự skip
-            "entry": None,
-            "sl": None,
-            "tp1": None,
-            "tp2": None,
-            "lot": None,
-            "notes": notes,
-            "levels": levels,
-        }
-
     sl  = float(plan["sl"])
     tp1 = float(plan["tp1"])
     tp2 = float(plan["tp2"])
