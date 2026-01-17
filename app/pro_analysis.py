@@ -355,45 +355,53 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         # contract_size=100.0
     )
     # Nếu risk engine báo không ok
-    # === RISK ENGINE: KHÔNG BỎ KÈO – CHỈ CLAMP SL ===
-    if not plan.get("ok"):
-        notes.append(f"⚠️ Risk cảnh báo: {plan.get('reason', 'risk check failed')}")
-    
-        # fallback SL nếu risk engine không approve
-        max_sl_dist = plan.get("max_sl_dist") or (atr15 * 1.5)
-    
-        if bias == "SELL":
-            sl = entry + max_sl_dist
-        else:
-            sl = entry - max_sl_dist
-    
-        r = abs(entry - sl)
-        tp1 = entry + r if bias == "BUY" else entry - r
-        tp2 = entry + 1.6 * r if bias == "BUY" else entry - 1.6 * r
-    
-        quality_lines.append("⚠️ SL bị CLAMP do vượt risk cho phép")
+    # =========================
+# RISK ENGINE (KHÔNG BỎ KÈO) + CLAMP
+# =========================
+try:
+    plan = calc_smart_sl_tp(
+        symbol=symbol,
+        entry=float(entry),
+        bias=bias,                 # "BUY" / "SELL"
+        atr=float(atr15 or 0.0),
+        swing_hi=float(swing_hi),
+        swing_lo=float(swing_lo),
+        equity=float(os.getenv("EQUITY", "0") or 0),     # nếu chưa dùng equity thì để 0
+        risk_pct=float(os.getenv("RISK_PCT", "0.0075")), # 0.5–1% => 0.005..0.01
+        max_sl_atr=float(os.getenv("MAX_SL_ATR", "2.2")),# clamp SL theo ATR
+    )
+except Exception as _e:
+    plan = {"ok": True, "warn": f"risk_engine_error: {_e}"}
 
+# Nếu risk engine báo không ok -> KHÔNG return nữa, chỉ cảnh báo
+if not plan.get("ok", True):
+    quality_lines.append(f"⚠️ Risk warn: {plan.get('reason', 'risk check failed')}")
 
-    # ---- SAFE APPLY RISK PLAN (no-crash, no-skip) ----
-    if not plan or not isinstance(plan, dict):
-        plan = {"ok": False, "reason": "risk plan invalid"}
-    
-    if not plan.get("ok", True):
-        quality_lines.append(f"⚠️ Risk warn: {plan.get('reason', 'risk check failed')} (vẫn báo, dùng SL/TP fallback nếu thiếu)")
-    
-    # plan có thể thiếu sl/tp => fallback về sl/tp đang tính sẵn bên trên
-    # (giả định ở phía trên bạn đã có sẵn entry, sl, tp1, tp2 theo logic cũ)
-    sl  = float(plan.get("sl",  sl))
-    tp1 = float(plan.get("tp1", tp1))
-    tp2 = float(plan.get("tp2", tp2))
-    lot = float(plan.get("lot", 0.01))
-    # -----------------------------------------------
+# Lấy giá trị an toàn (không bao giờ crash)
+plan_sl  = plan.get("sl", None)
+plan_tp1 = plan.get("tp1", None)
+plan_tp2 = plan.get("tp2", None)
 
+if plan_sl is not None:
+    sl = float(plan_sl)
+if plan_tp1 is not None:
+    tp1 = float(plan_tp1)
+if plan_tp2 is not None:
+    tp2 = float(plan_tp2)
 
-    # thêm info cho rõ lý do SL
-    quality_lines.append("RR ~ 1:2")
-    quality_lines.append(f"SL = MIN(Liq, ATR, Risk) | R~{plan['r']:.2f}")
-    quality_lines.append(f"Risk: {plan['risk_usd']:.2f}$ ({plan['risk_pct']*100:.2f}%) | Lot gợi ý: {lot:.2f}")
+# Tính R an toàn, KHÔNG dùng plan['r']
+r = abs(float(entry) - float(sl)) if (entry is not None and sl is not None) else None
+
+# Nếu vẫn không có r (trường hợp cực lỗi) thì tự set tối thiểu để khỏi nổ
+if not r or r <= 0:
+    # fallback: lấy theo ATR
+    r = float(max(0.6, (atr15 or 0) * 1.2))  # tuỳ bạn
+
+quality_lines.append("RR ~ 1:2")
+quality_lines.append(f"SL = MIN(Liq, ATR, Risk) | R~{r:.2f}")
+if plan.get("warn"):
+    quality_lines.append(f"⚠️ {plan['warn']}")
+
 
 
     # Rating stars from score
