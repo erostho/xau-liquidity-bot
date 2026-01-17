@@ -101,7 +101,7 @@ def calc_smart_sl_tp(
 
     # Hard sanity: never let SL be unrealistically tiny (will be swept)
     # Use at least 0.45*ATR or min_buf*1.2 (tune)
-    sl_min_dist = max(0.45 * atr, min_buf * 1.2)
+    sl_min_dist = max(1.0 * atr, min_buf * 1.2)
     if sl_dist < sl_min_dist:
         notes.append(f"SL quá ngắn ({sl_dist:.2f}) -> nâng lên tối thiểu theo nhiễu thị trường.")
         sl_dist = sl_min_dist
