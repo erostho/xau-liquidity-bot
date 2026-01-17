@@ -1,57 +1,149 @@
+# app/pro_analysis.py
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import math
 import os
 
 from app.risk import calc_smart_sl_tp
+
+
+# =========================
+# Data model (MUST exist for import in main.py)
+# =========================
+@dataclass
+class Candle:
+    ts: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+
+
+# =========================
+# Indicators
+# =========================
+def _ema(values: List[float], period: int) -> List[float]:
+    if period <= 0 or len(values) < period:
+        return []
+    k = 2 / (period + 1)
+    ema = [sum(values[:period]) / period]
+    for v in values[period:]:
+        ema.append(ema[-1] + k * (v - ema[-1]))
+    pad = [ema[0]] * (period - 1)
+    return pad + ema
+
+def _rsi(values: List[float], period: int = 14) -> Optional[float]:
+    if len(values) < period + 1:
+        return None
+    gains = 0.0
+    losses = 0.0
+    for i in range(-period, 0):
+        ch = values[i] - values[i - 1]
+        if ch >= 0:
+            gains += ch
+        else:
+            losses += -ch
+    if losses == 0:
+        return 100.0
+    rs = gains / losses
+    return 100 - (100 / (1 + rs))
+
+def _atr(candles: List[Candle], period: int = 14) -> Optional[float]:
+    if len(candles) < period + 1:
+        return None
+    trs: List[float] = []
+    for i in range(-period, 0):
+        c = candles[i]
+        prev = candles[i - 1]
+        tr = max(c.high - c.low, abs(c.high - prev.close), abs(c.low - prev.close))
+        trs.append(tr)
+    return sum(trs) / period
+
+def _swing_high(candles: List[Candle], lookback: int = 80) -> Optional[float]:
+    if len(candles) < 5:
+        return None
+    lb = candles[-lookback:] if len(candles) > lookback else candles
+    return max(c.high for c in lb)
+
+def _swing_low(candles: List[Candle], lookback: int = 80) -> Optional[float]:
+    if len(candles) < 5:
+        return None
+    lb = candles[-lookback:] if len(candles) > lookback else candles
+    return min(c.low for c in lb)
+
+def _is_rejection(c: Candle) -> Dict[str, bool]:
+    body = abs(c.close - c.open)
+    rng = max(1e-9, c.high - c.low)
+    upper_wick = c.high - max(c.close, c.open)
+    lower_wick = min(c.close, c.open) - c.low
+    return {
+        "upper_reject": upper_wick / rng >= 0.45 and body / rng <= 0.45,
+        "lower_reject": lower_wick / rng >= 0.45 and body / rng <= 0.45,
+        "doji_like": body / rng <= 0.20,
+    }
+
+def _fmt(x: float) -> str:
+    return f"{x:.3f}".rstrip("0").rstrip(".")
+
+def _safe_float(x: Any) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+# =========================
+# PRO Analyzer (MUST be named analyze_pro for main.py import)
+# =========================
 def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: str = "Phiên Mỹ") -> Dict[str, Any]:
-    # =========================
+    # ---- default return skeleton (never crash)
+    base: Dict[str, Any] = {
+        "symbol": symbol,
+        "tf": "M15",
+        "session": session_name,
+        "context_lines": [],
+        "position_lines": [],
+        "liquidity_lines": [],
+        "quality_lines": [],
+        "recommendation": "CHỜ",
+        "stars": 1,
+        "entry": None,
+        "sl": None,
+        "tp1": None,
+        "tp2": None,
+        "lot": None,
+        "notes": [],
+        "levels": [],
+    }
+
     # Basic validation
-    # =========================
     if len(m15) < 50 or len(h1) < 50:
-        return {
-            "symbol": symbol,
-            "tf": "M15",
-            "session": session_name,
-            "context_lines": ["Thiếu dữ liệu nến để phân tích (cần >=50 candles mỗi TF)."],
-            "position_lines": [],
-            "liquidity_lines": [],
-            "quality_lines": [],
-            "recommendation": "CHỜ",
-            "stars": 1,
-            "entry": None,
-            "sl": None,
-            "tp1": None,
-            "tp2": None,
-            "lot": None,
-            "notes": ["Hãy thử lại sau ~5–10 phút."],
-            "levels": [],
-        }
+        base["context_lines"] = ["Thiếu dữ liệu nến để phân tích (cần >=50 candles mỗi TF)."]
+        base["notes"] = ["Hãy thử lại sau ~5–10 phút."]
+        return base
 
-    # =========================
-    # USE CLOSED CANDLES ONLY
-    # =========================
-    m15_closed = m15[:-1] if len(m15) > 1 else m15
-    h1_closed  = h1[:-1] if len(h1) > 1 else h1
+    # Use CLOSED candles only
+    m15c = m15[:-1] if len(m15) > 1 else m15
+    h1c  = h1[:-1] if len(h1) > 1 else h1
 
-    last15 = m15_closed[-1]
+    last15 = m15c[-1]
     last_close = last15.close
 
-    m15_closes = [c.close for c in m15_closed]
-    h1_closes  = [c.close for c in h1_closed]
+    m15_closes = [c.close for c in m15c]
+    h1_closes  = [c.close for c in h1c]
 
     ema20_h1 = _ema(h1_closes, 20)
     ema50_h1 = _ema(h1_closes, 50)
     rsi15 = _rsi(m15_closes, 14)
-    atr15 = _atr(m15_closed, 14)
-    if atr15 is None:
-        atr15 = max(1e-6, (last15.high - last15.low))
+    atr15 = _atr(m15c, 14)
 
-    # =========================
-    # Trend H1 + weakening
-    # =========================
-    h1_trend = "neutral"
+    # --- Trend H1
+    h1_trend = "NEUTRAL"
     if ema20_h1 and ema50_h1:
         if ema20_h1[-1] > ema50_h1[-1]:
             h1_trend = "bullish"
@@ -67,39 +159,34 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         if h1_trend == "bearish" and sep_now > sep_prev:
             weakening = True
 
-    # =========================
     # Key levels
-    # =========================
-    sh15 = _swing_high(m15_closed, 80)
-    sl15 = _swing_low(m15_closed, 80)
-    sh1  = _swing_high(h1_closed, 80)
-    sl1  = _swing_low(h1_closed, 80)
+    sh15 = _swing_high(m15c, 80)
+    sl15 = _swing_low(m15c, 80)
+    sh1  = _swing_high(h1c, 80)
+    sl1  = _swing_low(h1c, 80)
 
-    levels = []
+    levels: List[float] = []
     for v in [sh15, sl15, sh1, sl1]:
         if v is not None:
             levels.append(float(v))
-    levels = sorted(list({round(x, 3) for x in levels}), reverse=True)[:6]
+    base["levels"] = sorted(list({round(x, 3) for x in levels}), reverse=True)[:6]
 
-    # =========================
-    # Market state (spike/pullback) + rejection
-    # =========================
-    ranges20 = [c.high - c.low for c in m15_closed[-20:]]
-    ranges80 = [c.high - c.low for c in m15_closed[-80:]]
-    spike = (sum(ranges20) / len(ranges20)) > 1.35 * (sum(ranges80) / len(ranges80))
+    # Market state spike
+    ranges20 = [c.high - c.low for c in m15c[-20:]]
+    ranges80 = [c.high - c.low for c in m15c[-80:]]
+    spike = (sum(ranges20) / max(1, len(ranges20))) > 1.35 * (sum(ranges80) / max(1, len(ranges80)))
 
+    # Lower-high-ish
     lower_highish = False
-    if len(m15_closed) >= 30:
-        recent_high = max(c.high for c in m15_closed[-10:])
-        prev_high   = max(c.high for c in m15_closed[-30:-10])
+    if len(m15c) >= 30:
+        recent_high = max(c.high for c in m15c[-10:])
+        prev_high   = max(c.high for c in m15c[-30:-10])
         if recent_high <= prev_high:
             lower_highish = True
 
     rej = _is_rejection(last15)
 
-    # =========================
     # Liquidity proxy
-    # =========================
     liq_sell = False
     liq_buy = False
     if sh15 is not None and last15.high >= sh15 * 0.999 and rej["upper_reject"]:
@@ -107,9 +194,7 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
     if sl15 is not None and last15.low <= sl15 * 1.001 and rej["lower_reject"]:
         liq_buy = True
 
-    # =========================
-    # Score + text lines
-    # =========================
+    # Build lines + score
     score = 0
     context_lines: List[str] = []
     position_lines: List[str] = []
@@ -132,6 +217,10 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
     else:
         context_lines.append("H1: neutral")
 
+    if atr15 is None:
+        # fallback ATR = range cây vừa đóng
+        atr15 = max(1e-6, last15.high - last15.low)
+
     if sh15 is not None and abs(sh15 - last_close) <= atr15 * 0.8:
         position_lines.append("Giá gần đỉnh phiên")
         score += 1
@@ -151,19 +240,18 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
     if rej["upper_reject"] or rej["lower_reject"]:
         quality_lines.append("Nến từ chối rõ")
         score += 1
+
     if rsi15 is not None:
         quality_lines.append(f"RSI(14) M15: {_fmt(rsi15)}")
+
     quality_lines.append(f"ATR(14) M15: ~{_fmt(atr15)}")
     score += 1
 
-    # =========================
     # Decide bias
-    # =========================
-    bias: Optional[str] = None
-
     sell_ok = (rej["upper_reject"] or liq_sell) and (lower_highish or spike or weakening) and (sh15 is not None)
     buy_ok  = (rej["lower_reject"] or liq_buy)  and (spike or weakening) and (sl15 is not None)
 
+    bias: Optional[str] = None
     if sell_ok and rsi15 is not None and rsi15 >= 52:
         bias = "SELL"
     elif buy_ok and rsi15 is not None and rsi15 <= 48:
@@ -175,145 +263,94 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
             bias = "BUY"
 
     if bias is None:
-        # chờ
-        return {
-            "symbol": symbol,
-            "tf": "M15",
-            "session": session_name,
+        base.update({
             "context_lines": context_lines,
             "position_lines": position_lines,
             "liquidity_lines": liquidity_lines,
             "quality_lines": quality_lines + ["RR ~ 1:2 (mục tiêu)"],
             "recommendation": "CHỜ",
             "stars": 1,
-            "entry": None,
-            "sl": None,
-            "tp1": None,
-            "tp2": None,
-            "lot": None,
-            "notes": ["Hãy chờ thêm xác nhận nến."],
-            "levels": levels,
-        }
+            "notes": ["Chưa đủ điều kiện vào kèo. Chờ thêm nến xác nhận/retest."],
+        })
+        return base
 
     recommendation = "🔴 SELL" if bias == "SELL" else "🟢 BUY"
 
-    # =========================
     # Entry retest
-    # =========================
     RETEST_K = float(os.getenv("RETEST_K", "0.35"))
-    BUF_K    = float(os.getenv("BUF_K", "0.25"))
-    TP2_R    = float(os.getenv("TP2_R", "1.6"))
-    MIN_RISK_ATR = float(os.getenv("MIN_RISK_ATR", "1.2"))
-
-    def _min_buf(sym: str) -> float:
-        s = (sym or "").upper()
-        if "XAU" in s:
-            return 0.30
-        if "BTC" in s:
-            return 30.0
-        return 0.0
-
-    buf = max(BUF_K * atr15, _min_buf(symbol))
-
-    swing_hi = sh15 if sh15 is not None else last15.high
-    swing_lo = sl15 if sl15 is not None else last15.low
+    RETEST_K = max(0.15, min(0.80, RETEST_K))
 
     if bias == "SELL":
         entry = last_close + RETEST_K * atr15
-
-        sl_liq = max(swing_hi, last15.high) + buf
-        sl_atr = entry + (MIN_RISK_ATR * atr15)
-        sl = max(sl_liq, sl_atr)
-
-        r0 = abs(sl - entry)
-        tp1 = entry - 1.0 * r0
-        tp2 = entry - TP2_R * r0
-
+        liq_level = sh15
         notes.append("Entry RETEST: chờ giá hồi lên vùng entry rồi mới SELL.")
-        notes.append("Confirm nhanh: upper-wick từ chối HOẶC phá đáy nhỏ của 3 nến gần nhất.")
+        notes.append("Confirm nhanh: upper-wick từ chối HOẶC phá đáy nhỏ 3 nến gần nhất.")
         if sh15 is not None:
             notes.append(f"Không SELL nếu M15 đóng > {_fmt(sh15)}")
-
-        liq_level = float(swing_hi)
     else:
         entry = last_close - RETEST_K * atr15
-
-        sl_liq = min(swing_lo, last15.low) - buf
-        sl_atr = entry - (MIN_RISK_ATR * atr15)
-        sl = min(sl_liq, sl_atr)
-
-        r0 = abs(entry - sl)
-        tp1 = entry + 1.0 * r0
-        tp2 = entry + TP2_R * r0
-
+        liq_level = sl15
         notes.append("Entry RETEST: chờ giá hồi xuống vùng entry rồi mới BUY.")
-        notes.append("Confirm nhanh: lower-wick từ chối HOẶC phá đỉnh nhỏ của 3 nến gần nhất.")
+        notes.append("Confirm nhanh: lower-wick từ chối HOẶC phá đỉnh nhỏ 3 nến gần nhất.")
         if sl15 is not None:
             notes.append(f"Không BUY nếu M15 đóng < {_fmt(sl15)}")
 
-        liq_level = float(swing_lo)
+    # ---- SMART SL/TP (CÁCH ĐÚNG: không bỏ kèo, chỉ warn + clamp trong risk.py)
+    equity_usd = float(os.getenv("EQUITY_USD", "1000"))
+    risk_pct   = float(os.getenv("RISK_PCT", "0.0075"))  # 0.005..0.01
 
-    # =========================
-    # Risk engine (NO DROP) + safe override
-    # =========================
-    equity_usd = float(os.getenv("EQUITY_USD", os.getenv("EQUITY", "1000")))
-    risk_pct   = float(os.getenv("RISK_PCT", "0.0075"))
-
-    plan: Dict[str, Any] = {}
+    plan: Dict[str, Any]
     try:
-        # Gọi theo signature "ổn định" nhất: side/bias + liquidity_level + atr
         plan = calc_smart_sl_tp(
             symbol=symbol,
-            side=bias,  # "BUY"/"SELL"
+            side=bias,  # BUY/SELL
             entry=float(entry),
             atr=float(atr15),
             liquidity_level=float(liq_level) if liq_level is not None else None,
-            equity_usd=float(equity_usd),
-            risk_pct=float(risk_pct),
-        ) or {}
+            equity_usd=equity_usd,
+            risk_pct=risk_pct,
+        )
     except Exception as e:
-        plan = {"ok": True, "warn": f"risk_engine_error: {e}"}
+        plan = {"ok": False, "reason": f"risk_engine_error: {e}"}
 
-    # Warn only (không return)
-    if plan.get("ok") is False:
+    # nếu plan không ok: vẫn trả kèo nhưng set SL/TP fallback theo ATR để bot vẫn “báo”
+    sl: Optional[float] = _safe_float(plan.get("sl"))
+    tp1: Optional[float] = _safe_float(plan.get("tp1"))
+    tp2: Optional[float] = _safe_float(plan.get("tp2"))
+    lot: Optional[float] = _safe_float(plan.get("lot"))
+    rdist: Optional[float] = _safe_float(plan.get("r"))
+
+    if not plan.get("ok", True):
         quality_lines.append(f"⚠️ Risk warn: {plan.get('reason', 'risk check failed')}")
+        # Fallback SL/TP theo ATR (an toàn, không crash)
+        fallback_r = max(0.6, float(atr15) * 1.0)
+        if bias == "SELL":
+            sl = float(entry) + fallback_r
+            tp1 = float(entry) - 1.0 * fallback_r
+            tp2 = float(entry) - 1.6 * fallback_r
+        else:
+            sl = float(entry) - fallback_r
+            tp1 = float(entry) + 1.0 * fallback_r
+            tp2 = float(entry) + 1.6 * fallback_r
+        rdist = fallback_r
+        lot = lot or 0.01
+        notes.append("⚠️ SL/TP dùng fallback theo ATR do risk engine báo không hợp lệ.")
 
-    if plan.get("warn"):
-        quality_lines.append(f"⚠️ {plan.get('warn')}")
+    # đảm bảo vẫn có số
+    if sl is None or tp1 is None or tp2 is None:
+        fallback_r = max(0.6, float(atr15) * 1.0)
+        if bias == "SELL":
+            sl = float(entry) + fallback_r
+            tp1 = float(entry) - 1.0 * fallback_r
+            tp2 = float(entry) - 1.6 * fallback_r
+        else:
+            sl = float(entry) - fallback_r
+            tp1 = float(entry) + 1.0 * fallback_r
+            tp2 = float(entry) + 1.6 * fallback_r
+        rdist = fallback_r if rdist is None else rdist
+        lot = lot or 0.01
 
-    # Override SL/TP nếu plan trả đủ key
-    plan_sl  = plan.get("sl")
-    plan_tp1 = plan.get("tp1")
-    plan_tp2 = plan.get("tp2")
-    if plan_sl is not None and plan_tp1 is not None and plan_tp2 is not None:
-        try:
-            sl  = float(plan_sl)
-            tp1 = float(plan_tp1)
-            tp2 = float(plan_tp2)
-            quality_lines.append("✅ SL/TP theo Risk Engine")
-        except Exception:
-            quality_lines.append("⚠️ Risk engine trả SL/TP không parse được → dùng SL/TP mặc định (liq/ATR).")
-    else:
-        quality_lines.append("⚠️ Risk engine thiếu SL/TP → dùng SL/TP mặc định (liq/ATR).")
-
-    # R an toàn (không dùng plan['r'])
-    r = abs(float(entry) - float(sl))
-    if r <= 0:
-        r = max(1e-6, atr15 * 1.2)
-
-    quality_lines.append("RR ~ 1:2")
-    quality_lines.append(f"SL theo liquidity + buffer ~{_fmt(buf)} | RETEST {RETEST_K}*ATR | R~{r:.2f}")
-
-    # Lot (nếu plan có)
-    lot = plan.get("lot")
-    try:
-        lot = float(lot) if lot is not None else None
-    except Exception:
-        lot = None
-
-    # =========================
-    # Stars from score
-    # =========================
+    # Stars
     stars = 1
     if score >= 6:
         stars = 5
@@ -324,10 +361,11 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
     elif score >= 2:
         stars = 2
 
-    return {
-        "symbol": symbol,
-        "tf": "M15",
-        "session": session_name,
+    quality_lines.append("RR ~ 1:2")
+    if rdist is not None:
+        quality_lines.append(f"R~{rdist:.2f} | SL=MIN(Liq, ATR, Risk) (risk engine)")
+
+    base.update({
         "context_lines": context_lines,
         "position_lines": position_lines,
         "liquidity_lines": liquidity_lines,
@@ -338,7 +376,86 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         "sl": float(sl),
         "tp1": float(tp1),
         "tp2": float(tp2),
-        "lot": lot,
+        "lot": float(lot) if lot is not None else None,
         "notes": notes,
-        "levels": levels,
-    }
+    })
+    return base
+
+
+# =========================
+# Formatter (MUST be named format_signal for main.py import)
+# =========================
+def format_signal(sig: Dict[str, Any]) -> str:
+    symbol = sig.get("symbol", "XAUUSD")
+    tf = sig.get("tf", "M15")
+    session = sig.get("session", "Phiên Mỹ")
+
+    context_lines = sig.get("context_lines", [])
+    position_lines = sig.get("position_lines", [])
+    liquidity_lines = sig.get("liquidity_lines", [])
+    quality_lines = sig.get("quality_lines", [])
+
+    rec = sig.get("recommendation", "CHỜ")
+    stars = int(sig.get("stars", 1))
+    stars_txt = "⭐️" * max(1, min(5, stars))
+
+    entry = sig.get("entry")
+    sl = sig.get("sl")
+    tp1 = sig.get("tp1")
+    tp2 = sig.get("tp2")
+
+    notes = sig.get("notes", [])
+    levels = sig.get("levels", [])
+
+    def nf(x):
+        if x is None:
+            return "..."
+        try:
+            x = float(x)
+            return f"{x:.3f}".rstrip("0").rstrip(".")
+        except Exception:
+            return "..."
+
+    lines: List[str] = []
+    lines.append(f"📊 {symbol} | {tf} | {session}")
+    lines.append("")
+    lines.append("Context:")
+    for s in context_lines:
+        lines.append(f"- {s}")
+    lines.append("")
+    lines.append("Vị trí:")
+    if position_lines:
+        for s in position_lines:
+            lines.append(f"- {s}")
+    else:
+        lines.append("- (chưa rõ vị trí đẹp)")
+    lines.append("")
+    lines.append("Thanh khoản:")
+    for s in liquidity_lines:
+        lines.append(f"- {s}")
+    lines.append("")
+    lines.append("Chất lượng setup:")
+    for s in quality_lines:
+        lines.append(f"- {s}")
+    lines.append("")
+    lines.append(f"🎯 Khuyến nghị: {rec}")
+    lines.append(f"Độ tin cậy: {stars_txt} ({max(1, min(5, stars))}/5)")
+    lines.append("")
+    lines.append(f"ENTRY: {nf(entry)}")
+    lines.append(f"SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
+    lines.append("")
+    lines.append("⚠️ Lưu ý:")
+    if notes:
+        for s in notes:
+            lines.append(f"- {s}")
+    else:
+        lines.append("- Luôn chờ nến xác nhận.")
+    lines.append("")
+    lines.append("Mốc giá quan trọng:")
+    if levels:
+        for lv in levels[:6]:
+            lines.append(f"- {nf(lv)}")
+    else:
+        lines.append("- (chưa có mốc)")
+
+    return "\n".join(lines)
