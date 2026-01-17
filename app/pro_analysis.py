@@ -356,64 +356,62 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
     )
     # Nếu risk engine báo không ok
     # =========================
-# RISK ENGINE (KHÔNG BỎ KÈO) + CLAMP
-# =========================
-try:
-    plan = calc_smart_sl_tp(
-        symbol=symbol,
-        entry=float(entry),
-        bias=bias,                 # "BUY" / "SELL"
-        atr=float(atr15 or 0.0),
-        swing_hi=float(swing_hi),
-        swing_lo=float(swing_lo),
-        equity=float(os.getenv("EQUITY", "0") or 0),     # nếu chưa dùng equity thì để 0
-        risk_pct=float(os.getenv("RISK_PCT", "0.0075")), # 0.5–1% => 0.005..0.01
-        max_sl_atr=float(os.getenv("MAX_SL_ATR", "2.2")),# clamp SL theo ATR
-    )
-except Exception as _e:
-    plan = {"ok": True, "warn": f"risk_engine_error: {_e}"}
-
-# Nếu risk engine báo không ok -> KHÔNG return nữa, chỉ cảnh báo
-if not plan.get("ok", True):
-    quality_lines.append(f"⚠️ Risk warn: {plan.get('reason', 'risk check failed')}")
-
-# Lấy giá trị an toàn (không bao giờ crash)
-plan_sl  = plan.get("sl", None)
-plan_tp1 = plan.get("tp1", None)
-plan_tp2 = plan.get("tp2", None)
-
-if plan_sl is not None:
-    sl = float(plan_sl)
-if plan_tp1 is not None:
-    tp1 = float(plan_tp1)
-if plan_tp2 is not None:
-    tp2 = float(plan_tp2)
-
-# Tính R an toàn, KHÔNG dùng plan['r']
-r = abs(float(entry) - float(sl)) if (entry is not None and sl is not None) else None
-
-# Nếu vẫn không có r (trường hợp cực lỗi) thì tự set tối thiểu để khỏi nổ
-if not r or r <= 0:
-    # fallback: lấy theo ATR
-    r = float(max(0.6, (atr15 or 0) * 1.2))  # tuỳ bạn
-
-quality_lines.append("RR ~ 1:2")
-quality_lines.append(f"SL = MIN(Liq, ATR, Risk) | R~{r:.2f}")
-if plan.get("warn"):
-    quality_lines.append(f"⚠️ {plan['warn']}")
-
-
-
-    # Rating stars from score
-    stars = 1
-    if score >= 6:
-        stars = 5
-    elif score >= 5:
-        stars = 4
-    elif score >= 3:
-        stars = 3
-    elif score >= 2:
-        stars = 2
+    # RISK ENGINE (KHÔNG BỎ KÈO) + CLAMP
+    # =========================
+    try:
+        plan = calc_smart_sl_tp(
+            symbol=symbol,
+            entry=float(entry),
+            bias=bias,                 # "BUY" / "SELL"
+            atr=float(atr15 or 0.0),
+            swing_hi=float(swing_hi),
+            swing_lo=float(swing_lo),
+            equity=float(os.getenv("EQUITY", "0") or 0),     # nếu chưa dùng equity thì để 0
+            risk_pct=float(os.getenv("RISK_PCT", "0.0075")), # 0.5–1% => 0.005..0.01
+            max_sl_atr=float(os.getenv("MAX_SL_ATR", "2.2")),# clamp SL theo ATR
+        )
+    except Exception as _e:
+        plan = {"ok": True, "warn": f"risk_engine_error: {_e}"}
+    
+    # Nếu risk engine báo không ok -> KHÔNG return nữa, chỉ cảnh báo
+    if not plan.get("ok", True):
+        quality_lines.append(f"⚠️ Risk warn: {plan.get('reason', 'risk check failed')}")
+    
+    # Lấy giá trị an toàn (không bao giờ crash)
+    plan_sl  = plan.get("sl", None)
+    plan_tp1 = plan.get("tp1", None)
+    plan_tp2 = plan.get("tp2", None)
+    
+    if plan_sl is not None:
+        sl = float(plan_sl)
+    if plan_tp1 is not None:
+        tp1 = float(plan_tp1)
+    if plan_tp2 is not None:
+        tp2 = float(plan_tp2)
+    
+    # Tính R an toàn, KHÔNG dùng plan['r']
+    r = abs(float(entry) - float(sl)) if (entry is not None and sl is not None) else None
+    
+    # Nếu vẫn không có r (trường hợp cực lỗi) thì tự set tối thiểu để khỏi nổ
+    if not r or r <= 0:
+        # fallback: lấy theo ATR
+        r = float(max(0.6, (atr15 or 0) * 1.2))  # tuỳ bạn
+    
+    quality_lines.append("RR ~ 1:2")
+    quality_lines.append(f"SL = MIN(Liq, ATR, Risk) | R~{r:.2f}")
+    if plan.get("warn"):
+        quality_lines.append(f"⚠️ {plan['warn']}")
+    
+        # Rating stars from score
+        stars = 1
+        if score >= 6:
+            stars = 5
+        elif score >= 5:
+            stars = 4
+        elif score >= 3:
+            stars = 3
+        elif score >= 2:
+            stars = 2
 
     return {
         "symbol": symbol,
