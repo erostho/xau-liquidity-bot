@@ -1,5 +1,13 @@
 def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: str = "Phiên Mỹ") -> Dict[str, Any]:
+    from __future__ import annotations
+
+    from dataclasses import dataclass
+    from typing import List, Dict, Any, Optional
+    import math
     import os
+
+    from app.risk import calc_smart_sl_tp
+
 
     # =========================
     # Basic validation
