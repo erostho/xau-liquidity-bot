@@ -81,7 +81,7 @@ async def cron_soft_rate_ok() -> bool:
 _PENDING: dict = {}
 
 # cấu hình (tune nhanh)
-PENDING_HOLD_CANDLES = int(os.getenv("PENDING_HOLD_CANDLES", "2"))   # giữ 1-2 nến M15
+PENDING_HOLD_CANDLES = int(os.getenv("PENDING_HOLD_CANDLES", "2"))   # giữ 1-2 nến ENTRY TF (M30)
 FLIP_OVERRIDE_STARS  = int(os.getenv("FLIP_OVERRIDE_STARS", "5"))    # chỉ cho đảo kèo nếu >= 5 sao
 PENDING_EXPIRE_MIN   = int(os.getenv("PENDING_EXPIRE_MIN", "45"))    # quá 45' thì hủy pending
 
@@ -134,7 +134,7 @@ def apply_pending_antiflip(symbol: str, candle_ts: int, sig: dict) -> tuple[dict
         # thêm note để biết đang pending
         sig = dict(sig)
         sig.setdefault("notes", [])
-        sig["notes"].insert(0, f"🧷 PENDING: giữ kèo {bias} trong {PENDING_HOLD_CANDLES} nến M15 (anti-flip).")
+        sig["notes"].insert(0, f"🧷 PENDING: giữ kèo {bias} trong {PENDING_HOLD_CANDLES} nến M30 (anti-flip).")
         return sig, "NEW_PENDING"
 
     # ===== Có pending -> kiểm tra hết hạn =====
@@ -322,24 +322,26 @@ async def cron_run(token: str = "", request: Request = None):
         try:
             # 1) Lấy MT5 cache trước
             m15, src15 = get_candles(symbol, "15min", 220)
+            m30, src30 = get_candles(symbol, "30min", 220)
             h1,  srcH1 = get_candles(symbol, "1h", 220)
             
             # 2) Nếu MT5 chưa có thì fallback TwelveData
-            if not m15 or not h1:
+            if not m15 or not m30 or not h1:
                 m15 = fetch_twelvedata_candles(symbol, "15min", 220)
+                m30 = fetch_twelvedata_candles(symbol, "30min", 220)
                 h1  = fetch_twelvedata_candles(symbol, "1h", 220)
                 source = "TWELVEDATA_FALLBACK"
             else:
                 source = "EXNESS_MT5_PUSH"
             
             # 3) Phân tích
-            sig = analyze_pro(symbol, m15, h1)
-            ts = _m15_closed_ts(m15)
+            sig = analyze_pro(symbol, m15, m30, h1)
+            ts = _m15_closed_ts(m30)  # pending theo nến ENTRY TF (M30)
             sig, action = apply_pending_antiflip(symbol, ts, sig)
             stars = int(sig.get("stars", 0))
             
             # 4) Gắn nguồn cho message (an toàn)
-            sig["source"] = f"{src15}/{srcH1}"  # nếu MT5 có thì sẽ là MT5/MT5, còn không thì có thể None/None
+            sig["source"] = f"{src15}/{src30}/{srcH1}"  # MT5 push (nếu có) / fallback
             notes = sig.get("notes") or []
             sig["notes"] = [f"Nguồn dữ liệu: {source}"] + notes
             if stars < MIN_STARS:
@@ -463,12 +465,19 @@ async def telegram_webhook(request: Request):
         symbol = detect_symbol_from_text(text)
 
         m15, src15 = get_candles(symbol, "15min", 220)
+        m30, src30 = get_candles(symbol, "30min", 220)
         h1,  srcH1 = get_candles(symbol, "1h", 220)
 
-        sig = analyze_pro(symbol, m15, h1)
-        ts = _m15_closed_ts(m15)
+        # fallback nếu MT5 chưa có
+        if not m15 or not m30 or not h1:
+            m15 = fetch_twelvedata_candles(symbol, "15min", 220)
+            m30 = fetch_twelvedata_candles(symbol, "30min", 220)
+            h1  = fetch_twelvedata_candles(symbol, "1h", 220)
+
+        sig = analyze_pro(symbol, m15, m30, h1)
+        ts = _m15_closed_ts(m30)  # pending theo nến ENTRY TF (M30)
         sig, action = apply_pending_antiflip(symbol, ts, sig)
-        sig["data_source"] = f"{src15}/{srcH1}"  # để format_signal show ra
+        sig["data_source"] = f"{src15}/{src30}/{srcH1}"  # để format_signal show ra
 
         reply = format_signal(sig)
         send_telegram_long(chat_id, reply)
@@ -476,7 +485,5 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         logger.exception("Analysis failed")
         send_telegram_long(chat_id, f"❌ Lỗi khi phân tích: `{str(e)}`")
-
-
 
     return {"ok": True}
