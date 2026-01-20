@@ -297,6 +297,10 @@ async def cron_run(token: str = "", request: Request = None):
     secret = os.getenv("CRON_SECRET", "")
     if not secret or token != secret:
         raise HTTPException(status_code=403, detail="Forbidden")
+    ok = await cron_soft_rate_ok()
+    if not ok:
+        return {"ok": True, "skipped": True, "reason": "soft_rate"}
+
     now = int(time.time())
     # 1️⃣ Cooldown – cron bắn dồn thì skip, trả 200 OK
     if now - LAST_CRON_TS < MIN_CRON_GAP_SEC:
@@ -354,8 +358,6 @@ async def cron_run(token: str = "", request: Request = None):
         except Exception as e:
             logger.exception(f"[CRON] {symbol} failed")
             send_telegram_long(admin_chat_id, f"❌ {symbol} cron error:\n`{str(e)}`")
-
-
     return {
         "ok": True,
         #"sent": results
