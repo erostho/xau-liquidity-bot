@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import math
 import os
 
@@ -100,11 +100,11 @@ def _safe_float(x: Any) -> Optional[float]:
 # =========================
 # PRO Analyzer (MUST be named analyze_pro for main.py import)
 # =========================
-def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: str = "Phiên Mỹ") -> Dict[str, Any]:
+def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Candle], session_name: str = "Phiên Mỹ") -> Dict[str, Any]:
     # ---- default return skeleton (never crash)
     base: Dict[str, Any] = {
         "symbol": symbol,
-        "tf": "M15",
+        "tf": "M30",
         "session": session_name,
         "context_lines": [],
         "position_lines": [],
@@ -119,20 +119,26 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         "lot": None,
         "notes": [],
         "levels": [],
+        "levels_info": [],  # list[(price, label)] for Telegram
+        "observation": {},  # {"buy": x, "sell": y, "buffer": b, "tf": "M15"}
     }
 
     # Basic validation
-    if len(m15) < 50 or len(h1) < 50:
-        base["context_lines"] = ["Thiếu dữ liệu nến để phân tích (cần >=50 candles mỗi TF)."]
+    if len(m15) < 50 or len(m30) < 50 or len(h1) < 50:
+        base["context_lines"] = ["Thiếu dữ liệu nến để phân tích (cần >=50 candles mỗi TF: M15/M30/H1)."]
         base["notes"] = ["Hãy thử lại sau ~5–10 phút."]
         return base
 
     # Use CLOSED candles only
     m15c = m15[:-1] if len(m15) > 1 else m15
+    m30c = m30[:-1] if len(m30) > 1 else m30
     h1c  = h1[:-1] if len(h1) > 1 else h1
 
     last15 = m15c[-1]
-    last_close = last15.close
+    last30 = m30c[-1]
+
+    last_close_15 = last15.close
+    last_close_30 = last30.close
 
     m15_closes = [c.close for c in m15c]
     h1_closes  = [c.close for c in h1c]
@@ -159,17 +165,51 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         if h1_trend == "bearish" and sep_now > sep_prev:
             weakening = True
 
-    # Key levels
+    # Key levels (important prices)
     sh15 = _swing_high(m15c, 80)
     sl15 = _swing_low(m15c, 80)
+    sh30 = _swing_high(m30c, 80)
+    sl30 = _swing_low(m30c, 80)
     sh1  = _swing_high(h1c, 80)
     sl1  = _swing_low(h1c, 80)
 
-    levels: List[float] = []
-    for v in [sh15, sl15, sh1, sl1]:
-        if v is not None:
-            levels.append(float(v))
-    base["levels"] = sorted(list({round(x, 3) for x in levels}), reverse=True)[:6]
+    levels_info: List[Tuple[float, str]] = []
+    if sh15 is not None: levels_info.append((float(sh15), "M15 Swing High (đỉnh gần)") )
+    if sl15 is not None: levels_info.append((float(sl15), "M15 Swing Low (đáy gần)") )
+    if sh30 is not None: levels_info.append((float(sh30), "M30 Swing High (kháng cự)") )
+    if sl30 is not None: levels_info.append((float(sl30), "M30 Swing Low (hỗ trợ)") )
+    if sh1 is not None:  levels_info.append((float(sh1),  "H1 Swing High (kháng cự lớn)") )
+    if sl1 is not None:  levels_info.append((float(sl1),  "H1 Swing Low (hỗ trợ lớn)") )
+
+    # unique by rounded price, keep the most informative label (first seen)
+    seen = set()
+    levels_unique: List[Tuple[float, str]] = []
+    for price, label in sorted(levels_info, key=lambda x: x[0], reverse=True):
+        key = round(price, 3)
+        if key in seen:
+            continue
+        seen.add(key)
+        levels_unique.append((price, label))
+
+    base["levels_info"] = levels_unique[:8]
+    base["levels"] = [round(p, 3) for p, _ in levels_unique[:8]]
+
+    # Observation triggers for M15 close (simple, trader-friendly)
+    try:
+        obs_buffer = float(os.getenv("OBS_BUFFER", "0.40"))  # default XAU
+    except Exception:
+        obs_buffer = 0.40
+    cur = float(last_close_15)
+    above = [p for p, _ in levels_unique if p > cur]
+    below = [p for p, _ in levels_unique if p < cur]
+    buy_level = min(above) if above else (max([p for p, _ in levels_unique]) if levels_unique else None)
+    sell_level = max(below) if below else (min([p for p, _ in levels_unique]) if levels_unique else None)
+    base["observation"] = {
+        "tf": "M15",
+        "buffer": obs_buffer,
+        "buy": float(buy_level) if buy_level is not None else None,
+        "sell": float(sell_level) if sell_level is not None else None,
+    }
 
     # Market state spike
     ranges20 = [c.high - c.low for c in m15c[-20:]]
@@ -221,10 +261,10 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         # fallback ATR = range cây vừa đóng
         atr15 = max(1e-6, last15.high - last15.low)
 
-    if sh15 is not None and abs(sh15 - last_close) <= atr15 * 0.8:
+    if sh15 is not None and abs(sh15 - last_close_15) <= atr15 * 0.8:
         position_lines.append("Giá gần đỉnh phiên")
         score += 1
-    if sl15 is not None and abs(last_close - sl15) <= atr15 * 0.8:
+    if sl15 is not None and abs(last_close_15 - sl15) <= atr15 * 0.8:
         position_lines.append("Giá gần đáy phiên")
         score += 1
 
@@ -274,26 +314,94 @@ def analyze_pro(symbol: str, m15: List[Candle], h1: List[Candle], session_name: 
         })
         return base
 
+    # ---- H1 confirm (hard filter)
+    STRICT_H1_CONFIRM = os.getenv("STRICT_H1_CONFIRM", "1") == "1"  # default ON
+    if STRICT_H1_CONFIRM:
+        if bias == "BUY" and h1_trend != "bullish":
+            base.update({
+                "context_lines": context_lines,
+                "position_lines": position_lines,
+                "liquidity_lines": liquidity_lines,
+                "quality_lines": quality_lines + ["RR ~ 1:2 (mục tiêu)"],
+                "recommendation": "CHỜ",
+                "stars": 1,
+                "notes": ["H1 chưa bullish → không BUY. Chờ H1 confirm hoặc kèo rõ hơn."],
+            })
+            return base
+        if bias == "SELL" and h1_trend != "bearish":
+            base.update({
+                "context_lines": context_lines,
+                "position_lines": position_lines,
+                "liquidity_lines": liquidity_lines,
+                "quality_lines": quality_lines + ["RR ~ 1:2 (mục tiêu)"],
+                "recommendation": "CHỜ",
+                "stars": 1,
+                "notes": ["H1 chưa bearish → không SELL. Chờ H1 confirm hoặc kèo rõ hơn."],
+            })
+            return base
+
     recommendation = "🔴 SELL" if bias == "SELL" else "🟢 BUY"
 
-    # Entry retest
+    # Entry logic:
+    # - Signal + retest zone from M15
+    # - Entry trigger only when M30 candle CLOSE confirms direction
     RETEST_K = float(os.getenv("RETEST_K", "0.35"))
     RETEST_K = max(0.15, min(0.80, RETEST_K))
 
+    # Default XAU zone padding (small) to tolerate spread/rung
+    ZONE_PAD_K = float(os.getenv("ENTRY_ZONE_PAD_K", "0.20"))
+    ZONE_PAD_K = max(0.05, min(0.60, ZONE_PAD_K))
+
+    def _m30_confirm(side: str, c30: Candle) -> bool:
+        if side == "BUY":
+            return c30.close > c30.open
+        if side == "SELL":
+            return c30.close < c30.open
+        return False
+
+    confirm_m30 = _m30_confirm(bias, last30)
+
     if bias == "SELL":
-        entry = last_close + RETEST_K * atr15
+        entry_center = last_close_15 + RETEST_K * atr15
         liq_level = sh15
-        notes.append("Entry RETEST: chờ giá hồi lên vùng entry rồi mới SELL.")
-        notes.append("Confirm nhanh: upper-wick từ chối HOẶC phá đáy nhỏ 3 nến gần nhất.")
+        zone_pad = max(1e-9, ZONE_PAD_K * atr15)
+        entry_zone_low = entry_center - zone_pad
+        entry_zone_high = entry_center + zone_pad
+        notes.append("Entry M30: chỉ SELL khi giá hồi vào vùng entry và M30 đóng xác nhận (nến giảm).")
+        notes.append(f"Vùng SELL (retest từ M15): {_fmt(entry_zone_low)} – {_fmt(entry_zone_high)}")
         if sh15 is not None:
             notes.append(f"Không SELL nếu M15 đóng > {_fmt(sh15)}")
     else:
-        entry = last_close - RETEST_K * atr15
+        entry_center = last_close_15 - RETEST_K * atr15
         liq_level = sl15
-        notes.append("Entry RETEST: chờ giá hồi xuống vùng entry rồi mới BUY.")
-        notes.append("Confirm nhanh: lower-wick từ chối HOẶC phá đỉnh nhỏ 3 nến gần nhất.")
+        zone_pad = max(1e-9, ZONE_PAD_K * atr15)
+        entry_zone_low = entry_center - zone_pad
+        entry_zone_high = entry_center + zone_pad
+        notes.append("Entry M30: chỉ BUY khi giá hồi vào vùng entry và M30 đóng xác nhận (nến tăng).")
+        notes.append(f"Vùng BUY (retest từ M15): {_fmt(entry_zone_low)} – {_fmt(entry_zone_high)}")
         if sl15 is not None:
             notes.append(f"Không BUY nếu M15 đóng < {_fmt(sl15)}")
+
+    # Nếu M30 chưa confirm: trả về trạng thái CHỜ nhưng vẫn show zone quan sát
+    if not confirm_m30:
+        base.update({
+            "context_lines": context_lines,
+            "position_lines": position_lines,
+            "liquidity_lines": liquidity_lines,
+            "quality_lines": quality_lines + [f"M30: chưa đóng xác nhận ({'nến tăng' if bias=='BUY' else 'nến giảm'}) → CHỜ"],
+            "recommendation": "CHỜ",
+            "stars": 2,
+            "entry": float(entry_center),
+            "sl": None,
+            "tp1": None,
+            "tp2": None,
+            "lot": None,
+            "notes": notes + ["Chờ nến M30 đóng xác nhận rồi mới vào lệnh."],
+        })
+        return base
+
+    # Confirmed: use entry_center as entry
+    entry = float(entry_center)
 
     # ---- SMART SL/TP (CÁCH ĐÚNG: không bỏ kèo, chỉ warn + clamp trong risk.py)
     equity_usd = float(os.getenv("EQUITY_USD", "1000"))
@@ -406,6 +514,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     notes = sig.get("notes", [])
     levels = sig.get("levels", [])
+    levels_info = sig.get("levels_info", [])
+    observation = sig.get("observation", {})
 
     def nf(x):
         if x is None:
@@ -418,6 +528,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     lines: List[str] = []
     lines.append(f"📊 {symbol} | {tf} | {session}")
+    lines.append("TF: Signal=M15 | Entry=M30 | Confirm=H1")
     lines.append("")
     lines.append("Context:")
     for s in context_lines:
@@ -429,6 +540,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
             lines.append(f"- {s}")
     else:
         lines.append("- (chưa rõ vị trí đẹp)")
+
+    # Add 1 guidance line right under Vị trí (as requested)
+    try:
+        b = observation.get("buy")
+        s = observation.get("sell")
+        buf = float(observation.get("buffer", 0.4))
+        tf_obs = observation.get("tf", "M15")
+        if b is not None and s is not None:
+            lines.append(
+                f"- QUAN SÁT: {tf_obs} đóng > {nf(float(b)+buf)} → BUY | {tf_obs} đóng < {nf(float(s)-buf)} → SELL | ngoài vùng → CHỜ KÈO"
+            )
+    except Exception:
+        pass
     lines.append("")
     lines.append("Thanh khoản:")
     for s in liquidity_lines:
@@ -452,10 +576,28 @@ def format_signal(sig: Dict[str, Any]) -> str:
         lines.append("- Luôn chờ nến xác nhận.")
     lines.append("")
     lines.append("Mốc giá quan trọng:")
-    if levels:
+    if levels_info:
+        for price, label in levels_info[:8]:
+            lines.append(f"- {nf(price)} — {label}")
+    elif levels:
         for lv in levels[:6]:
             lines.append(f"- {nf(lv)}")
     else:
         lines.append("- (chưa có mốc)")
+
+    # Extra hint below levels: what M15 close would trigger
+    try:
+        b = observation.get("buy")
+        s = observation.get("sell")
+        buf = float(observation.get("buffer", 0.4))
+        tf_obs = observation.get("tf", "M15")
+        if b is not None and s is not None:
+            lines.append("")
+            lines.append("Gợi ý quan sát vào lệnh:")
+            lines.append(f"- Nếu {tf_obs} đóng > {nf(float(b)+buf)} → ưu tiên canh BUY (theo H1 + chờ M30 confirm)")
+            lines.append(f"- Nếu {tf_obs} đóng < {nf(float(s)-buf)} → ưu tiên canh SELL (theo H1 + chờ M30 confirm)")
+            lines.append(f"- Nếu đóng giữa 2 mốc → CHỜ KÈO")
+    except Exception:
+        pass
 
     return "\n".join(lines)
