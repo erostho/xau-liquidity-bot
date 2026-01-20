@@ -11,6 +11,9 @@ import asyncio
 from app.data_source import get_candles, ingest_mt5_candles
 from typing import Dict, Any, Optional, List
 from app.data_source import get_candles
+from fastapi import HTTPException
+from fastapi.responses import PlainTextResponse
+
 logger = logging.getLogger("uvicorn.error")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
@@ -262,6 +265,17 @@ def _get_mt5_cached_candles(symbol: str, tf: str, max_age_sec: int = 120) -> Opt
         ))
     return out
 
+@app.head("/cron/run")
+async def cron_run_head(token: str = ""):
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or token != secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # ⚠️ QUAN TRỌNG:
+    # HEAD chỉ để cron-job.org ping
+    # TUYỆT ĐỐI không chạy bot ở đây
+    return PlainTextResponse("")
+
 @app.get("/cron/run")
 async def cron_run(token: str = "", request: Request = None):
     global LAST_CRON_TS
@@ -269,29 +283,22 @@ async def cron_run(token: str = "", request: Request = None):
     secret = os.getenv("CRON_SECRET", "")
     if not secret or token != secret:
         raise HTTPException(status_code=403, detail="Forbidden")
-
     now = int(time.time())
-
     # 1️⃣ Cooldown – cron bắn dồn thì skip, trả 200 OK
     if now - LAST_CRON_TS < MIN_CRON_GAP_SEC:
         return {"ok": True, "skipped": True, "reason": "cooldown"}
-
     # 2️⃣ Anti-overlap – nếu job cũ chưa xong thì skip
     if CRON_LOCK.locked():
         return {"ok": True, "skipped": True, "reason": "overlap"}
-
     async with CRON_LOCK:
         LAST_CRON_TS = int(time.time())
-
         # (optional) log để debug
         try:
             client = request.client.host if request and request.client else "unknown"
         except Exception:
             client = "unknown"
         logger.info(f"[CRON] start from={client}")
-
     results = []
-
     for item in SYMBOLS:
         symbol = item["name"]
         try:
