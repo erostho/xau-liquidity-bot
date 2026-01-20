@@ -109,6 +109,7 @@ def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> i
         raise ValueError("No candles to ingest")
 
     _MT5_CACHE[(sym, tf2)] = {"candles": parsed, "ts": int(time.time())}
+    _TD_CACHE = {}  # key -> (ts_minute, candles)
 
     logger.info(f"[MT5] Received {len(parsed)} candles {sym} {tf2}")
     return len(parsed)
@@ -148,6 +149,12 @@ def _get_mt5_cached(symbol: str, tf: str, limit: int) -> Optional[List[Candle]]:
 def _fetch_twelvedata(symbol: str, interval: str, outputsize: int = 200) -> List[Candle]:
     if not TWELVEDATA_API_KEY:
         raise RuntimeError("Missing TWELVEDATA_API_KEY")
+    minute = int(time.time() // 60)
+    key = (symbol, interval, int(limit))
+    
+    cached = _TD_CACHE.get(key)
+    if cached and cached[0] == minute:
+        return cached[1]
 
     url = "https://api.twelvedata.com/time_series"
     params = {
@@ -161,7 +168,16 @@ def _fetch_twelvedata(symbol: str, interval: str, outputsize: int = 200) -> List
     data = r.json()
 
     if "status" in data and data["status"] == "error":
-        raise RuntimeError(f"TwelveData error: {data.get('message')}")
+        msg = (data.get("message") or "").lower()
+        # TwelveData rate limit/credits: don't crash the whole analysis
+        if "out of api credits" in msg or "limit" in msg or "too many" in msg:
+            logger.warning(f"[twelvedata] rate-limit/credits: {data.get('message')}")
+            return None
+        
+        # other errors: still don't crash hard, just return None to allow other sources
+        logger.warning(f"[twelvedata] error: {data.get('message')}")
+        return None
+
 
     values = data.get("values", [])
     if not values:
@@ -181,6 +197,7 @@ def _fetch_twelvedata(symbol: str, interval: str, outputsize: int = 200) -> List
                 volume=0.0,
             )
         )
+    _TD_CACHE[key] = (minute, candles)
     return candles
 
 
@@ -192,12 +209,15 @@ def get_candles(symbol: str, tf: str, limit: int = 220) -> Tuple[List[Candle], s
       2) TwelveData fallback
     """
     # 1) MT5
+    USE_TWELVEDATA = os.getenv("USE_TWELVEDATA", "1") == "1"
     mt5 = _get_mt5_cached(symbol, tf, limit)
     if mt5:
         return mt5, "MT5"
 
     # 2) TwelveData
     interval = _tf_alias(tf)
+    if not USE_TWELVEDATA:
+        return None, "NO_TWELVEDATA"
     td = _fetch_twelvedata(symbol, interval, limit)
     return td, "TWELVEDATA_FALLBACK"
 
