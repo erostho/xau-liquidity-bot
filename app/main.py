@@ -62,6 +62,20 @@ CRON_LOCK = asyncio.Lock()
 LAST_CRON_TS = 0
 MIN_CRON_GAP_SEC = int(os.getenv("MIN_CRON_GAP_SEC", "120"))  # 2 phút
 
+
+CRON_SOFT_RATE_SEC = int(os.getenv("CRON_SOFT_RATE_SEC", "30"))  # 30s
+_LAST_HIT = 0
+_HIT_LOCK = asyncio.Lock()
+
+async def cron_soft_rate_ok() -> bool:
+    global _LAST_HIT
+    now = int(time.time())
+    async with _HIT_LOCK:
+        if now - _LAST_HIT < CRON_SOFT_RATE_SEC:
+            return False
+        _LAST_HIT = now
+        return True
+
 # ===== Pending / Anti-flip state (in-memory) =====
 # key: symbol -> pending dict
 _PENDING: dict = {}
