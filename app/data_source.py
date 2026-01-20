@@ -13,7 +13,7 @@ TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 # MT5 cache in-memory (Render process memory)
 # key: (symbol, tf) -> {"candles": [..], "ts": unix_time}
 _MT5_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
-
+_TD_CACHE = {}  # key -> (ts_minute, candles)
 # MT5 symbol mapping (so XAU/USD can find XAUUSDm, etc.)
 MT5_SYMBOL_XAU = os.getenv("MT5_SYMBOL_XAU", "XAUUSDm")
 MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDm")
@@ -109,7 +109,7 @@ def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> i
         raise ValueError("No candles to ingest")
 
     _MT5_CACHE[(sym, tf2)] = {"candles": parsed, "ts": int(time.time())}
-    _TD_CACHE = {}  # key -> (ts_minute, candles)
+
 
     logger.info(f"[MT5] Received {len(parsed)} candles {sym} {tf2}")
     return len(parsed)
