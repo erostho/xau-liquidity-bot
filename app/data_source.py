@@ -150,7 +150,7 @@ def _fetch_twelvedata(symbol: str, interval: str, outputsize: int = 200) -> List
     if not TWELVEDATA_API_KEY:
         raise RuntimeError("Missing TWELVEDATA_API_KEY")
     minute = int(time.time() // 60)
-    key = (symbol, interval, int(limit))
+    key = (symbol, interval, int(outputsize))
     
     cached = _TD_CACHE.get(key)
     if cached and cached[0] == minute:
