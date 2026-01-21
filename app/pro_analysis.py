@@ -254,6 +254,18 @@ def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Cand
 
     m15_closes = [c.close for c in m15c]
     h1_closes  = [c.close for c in h1c]
+    # --- ALWAYS init atr15 to avoid UnboundLocalError
+    atr15 = None
+    try:
+        atr15 = _atr(m15c, 14)
+    except Exception:
+        atr15 = None
+    
+    # fallback ATR nếu vẫn None
+    if atr15 is None:
+        # dùng range cây M15 vừa đóng làm ATR tạm
+        last15_tmp = m15c[-1]
+        atr15 = max(1e-6, last15_tmp.high - last15_tmp.low)
 
     ema20_h1 = _ema(h1_closes, 20)
     ema50_h1 = _ema(h1_closes, 50)
