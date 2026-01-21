@@ -255,6 +255,13 @@ def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Cand
     m15_closes = [c.close for c in m15c]
     h1_closes  = [c.close for c in h1c]
     # --- ALWAYS init atr15 to avoid UnboundLocalError
+    # --- indicators M15
+    rsi15 = None
+    try:
+        rsi15 = _rsi(m15_closes, 14)
+    except Exception:
+        rsi15 = None
+
     atr15 = None
     try:
         atr15 = _atr(m15c, 14)
