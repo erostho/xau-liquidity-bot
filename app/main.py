@@ -9,10 +9,12 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
-
 from app.data_source import get_candles, ingest_mt5_candles
 from app.pro_analysis import analyze_pro, format_signal
+from typing import Dict, Any, List, Tuple
 
+# Lưu candles MT5 theo (symbol, tf)
+_MT5_CANDLES: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
@@ -44,6 +46,26 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
         requests.post(url, json={"chat_id": cid, "text": text}, timeout=12)
     except Exception as e:
         logger.exception("[TG] send failed: %s", e)
+# =========================
+# MT5 ingest (cache candles)
+# =========================
+
+
+def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> None:
+    """
+    Nhận candles từ MT5 bridge và lưu vào RAM để get_candles() / analysis dùng lại.
+    candles: list dict có keys: t, open, high, low, close, volume (hoặc tương tự)
+    """
+    if not symbol or not tf or not candles:
+        return
+
+    # sort theo thời gian cho chắc
+    try:
+        candles = sorted(candles, key=lambda x: int(x.get("t", 0)))
+    except Exception:
+        pass
+
+    _MT5_CANDLES[(symbol, tf)] = candles
 
 def _parse_symbol_from_text(text: str) -> str:
     t = (text or "").lower()
@@ -66,14 +88,21 @@ def root():
     return "OK"
 
 # Accept MT5 push bridge
-@app.post("/data/mt5", response_class=PlainTextResponse)
-async def data_mt5(token: str = "", request: Request = None):
+@app.post("/data/mt5")
+async def data_mt5(request: Request, token: str = ""):
     secret = os.getenv("MT5_PUSH_SECRET", "")
     if not secret or token != secret:
         raise HTTPException(status_code=403, detail="Forbidden")
+
     payload = await request.json()
-    ingest_mt5_candles(payload)
-    return "OK"
+    symbol = payload.get("symbol") or payload.get("sym")  # hỗ trợ 2 kiểu key
+    tf = payload.get("tf")
+    candles = payload.get("candles") or []
+
+    ingest_mt5_candles(symbol, tf, candles)
+    return {"ok": True, "symbol": symbol, "tf": tf, "n": len(candles)}
+
+
 
 # Telegram webhook handler
 @app.post("/telegram/webhook", response_class=PlainTextResponse)
