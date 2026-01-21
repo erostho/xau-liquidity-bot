@@ -38,6 +38,10 @@ MIN_STARS = int(os.getenv("MIN_STARS", "1"))
 # Telegram hard limit is 4096; keep safe chunk size
 TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 
 def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
     token = TELEGRAM_TOKEN
