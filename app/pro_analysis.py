@@ -489,6 +489,56 @@ def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Cand
     })
     return base
 
+def build_short_term_hint(
+    h1_trend,
+    price,
+    m30_low,
+    m30_high,
+    buffer=0.15
+):
+    """
+    Trả về gợi ý ngắn hạn cho trader (không phải điều kiện vào lệnh cứng)
+    """
+
+    hints = []
+
+    # Vùng quan sát chính
+    zone_low = round(m30_low, 2)
+    zone_high = round(m30_high, 2)
+
+    if h1_trend == "bullish":
+        hints.append(
+            f"- Ưu tiên BUY theo xu hướng H1."
+        )
+        hints.append(
+            f"- Vùng quan sát BUY: {zone_low} – {zone_high} (hồi M30)."
+        )
+        hints.append(
+            f"- BUY khi M15 tạo higher-low và đóng trên {zone_low + buffer:.2f}."
+        )
+        hints.append(
+            f"- Nếu M15 đóng dưới {zone_low:.2f} → bỏ kèo, chờ cấu trúc mới."
+        )
+
+    elif h1_trend == "bearish":
+        hints.append(
+            f"- Ưu tiên SELL theo xu hướng H1."
+        )
+        hints.append(
+            f"- Vùng quan sát SELL: {zone_low} – {zone_high} (hồi M30)."
+        )
+        hints.append(
+            f"- SELL khi M15 tạo lower-high và đóng dưới {zone_high - buffer:.2f}."
+        )
+        hints.append(
+            f"- Nếu M15 đóng trên {zone_high:.2f} → bỏ kèo, chờ cấu trúc mới."
+        )
+    else:
+        hints.append(
+            "- Xu hướng H1 không rõ ràng → ưu tiên CHỜ."
+        )
+
+    return "\n".join(hints)
 
 # =========================
 # Formatter (MUST be named format_signal for main.py import)
