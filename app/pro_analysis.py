@@ -85,72 +85,117 @@ def _is_rejection(c: Candle) -> Dict[str, bool]:
         "doji_like": body / rng <= 0.20,
     }
 
+def _ema(values, period: int):
+    if not values:
+        return None
+    k = 2 / (period + 1)
+    ema = values[0]
+    for v in values[1:]:
+        ema = (v * k) + (ema * (1 - k))
+    return ema
+
+def _atr(candles: List[Candle], period: int = 14):
+    if len(candles) < period + 2:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        c = candles[i]
+        p = candles[i - 1]
+        tr = max(c.high - c.low, abs(c.high - p.close), abs(c.low - p.close))
+        trs.append(tr)
+    # ATR = EMA(TR)
+    return _ema(trs[-(period * 3):], period)  # lấy dư data cho ổn định
+
 def _build_short_hint(
-    symbol: str,
-    current_price: float,
+    bias: str,
     h1_trend: str,
+    current_price: float,
     atr15: float,
     m15c: List[Candle],
-    m30_swing_low: Optional[float],
-    m30_swing_high: Optional[float],
-    m15_swing_low: Optional[float],
-    m15_swing_high: Optional[float],
-    entry_price: Optional[float],
-) -> List[str]:
-    """Return concise, actionable short-term guidance lines.
-
-    This is NOT a signal generator. It's a readability layer for the Telegram message.
+    m30c: List[Candle],
+) -> str:
     """
-    # Cushion: small buffer above/below levels to avoid "touch by spread"
-    cushion = max(0.15, atr15 * 0.01) if atr15 else 0.15
+    GỢI Ý NGẮN HẠN (chỉ dùng 30 nến M30 gần nhất để ra vùng hồi).
+    H1 chỉ confirm hướng. Không dùng swing high/low khung lớn.
+    """
 
-    # crude "higher-low" proxy on M15:
-    # compare the minimum low of last 5 CLOSED candles vs the prior 5.
+    # --- buffer cho XAU (default)
+    # nếu atr15 có thì buffer theo rung, tối thiểu 0.15
+    buffer = max(0.15, float(atr15) * 0.12) if atr15 else 0.20
+
+    # --- higher-low proxy (M15)
     higher_low = False
+    lower_high = False
     if len(m15c) >= 12:
-        last5 = m15c[-6:-1]   # exclude current forming candle
+        last5 = m15c[-6:-1]   # 5 nến đã đóng gần nhất
         prev5 = m15c[-11:-6]
         low1 = min(c.low for c in last5)
         low0 = min(c.low for c in prev5)
-        higher_low = low1 > low0 + cushion
+        high1 = max(c.high for c in last5)
+        high0 = max(c.high for c in prev5)
 
-    lines: List[str] = []
+        higher_low = low1 > low0 + buffer
+        lower_high = high1 < high0 - buffer
 
+    # --- 30 nến M30 gần nhất (đã đóng)
+    m30_closed = m30c[:-1] if len(m30c) > 1 else m30c
+    m30_last30 = m30_closed[-30:] if len(m30_closed) >= 30 else m30_closed
+
+    if len(m30_last30) < 10:
+        return "Chưa đủ dữ liệu M30 (cần ~30 nến) → CHỜ."
+
+    closes = [c.close for c in m30_last30]
+    ema30 = _ema(closes, 30) or closes[-1]
+    atr30 = _atr(m30_last30, 14)
+
+    # nếu ATR30 thiếu thì dùng range thay thế
+    hi = max(c.high for c in m30_last30)
+    lo = min(c.low for c in m30_last30)
+    rng = max(hi - lo, 1e-6)
+    if atr30 is None:
+        atr30 = rng * 0.25
+
+    # vùng hồi quanh EMA (pullback zone) — chỉ dựa 30 nến M30
+    # bullish: canh BUY khi hồi xuống dưới EMA
+    # bearish: canh SELL khi hồi lên trên EMA
+    k_lo = float(os.getenv("M30_ZONE_K_LO", "0.80"))  # xa EMA hơn
+    k_hi = float(os.getenv("M30_ZONE_K_HI", "0.30"))  # gần EMA hơn
+
+    lines = ["GỢI Ý NGẮN HẠN:"]
+
+    # dùng H1 confirm hướng
     if h1_trend == "bullish":
-        lines.append("Ưu tiên BUY theo xu hướng H1.")
-        zone_low = m30_swing_low or m15_swing_low
-        zone_high = entry_price or m30_swing_high or m15_swing_high
-        if zone_low and zone_high:
-            lo = min(zone_low, zone_high)
-            hi = max(zone_low, zone_high)
-            lines.append(f"Vùng quan sát BUY: {lo:.2f} – {hi:.2f} (hồi M30).")
-            trigger = (zone_low + cushion) if zone_low else (current_price + cushion)
-            if higher_low:
-                lines.append(f"BUY khi M15 tạo higher-low và đóng trên {trigger:.2f}.")
-            else:
-                lines.append(f"Chờ M15 tạo higher-low rồi đóng trên {trigger:.2f} để BUY an toàn hơn.")
-            if zone_low:
-                lines.append(f"Nếu M15 đóng dưới {zone_low:.2f} → bỏ kèo, chờ cấu trúc mới.")
-        else:
-            lines.append("Chưa đủ dữ liệu để xác định vùng M30 rõ ràng → chờ thêm nến.")
-    elif h1_trend == "bearish":
-        lines.append("Ưu tiên SELL theo xu hướng H1.")
-        zone_high = m30_swing_high or m15_swing_high
-        zone_low = entry_price or m30_swing_low or m15_swing_low
-        if zone_low and zone_high:
-            lo = min(zone_low, zone_high)
-            hi = max(zone_low, zone_high)
-            lines.append(f"Vùng quan sát SELL: {lo:.2f} – {hi:.2f} (hồi M30).")
-            trigger = (zone_high - cushion) if zone_high else (current_price - cushion)
-            lines.append(f"SELL khi M15 hồi lên yếu và đóng dưới {trigger:.2f}.")
-            if zone_high:
-                lines.append(f"Nếu M15 đóng trên {zone_high:.2f} → bỏ kèo, chờ cấu trúc mới.")
-        else:
-            lines.append("Chưa đủ dữ liệu để xác định vùng M30 rõ ràng → chờ thêm nến.")
-    else:
-        lines.append("H1 đang SIDEWAY → ưu tiên CHỜ (đợi phá range hoặc tín hiệu rõ hơn).")
+        z1 = ema30 - (k_lo * atr30)
+        z2 = ema30 - (k_hi * atr30)
+        zone_low, zone_high = (min(z1, z2), max(z1, z2))
 
-    return lines
+        lines.append("- Ưu tiên BUY theo xu hướng H1.")
+        lines.append(f"- Vùng quan sát BUY: {zone_low:.2f} – {zone_high:.2f} (hồi M30, 30 nến gần nhất).")
+        # điều kiện “M15 higher-low + đóng trên”
+        trigger = zone_low + buffer
+        lines.append(f"- BUY khi M15 tạo higher-low và đóng trên {trigger:.2f}.")
+        lines.append(f"- Nếu M15 đóng dưới {zone_low:.2f} → bỏ kèo, chờ cấu trúc mới.")
+        # nếu muốn “đúng ý” hơn: chỉ gợi ý BUY khi bias cũng BUY
+        if bias == "SELL":
+            lines.append("- Lưu ý: M15 bias đang nghiêng SELL, BUY chỉ nên ưu tiên khi có dấu hiệu đảo rõ.")
+
+    elif h1_trend == "bearish":
+        z1 = ema30 + (k_hi * atr30)
+        z2 = ema30 + (k_lo * atr30)
+        zone_low, zone_high = (min(z1, z2), max(z1, z2))
+
+        lines.append("- Ưu tiên SELL theo xu hướng H1.")
+        lines.append(f"- Vùng quan sát SELL: {zone_low:.2f} – {zone_high:.2f} (hồi M30, 30 nến gần nhất).")
+        trigger = zone_high - buffer
+        lines.append(f"- SELL khi M15 tạo lower-high và đóng dưới {trigger:.2f}.")
+        lines.append(f"- Nếu M15 đóng trên {zone_high:.2f} → bỏ kèo, chờ cấu trúc mới.")
+        if bias == "BUY":
+            lines.append("- Lưu ý: M15 bias đang nghiêng BUY, SELL chỉ nên ưu tiên khi có dấu hiệu đảo rõ.")
+
+    else:
+        lines.append("- H1 sideway → ưu tiên CHỜ (đợi phá range hoặc tín hiệu rõ hơn).")
+
+    return "\n".join(lines)
 
 def _fmt(x: float) -> str:
     return f"{x:.3f}".rstrip("0").rstrip(".")
@@ -380,6 +425,23 @@ def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Cand
             "notes": ["Chưa đủ điều kiện vào kèo. Chờ thêm nến xác nhận/retest."],
         })
         return base
+        # =========================
+        # GỢI Ý NGẮN HẠN (30 nến M30, H1 confirm)
+        # =========================
+        try:
+            short_hint_text = _build_short_hint(
+                bias=bias,
+                h1_trend=h1_trend,
+                current_price=cur,      # last_close_15
+                atr15=atr15,
+                m15c=m15c,
+                m30c=m30c,
+            )
+            base["short_hint"] = [
+                ln.strip() for ln in short_hint_text.split("\n") if ln.strip()
+            ]
+        except Exception as e:
+            base["short_hint"] = [f"Lỗi tạo gợi ý ngắn hạn: {e}"]
 
     # ---- H1 confirm (hard filter)
     STRICT_H1_CONFIRM = os.getenv("STRICT_H1_CONFIRM", "1") == "1"  # default ON
