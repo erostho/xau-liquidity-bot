@@ -26,7 +26,7 @@ LAST_CRON_TS = 0
 MIN_CRON_GAP_SEC = int(os.getenv("MIN_CRON_GAP_SEC", "25"))
 
 # Default symbols (can override by env SYMBOLS="XAU/USD,BTC/USD")
-DEFAULT_SYMBOLS = os.getenv("SYMBOLS", "XAU/USD").split(",")
+DEFAULT_SYMBOLS = os.getenv("SYMBOLS", "XAU/USD,BTC/USD").split(",")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # default chat for cron
