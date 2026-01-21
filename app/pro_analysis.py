@@ -257,21 +257,33 @@ def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Cand
 
     ema20_h1 = _ema(h1_closes, 20)
     ema50_h1 = _ema(h1_closes, 50)
-    rsi15 = _rsi(m15_closes, 14)
-    atr15 = _atr(m15c, 14)
-
+    
+    # normalize: _ema có thể trả list hoặc float (do bị định nghĩa trùng)
+    def _ema_last(v):
+        if v is None:
+            return None
+        return v[-1] if isinstance(v, list) else v
+    
+    ema20_last = _ema_last(ema20_h1)
+    ema50_last = _ema_last(ema50_h1)
+    
     # --- Trend H1
     h1_trend = "NEUTRAL"
-    if ema20_h1 and ema50_h1:
-        if ema20_h1[-1] > ema50_h1[-1]:
+    if ema20_last is not None and ema50_last is not None:
+        if ema20_last > ema50_last:
             h1_trend = "bullish"
-        elif ema20_h1[-1] < ema50_h1[-1]:
+        elif ema20_last < ema50_last:
             h1_trend = "bearish"
 
     weakening = False
-    if ema20_h1 and ema50_h1 and len(ema20_h1) >= 6 and len(ema50_h1) >= 6:
+    if isinstance(ema20_h1, list) and isinstance(ema50_h1, list) and len(ema20_h1) >= 6 and len(ema50_h1) >= 6:
         sep_now = ema20_h1[-1] - ema50_h1[-1]
         sep_prev = ema20_h1[-6] - ema50_h1[-6]
+        if h1_trend == "bullish" and sep_now < sep_prev:
+            weakening = True
+        if h1_trend == "bearish" and sep_now > sep_prev:
+            weakening = True
+
         if h1_trend == "bullish" and sep_now < sep_prev:
             weakening = True
         if h1_trend == "bearish" and sep_now > sep_prev:
