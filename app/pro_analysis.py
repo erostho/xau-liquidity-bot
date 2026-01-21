@@ -312,9 +312,28 @@ def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Cand
     below = [p for p, _ in levels_unique if p < cur]
     buy_level = min(above) if above else (max([p for p, _ in levels_unique]) if levels_unique else None)
     sell_level = max(below) if below else (min([p for p, _ in levels_unique]) if levels_unique else None)
+
+    # --- M30 trend (confirm) ---
+    m30_trend = "unknown"
+    try:
+        m30_close = [c["close"] for c in m30][-60:] if m30 else []
+        if len(m30_close) >= 50:
+            ema20_m30 = _ema(m30_close, 20)[-1]
+            ema50_m30 = _ema(m30_close, 50)[-1]
+            if ema20_m30 > ema50_m30:
+                m30_trend = "bullish"
+            elif ema20_m30 < ema50_m30:
+                m30_trend = "bearish"
+            else:
+                m30_trend = "sideways"
+    except Exception:
+        m30_trend = "unknown"
+
     # Short-term hint: dùng 30 nến M15 (≈7.5h) + confirm H1/M30 (tránh mốc xa lắc)
     current_price = last_close_15
-    short_hint = _build_short_hint(h1_trend, m30_trend, m15c, atr15, current_price)
+    #short_hint = _build_short_hint(h1_trend, m30_trend, m15c, atr15, current_price)
+    short_hint = _build_short_hint(h1_trend, m30_trend if "m30_trend" in locals() else "unknown", m15c, atr15, current_price)
+
     base["short_hint"] = short_hint.get("lines", [])
 
     # Observation triggers: breakout trong 30 nến M15
