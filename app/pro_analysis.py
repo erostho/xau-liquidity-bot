@@ -254,34 +254,98 @@ def analyze_pro(symbol: str, m15: Sequence[Any], m30: Sequence[Any], h1: Sequenc
     return out
 
 def format_signal(sig: Dict[str, Any]) -> str:
-    """Telegram-friendly message."""
-    sym = sig.get("symbol", "UNKNOWN")
-    stars = int(sig.get("stars", 1))
-    star_txt = "⭐" * max(1, min(5, stars))
-    rec = sig.get("recommendation", "CHỜ")
-    h1t = sig.get("h1_trend", "unknown")
-    m30t = sig.get("m30_trend", "unknown")
-    rsi15 = sig.get("rsi15", None)
-    atr15 = sig.get("atr15", None)
+    symbol = sig.get("symbol", "XAUUSD")
+    tf = sig.get("tf", "M15")
+    session = sig.get("session", "Phiên Mỹ")
 
-    lines = []
-    lines.append(f"📊 {sym} | M30 | Phiên Mỹ")
+    context_lines = sig.get("context_lines", [])
+    position_lines = sig.get("position_lines", [])
+    short_hint = sig.get("short_hint", [])
+    if isinstance(short_hint, str):
+        short_hint = [short_hint]
+    liquidity_lines = sig.get("liquidity_lines", [])
+    quality_lines = sig.get("quality_lines", [])
+
+    rec = sig.get("recommendation", "CHỜ")
+    stars = int(sig.get("stars", 1))
+    stars_txt = "⭐️" * max(1, min(5, stars))
+
+    entry = sig.get("entry")
+    sl = sig.get("sl")
+    tp1 = sig.get("tp1")
+    tp2 = sig.get("tp2")
+
+    notes = sig.get("notes", [])
+    levels = sig.get("levels", [])
+    levels_info = sig.get("levels_info", [])
+    observation = sig.get("observation", {})
+
+    def nf(x):
+        if x is None:
+            return "..."
+        try:
+            x = float(x)
+            return f"{x:.3f}".rstrip("0").rstrip(".")
+        except Exception:
+            return "..."
+
+    lines: List[str] = []
+    lines.append(f"📊 {symbol} | {tf} | {session}")
     lines.append("TF: Signal=M15 | Entry=M30 | Confirm=H1")
     lines.append("")
     lines.append("Context:")
-    lines.append(f"- H1: {h1t} (EMA20 vs EMA50)")
-    lines.append(f"- M30: {m30t} (EMA20 vs EMA50)")
+    for s in context_lines:
+        lines.append(f"- {s}")
     lines.append("")
     lines.append("GỢI Ý NGẮN HẠN:")
     for ln in sig.get("short_hint", []) or []:
         lines.append(ln)
     lines.append("")
-    lines.append("Chất lượng setup:")
-    if rsi15 is not None:
-        lines.append(f"- RSI(14) M15: {float(rsi15):.3f}")
-    if atr15 is not None:
-        lines.append(f"- ATR(14) M15: ~{float(atr15):.3f}")
+    lines.append("Thanh khoản:")
+    for s in liquidity_lines:
+        lines.append(f"- {s}")
     lines.append("")
-    lines.append(f"🎯 Khuyến nghị: {('🟢 ' if rec=='BUY' else '🔴 ' if rec=='SELL' else '🟡 ')}{rec}")
-    lines.append(f"Độ tin cậy: {star_txt} ({stars}/5)")
+    lines.append("Chất lượng setup:")
+    for s in quality_lines:
+        lines.append(f"- {s}")
+    lines.append("")
+    lines.append(f"🎯 Khuyến nghị: {rec}")
+    lines.append(f"Độ tin cậy: {stars_txt} ({max(1, min(5, stars))}/5)")
+    lines.append("")
+    lines.append(f"ENTRY: {nf(entry)}")
+    lines.append(f"SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
+    lines.append("")
+    lines.append("⚠️ Lưu ý:")
+    if notes:
+        for s in notes:
+            lines.append(f"- {s}")
+    else:
+        lines.append("- Luôn chờ nến xác nhận.")
+    lines.append("")
+    lines.append("Mốc giá quan trọng:")
+    if levels_info:
+        for price, label in levels_info[:8]:
+            lines.append(f"- {nf(price)} — {label}")
+    elif levels:
+        for lv in levels[:6]:
+            lines.append(f"- {nf(lv)}")
+    else:
+        lines.append("- (chưa có mốc)")
+
+    # Extra hint below levels: what M15 close would trigger
+    try:
+        b = observation.get("buy")
+        s = observation.get("sell")
+        buf = float(observation.get("buffer", 0.4))
+        tf_obs = observation.get("tf", "M15")
+        if b is not None and s is not None:
+            lines.append("")
+            lines.append("Gợi ý quan sát vào lệnh:")
+            lines.append(f"- Nếu {tf_obs} đóng > {nf(float(b)+buf)} → ưu tiên canh BUY (theo H1 + chờ M30 confirm)")
+            lines.append(f"- Nếu {tf_obs} đóng < {nf(float(s)-buf)} → ưu tiên canh SELL (theo H1 + chờ M30 confirm)")
+            lines.append(f"- Nếu đóng giữa 2 mốc → CHỜ KÈO")
+    except Exception:
+        pass
+
     return "\n".join(lines)
+
