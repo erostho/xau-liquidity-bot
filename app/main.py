@@ -486,4 +486,6 @@ async def telegram_webhook(request: Request):
         logger.exception("Analysis failed")
         send_telegram_long(chat_id, f"❌ Lỗi khi phân tích: `{str(e)}`")
 
+
+
     return {"ok": True}
