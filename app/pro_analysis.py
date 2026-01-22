@@ -2,6 +2,39 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+# --- Safe candle access helpers (dict / dataclass / object) ---
+def _c_val(c, key: str, default=None):
+    try:
+        if isinstance(c, dict):
+            return c.get(key, default)
+        # dataclass or plain object
+        return getattr(c, key, default)
+    except Exception:
+        return default
+
+def _series(candles, key: str):
+    return [float(_c_val(c, key, 0.0) or 0.0) for c in (candles or [])]
+
+def _close_series(candles):
+    return _series(candles, "close")
+
+def _hl_series(candles):
+    return _series(candles, "high"), _series(candles, "low")
+
+def _trend_label(candles, fast:int=20, slow:int=50):
+    """Return 'bullish' / 'bearish' / 'sideways' based on EMA(fast) vs EMA(slow) on closes."""
+    closes = _close_series(candles)
+    if len(closes) < max(fast, slow) + 2:
+        return "sideways"
+    ema_f = _ema(closes, fast)
+    ema_s = _ema(closes, slow)
+    if ema_f is None or ema_s is None:
+        return "sideways"
+    # Small deadzone to avoid flip-flop
+    if abs(ema_f - ema_s) <= 1e-9:
+        return "sideways"
+    return "bullish" if ema_f > ema_s else "bearish"
 from typing import List, Dict, Any, Optional, Tuple
 import math
 import os
@@ -94,32 +127,54 @@ def _ema(values: List[float], period: int) -> List[float]:
     pad = [ema[0]] * (period - 1)
     return pad + ema
 
-def _rsi(values: List[float], period: int = 14) -> Optional[float]:
-    if len(values) < period + 1:
+def _rsi(values, period: int = 14):
+    # Accept: list[float] OR list[candle]
+    if not values:
         return None
-    gains = 0.0
-    losses = 0.0
-    for i in range(-period, 0):
+    if not isinstance(values[0], (int, float)):
+        values = _close_series(values)
+    values = [float(x) for x in values if x is not None]
+    if len(values) < period + 2:
+        return None
+    gains = []
+    losses = []
+    for i in range(1, len(values)):
         ch = values[i] - values[i - 1]
-        if ch >= 0:
-            gains += ch
-        else:
-            losses += -ch
-    if losses == 0:
+        gains.append(max(ch, 0.0))
+        losses.append(max(-ch, 0.0))
+    # Wilder's smoothing
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_loss == 0:
         return 100.0
-    rs = gains / losses
-    return 100 - (100 / (1 + rs))
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
 
-def _atr(candles: List[Candle], period: int = 14) -> Optional[float]:
-    if len(candles) < period + 1:
+def _atr(candles, period: int = 14):
+    if not candles:
         return None
-    trs: List[float] = []
-    for i in range(-period, 0):
-        c = candles[i]
-        prev = candles[i - 1]
-        tr = max(c.high - c.low, abs(c.high - prev.close), abs(c.low - prev.close))
+    # Accept list[candle] only
+    highs = _series(candles, "high")
+    lows = _series(candles, "low")
+    closes = _series(candles, "close")
+    if len(highs) < period + 2:
+        return None
+    trs = []
+    for i in range(1, len(highs)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
         trs.append(tr)
-    return sum(trs) / period
+    # Wilder
+    atr = sum(trs[:period]) / period
+    for i in range(period, len(trs)):
+        atr = (atr * (period - 1) + trs[i]) / period
+    return atr
 
 def _build_short_hint_m15(m15: list[Candle], h1_trend: str, m30_trend: str) -> list[str]:
     """
@@ -335,11 +390,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     last_close_15 = last15.close
 
     # Indicators (M15)
-    # Indicators (M15)
     m15_closes = [c.close for c in m15c]
     atr15 = _atr(m15c, 14) or 0.0
     rsi15 = _rsi(m15_closes, 14) or 50.0
-
 
     # Trends (H1 + M30)
     h1_trend = _trend_label(h1c)   # bullish / bearish / sideways
