@@ -195,71 +195,86 @@ def _atr(candles, period: int = 14):
 
 def _build_short_hint_m15(m15: list[Candle], h1_trend: str, m30_trend: str) -> list[str]:
     """
-    Gợi ý NGẮN HẠN dựa trên 30 nến M15 (~7.5h) gần nhất để tránh mốc quá xa.
-    Dùng H1/M30 chỉ để confirm hướng (bullish/bearish/sideway).
+    Gợi ý NGẮN HẠN: thuần 30 nến M15 gần nhất (~7.5h), bỏ nến đang chạy.
+    Micro-bias dùng SLOPE: avg(close last10) vs avg(close prev10).
+    (h1_trend/m30_trend chỉ để hiển thị/nhắc thêm, không dùng làm ngưỡng.)
     """
-    if not m15 or len(m15) < 10:
+    if not m15 or len(m15) < 12:
         return ["- Chưa đủ dữ liệu M15 để gợi ý ngắn hạn → CHỜ KÈO"]
 
-    # dùng 30 nến đã đóng gần nhất (bỏ nến cuối để tránh nến đang chạy)
-    use = m15[-31:-1] if len(m15) >= 31 else m15[:-1]
-    if not use:
-        use = m15[-10:]
+    # dùng 30 nến đã đóng (bỏ nến cuối nếu muốn tránh nến đang chạy)
+    closed = m15[:-1] if len(m15) > 1 else m15
+    use = closed[-30:] if len(closed) >= 30 else closed
+    if len(use) < 12:
+        return ["- Chưa đủ dữ liệu M15 (sau khi bỏ nến đang chạy) → CHỜ KÈO"]
 
     lo = min(c.low for c in use)
     hi = max(c.high for c in use)
-    last = m15[-1].close
 
-    atr15 = _atr(m15, 14) or ((hi - lo) / 10.0 if hi > lo else 0.0)
-    if atr15 <= 0:
-        atr15 = max(1e-6, abs(last) * 0.001)
+    # giá tham chiếu = close nến đã đóng gần nhất
+    cur = use[-1].close
 
-    # Ưu tiên theo H1, M30 dùng để tránh ngược hoàn toàn
-    prefer = "neutral"
-    if h1_trend == "bullish" and m30_trend != "bearish":
-        prefer = "buy"
-    elif h1_trend == "bearish" and m30_trend != "bullish":
-        prefer = "sell"
+    # ATR dùng trên chuỗi M15 đã normalize
+    atr15 = _atr(closed, 14)
+    if atr15 is None or atr15 <= 0:
+        # fallback nhẹ nếu thiếu ATR
+        atr15 = max(1e-6, (hi - lo) / 10.0 if hi > lo else abs(cur) * 0.001)
+
+    rng = max(1e-9, hi - lo)
+    pos = (cur - lo) / rng  # 0..1
+    pos_pct = max(0.0, min(1.0, pos)) * 100.0
+
+    # === SLOPE micro-bias (A) ===
+    # last10 vs prev10 (đều là nến đã đóng)
+    micro = "neutral"
+    micro_txt = "Micro-bias: NEUTRAL"
+    slope = 0.0
+    if len(use) >= 20:
+        last10 = [c.close for c in use[-10:]]
+        prev10 = [c.close for c in use[-20:-10]]
+        avg_last = sum(last10) / 10.0
+        avg_prev = sum(prev10) / 10.0
+        slope = avg_last - avg_prev
+
+        # ngưỡng “đáng kể” theo ATR
+        thr = 0.15 * atr15
+        if slope > thr:
+            micro = "buy"
+            micro_txt = f"Micro-bias: BUY nhẹ (slope +{_fmt(slope)} > { _fmt(thr) })"
+        elif slope < -thr:
+            micro = "sell"
+            micro_txt = f"Micro-bias: SELL nhẹ (slope {_fmt(slope)} < -{ _fmt(thr) })"
+        else:
+            micro = "neutral"
+            micro_txt = f"Micro-bias: NEUTRAL (slope {_fmt(slope)} ~ nhỏ)"
+
+    # Range/ATR để biết đang nén hay đang giãn
+    rng_atr = rng / max(1e-9, atr15)
+    if rng_atr <= 2.0:
+        state = "NÉN (range chặt)"
+    elif rng_atr >= 3.5:
+        state = "GIÃN (biến động cao)"
+    else:
+        state = "BÌNH THƯỜNG"
+
+    # breakout trigger theo range30 + buffer
+    buf = 0.20 * atr15
+    buy_trig = hi + buf
+    sell_trig = lo - buf
 
     lines: list[str] = []
+    lines.append(f"- Range 30 nến M15: {_fmt(lo)} – {_fmt(hi)}.")
+    lines.append(f"- Giá hiện tại: {_fmt(cur)} (~{pos_pct:.0f}% trong range) | {state} | Range≈{rng_atr:.1f} ATR.")
+    lines.append(f"- {micro_txt}.")
+    lines.append(f"- QUAN SÁT (breakout): M15 đóng > {_fmt(buy_trig)} → canh BUY | M15 đóng < {_fmt(sell_trig)} → canh SELL.")
+    lines.append("- Nếu vẫn nằm trong range → ưu tiên CHỜ (đợi chạm biên + nến từ chối/retest rồi mới tính).")
 
-    if prefer == "buy":
-        zone_lo = max(lo, last - 1.0 * atr15)
-        zone_hi = min(hi, last - 0.25 * atr15)
-        if zone_hi <= zone_lo:
-            zone_lo = max(lo, last - 0.8 * atr15)
-            zone_hi = min(hi, last - 0.2 * atr15)
+    # optional: nhắc trend HTF (không dùng làm điều kiện)
+    if h1_trend in ("bullish", "bearish"):
+        lines.append(f"- (Tham khảo) H1: {h1_trend} | M30: {m30_trend}.")
 
-        trigger = max(zone_lo, last - 0.4 * atr15)
-        invalid = max(lo, zone_lo - 0.2 * atr15)
-
-        lines.append("- Ưu tiên BUY theo xu hướng H1.")
-        lines.append(f"- Vùng quan sát BUY (30 nến M15): {zone_lo:.3f} – {zone_hi:.3f}.")
-        lines.append(f"- BUY khi M15 tạo higher-low và đóng trên {trigger:.3f}.")
-        lines.append(f"- Nếu M15 đóng dưới {invalid:.3f} → bỏ kèo, chờ cấu trúc mới.")
-        return lines
-
-    if prefer == "sell":
-        zone_hi = min(hi, last + 1.0 * atr15)
-        zone_lo = max(lo, last + 0.25 * atr15)
-        if zone_hi <= zone_lo:
-            zone_lo = max(lo, last + 0.2 * atr15)
-            zone_hi = min(hi, last + 0.8 * atr15)
-
-        trigger = min(zone_hi, last + 0.4 * atr15)
-        invalid = min(hi, zone_hi + 0.2 * atr15)
-
-        lines.append("- Ưu tiên SELL theo xu hướng H1.")
-        lines.append(f"- Vùng quan sát SELL (30 nến M15): {zone_lo:.3f} – {zone_hi:.3f}.")
-        lines.append(f"- SELL khi M15 tạo lower-high và đóng dưới {trigger:.3f}.")
-        lines.append(f"- Nếu M15 đóng trên {invalid:.3f} → bỏ kèo, chờ cấu trúc mới.")
-        return lines
-
-    # neutral
-    lines.append("- Chưa có gợi ý ngắn hạn rõ ràng → CHỜ KÈO")
-    lines.append(f"- Range 30 nến M15: {lo:.3f} – {hi:.3f}.")
-    lines.append(f"- QUAN SÁT (ngắn hạn): M15 đóng > {hi:.3f} → BUY | M15 đóng < {lo:.3f} → SELL | giữa vùng → CHỜ")
     return lines
+
 
 def _swing_high(candles: List[Candle], lookback: int = 80) -> Optional[float]:
     if len(candles) < 5:
