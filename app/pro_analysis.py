@@ -494,11 +494,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # NOTE: Không dùng swing H1/M30 để tránh ngưỡng quan sát "xa lắc".
     use = m15c[-31:-1] if len(m15c) >= 31 else (m15c[:-1] if len(m15c) > 1 else m15c)
     if use:
-        r_lo = min(c["low"] for c in use)
-        r_hi = max(c["high"] for c in use)
+        r_lo = min(c.low for c in use)
+        r_hi = max(c.high for c in use)
     else:
         # fallback (rất hiếm): dùng giá hiện tại
-        r_lo = r_hi = float(m15c[-1]["close"]) if m15c else 0.0
+        r_lo = r_hi = float(m15c[-1].close) if m15c else 0.0
 
     base["observation"] = {
         "tf": "M15",
