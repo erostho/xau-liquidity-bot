@@ -23,6 +23,65 @@ class Candle:
 
 
 # =========================
+# Candle normalization (dict/object -> Candle)
+# =========================
+def _safe_candles(raw) -> List[Candle]:
+    """Normalize candles coming from TwelveData/MT5 push into List[Candle].
+    Accepts: Candle, dict, or objects with OHLC attrs. Returns sorted by ts."""
+    if not raw:
+        return []
+    out: List[Candle] = []
+    for c in raw:
+        if c is None:
+            continue
+        if isinstance(c, Candle):
+            out.append(c)
+            continue
+        # dict payloads (MT5 push or TwelveData)
+        if isinstance(c, dict):
+            ts = c.get("ts") or c.get("time") or c.get("t") or 0
+            try:
+                ts_i = int(float(ts))
+            except Exception:
+                ts_i = 0
+            def _f(x, default=0.0):
+                try:
+                    return float(x)
+                except Exception:
+                    return float(default)
+            out.append(Candle(
+                ts=ts_i,
+                open=_f(c.get("open")),
+                high=_f(c.get("high")),
+                low=_f(c.get("low")),
+                close=_f(c.get("close")),
+                volume=_f(c.get("volume") if c.get("volume") is not None else c.get("tick_volume"), 0.0),
+            ))
+            continue
+        # object payloads
+        ts = getattr(c, "ts", None) or getattr(c, "time", None) or getattr(c, "t", None) or 0
+        try:
+            ts_i = int(float(ts))
+        except Exception:
+            ts_i = 0
+        def _fa(attr, default=0.0):
+            try:
+                return float(getattr(c, attr))
+            except Exception:
+                return float(default)
+        vol = getattr(c, "volume", None)
+        if vol is None:
+            vol = getattr(c, "tick_volume", 0.0)
+        try:
+            vol_f = float(vol)
+        except Exception:
+            vol_f = 0.0
+        out.append(Candle(ts=ts_i, open=_fa("open"), high=_fa("high"), low=_fa("low"), close=_fa("close"), volume=vol_f))
+    out.sort(key=lambda x: x.ts)
+    return out
+
+
+# =========================
 # Indicators
 # =========================
 def _ema(values: List[float], period: int) -> List[float]:
