@@ -24,6 +24,14 @@ def _close_series(candles):
 
 def _hl_series(candles):
     return _series(candles, "high"), _series(candles, "low")
+def _closes(candles):
+    out = []
+    for c in candles or []:
+        if isinstance(c, dict):
+            out.append(float(c.get("close", 0.0)))
+        else:
+            out.append(float(getattr(c, "close", 0.0)))
+    return out
 
 def _trend_label(candles):
     """
