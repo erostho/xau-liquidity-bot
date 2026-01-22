@@ -38,9 +38,6 @@ MIN_STARS = int(os.getenv("MIN_STARS", "1"))
 # Telegram hard limit is 4096; keep safe chunk size
 TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
 
 def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
     token = TELEGRAM_TOKEN
@@ -71,17 +68,6 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
     except Exception as e:
         logger.exception("[TG] send failed: %s", e)
 
-MIN_STARS_CRON = 3  # chỉ áp dụng cho cron
-
-def should_send_signal(stars: int, source: str) -> bool:
-    """
-    source:
-      - "cron"  : auto job -> chặn dưới MIN_STARS_CRON
-      - "manual": user nhắn XAU NOW/BTC NOW -> luôn trả lời
-    """
-    if source == "manual":
-        return True
-    return int(stars or 0) >= MIN_STARS_CRON
 
 def _parse_symbol_from_text(text: str) -> str:
     t = (text or "").lower()
@@ -175,16 +161,36 @@ async def telegram_webhook(request: Request):
             symbols = [_parse_symbol_from_text(text)]
 
         for sym in symbols:
+
+
             try:
+
+
                 data = _fetch_triplet(sym, limit=260)
+
+
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"])
-                # ✅ MANUAL (Telegram "NOW"): luôn trả lời, KHÔNG lọc theo sao
-                # (tuỳ thích) nếu dưới MIN_STARS thì thêm 1 dòng cảnh báo nhẹ
-                stars = int(sig.get("stars", 0))
-                msg_text = format_signal(sig)
+
+
+                stars = int(sig.get("stars", 0) or 0)
+
+
+                # Manual query: ALWAYS trả về đầy đủ format, dù < MIN_STARS
+
+
                 if stars < MIN_STARS:
-                    msg_text = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ — tham khảo thôi.\n\n" + msg_text
-                _send_telegram(msg_text, chat_id=chat_id)
+
+
+                    prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ — tham khảo thôi.\n\n"
+
+                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+
+
+                else:
+
+
+                    _send_telegram(format_signal(sig), chat_id=chat_id)
+
 
             except Exception as e:
                 logger.exception("analysis failed: %s", e)
