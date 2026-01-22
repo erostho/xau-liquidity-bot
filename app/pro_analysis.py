@@ -490,12 +490,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["levels_info"] = levels_unique[:8]
     base["levels"] = [round(p, 3) for p, _ in levels_unique[:8]]
 
-    # Observation triggers for M15 close (thuần range 30 nến M15 gần nhất ~8h)
-    # Observation triggers for M15 close (giữ logic gốc: breakout/swing-based)
-    # NOTE: Phần "GỢI Ý NGẮN HẠN" phía trên dùng range 30 nến M15,
-    # nhưng "Gợi ý quan sát vào lệnh" phải giữ theo các mốc swing/HTF như bản cũ.
-    cur = float(current_price or _c_float(m15c[-1], "close", 0.0)) if m15c else float(current_price or 0.0)
-    
+    # Observation triggers for M15 close (thuần range 30 nến M15 gần nhất ~8h, giữ logic gốc: breakout/swing-based))
+    # NOTE: Phần "GỢI Ý NGẮN HẠN" phía trên dùng range 30 nến M15, nhưng "Gợi ý quan sát vào lệnh" phải giữ theo các mốc swing/HTF như bản cũ.
+    # Giá hiện tại dùng close nến M15 mới nhất (không cần biến current_price)
+    cur = float(_c_float(m15c[-1], "close", 0.0)) if m15c else float(entry_price or 0.0)
+   
     # levels_unique = [(price, label), ...] đã được build ở phần mốc giá quan trọng
     lv_prices = [float(p) for (p, _lbl) in (levels_unique or []) if p is not None]
     
