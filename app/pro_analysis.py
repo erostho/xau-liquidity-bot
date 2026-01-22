@@ -491,21 +491,31 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["levels"] = [round(p, 3) for p, _ in levels_unique[:8]]
 
     # Observation triggers for M15 close (thuần range 30 nến M15 gần nhất ~8h)
-    # NOTE: Không dùng swing H1/M30 để tránh ngưỡng quan sát "xa lắc".
-    use = m15c[-31:-1] if len(m15c) >= 31 else (m15c[:-1] if len(m15c) > 1 else m15c)
-    if use:
-        r_lo = min(c.low for c in use)
-        r_hi = max(c.high for c in use)
+    # Observation triggers for M15 close (giữ logic gốc: breakout/swing-based)
+    # NOTE: Phần "GỢI Ý NGẮN HẠN" phía trên dùng range 30 nến M15,
+    # nhưng "Gợi ý quan sát vào lệnh" phải giữ theo các mốc swing/HTF như bản cũ.
+    cur = float(current_price or _c_float(m15c[-1], "close", 0.0)) if m15c else float(current_price or 0.0)
+    
+    # levels_unique = [(price, label), ...] đã được build ở phần mốc giá quan trọng
+    lv_prices = [float(p) for (p, _lbl) in (levels_unique or []) if p is not None]
+    
+    if lv_prices:
+        above = [p for p in lv_prices if p > cur]
+        below = [p for p in lv_prices if p < cur]
+        buy_level = min(above) if above else max(lv_prices)
+        sell_level = max(below) if below else min(lv_prices)
     else:
-        # fallback (rất hiếm): dùng giá hiện tại
-        r_lo = r_hi = float(m15c[-1].close) if m15c else 0.0
-
+        buy_level = sell_level = cur
+    
+    obs_buffer = float((atr15 or 0.0) * 0.10)
+    
     base["observation"] = {
         "tf": "M15",
-        "buy": float(r_hi),
-        "sell": float(r_lo),
-        "buffer": 0.0,
+        "buy": float(buy_level),
+        "sell": float(sell_level),
+        "buffer": obs_buffer,
     }
+
 
     # Market state spike
     ranges20 = [c.high - c.low for c in m15c[-20:]]
