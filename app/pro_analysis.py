@@ -628,7 +628,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         base.update({
             "context_lines": context_lines,
             "position_lines": position_lines,
-            "short_hint": [],
             "liquidity_lines": liquidity_lines,
             "quality_lines": quality_lines + ["RR ~ 1:2 (mục tiêu)"],
             "recommendation": "CHỜ",
