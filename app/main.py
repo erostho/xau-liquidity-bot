@@ -38,10 +38,6 @@ MIN_STARS = int(os.getenv("MIN_STARS", "1"))
 # Telegram hard limit is 4096; keep safe chunk size
 TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
 
 def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
     token = TELEGRAM_TOKEN
@@ -168,6 +164,9 @@ async def telegram_webhook(request: Request):
             try:
                 data = _fetch_triplet(sym, limit=260)
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"])
+                if int(sig.get("stars", 0)) < MIN_STARS:
+                    _send_telegram(f"⏳ {sym}: chưa có kèo đủ {MIN_STARS}⭐ (hiện {sig.get('stars',0)}⭐) → CHỜ", chat_id=chat_id)
+                    continue
                 _send_telegram(format_signal(sig), chat_id=chat_id)
             except Exception as e:
                 logger.exception("analysis failed: %s", e)
