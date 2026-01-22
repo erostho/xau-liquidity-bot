@@ -1,6 +1,6 @@
 # app/pro_analysis.py
 from __future__ import annotations
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Sequence
 import math
 import os
 from app.risk import calc_smart_sl_tp
@@ -258,7 +258,9 @@ def _build_short_hint_m15(m15: list[Candle], h1_trend: str, m30_trend: str) -> l
     # neutral
     lines.append("- Chưa có gợi ý ngắn hạn rõ ràng → CHỜ KÈO")
     lines.append(f"- Range 30 nến M15: {lo:.3f} – {hi:.3f}.")
+    lines.append(f"- QUAN SÁT (ngắn hạn): M15 đóng > {hi:.3f} → BUY | M15 đóng < {lo:.3f} → SELL | giữa vùng → CHỜ")
     return lines
+
 def _swing_high(candles: List[Candle], lookback: int = 80) -> Optional[float]:
     if len(candles) < 5:
         return None
@@ -494,24 +496,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # NOTE: Phần "GỢI Ý NGẮN HẠN" phía trên dùng range 30 nến M15, nhưng "Gợi ý quan sát vào lệnh" phải giữ theo các mốc swing/HTF như bản cũ.
     # Giá hiện tại dùng close nến M15 mới nhất (không cần biến current_price)
    # ===== SHORT-TERM HINT (30 candles M15 ONLY) =====
-    use = m15c[-30:] if len(m15c) >= 30 else m15c
-    
-    if use:
-        st_low = min(c.low for c in use)
-        st_high = max(c.high for c in use)
-    else:
-        st_low = st_high = m15c[-1].close if m15c else 0.0
-    
-    base["short_term_hint"] = {
-        "tf": "M15",
-        "range_low": float(st_low),
-        "range_high": float(st_high),
-    } 
-
    
     # levels_unique = [(price, label), ...] đã được build ở phần mốc giá quan trọng
+    cur = float(last_close_15)
     lv_prices = [float(p) for (p, _lbl) in (levels_unique or []) if p is not None]
-    
     if lv_prices:
         above = [p for p in lv_prices if p > cur]
         below = [p for p in lv_prices if p < cur]
@@ -867,18 +855,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     else:
         lines.append("- Chưa có gợi ý ngắn hạn rõ ràng → CHỜ KÈO")
 
-    # Add 1 guidance line right under Vị trí (as requested)
-    try:
-        b = observation.get("buy")
-        s = observation.get("sell")
-        buf = float(observation.get("buffer", 0.4))
-        tf_obs = observation.get("tf", "M15")
-        if b is not None and s is not None:
-            lines.append(
-                f"- QUAN SÁT: {tf_obs} đóng > {nf(float(b)+buf)} → BUY | {tf_obs} đóng < {nf(float(s)-buf)} → SELL | ngoài vùng → CHỜ KÈO"
-            )
-    except Exception:
-        pass
     lines.append("")
     lines.append("Thanh khoản:")
     for s in liquidity_lines:
