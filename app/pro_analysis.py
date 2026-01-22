@@ -335,9 +335,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     last_close_15 = last15.close
 
     # Indicators (M15)
+    # Indicators (M15)
     m15_closes = [c.close for c in m15c]
     atr15 = _atr(m15c, 14) or 0.0
     rsi15 = _rsi(m15_closes, 14) or 50.0
+
 
     # Trends (H1 + M30)
     h1_trend = _trend_label(h1c)   # bullish / bearish / sideways
