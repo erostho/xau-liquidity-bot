@@ -493,11 +493,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # Observation triggers for M15 close (thuần range 30 nến M15 gần nhất ~8h, giữ logic gốc: breakout/swing-based))
     # NOTE: Phần "GỢI Ý NGẮN HẠN" phía trên dùng range 30 nến M15, nhưng "Gợi ý quan sát vào lệnh" phải giữ theo các mốc swing/HTF như bản cũ.
     # Giá hiện tại dùng close nến M15 mới nhất (không cần biến current_price)
-    last = m15c[-1] if m15c else None
-    if last is None:
-        cur = float(entry_price or 0.0)
+   # ===== SHORT-TERM HINT (30 candles M15 ONLY) =====
+    use = m15c[-30:] if len(m15c) >= 30 else m15c
+    
+    if use:
+        st_low = min(c.low for c in use)
+        st_high = max(c.high for c in use)
     else:
-        cur = float(getattr(last, "close", None) or (last.get("close") if isinstance(last, dict) else 0.0) or 0.0)
+        st_low = st_high = m15c[-1].close if m15c else 0.0
+    
+    base["short_term_hint"] = {
+        "tf": "M15",
+        "range_low": float(st_low),
+        "range_high": float(st_high),
+    } 
 
    
     # levels_unique = [(price, label), ...] đã được build ở phần mốc giá quan trọng
