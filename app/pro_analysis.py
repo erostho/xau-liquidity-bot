@@ -1,6 +1,9 @@
 # app/pro_analysis.py
 from __future__ import annotations
-
+from typing import List, Dict, Any, Optional, Tuple
+import math
+import os
+from app.risk import calc_smart_sl_tp
 from dataclasses import dataclass
 
 # --- Safe candle access helpers (dict / dataclass / object) ---
@@ -22,25 +25,31 @@ def _close_series(candles):
 def _hl_series(candles):
     return _series(candles, "high"), _series(candles, "low")
 
-def _trend_label(candles, fast:int=20, slow:int=50):
-    """Return 'bullish' / 'bearish' / 'sideways' based on EMA(fast) vs EMA(slow) on closes."""
-    closes = _close_series(candles)
-    if len(closes) < max(fast, slow) + 2:
+def _trend_label(candles):
+    """
+    Return: 'bullish' / 'bearish' / 'sideways'
+    candles: list[dict] hoặc list[Candle]
+    """
+    closes = _closes(candles)
+    if not closes or len(closes) < 60:
         return "sideways"
-    ema_f = _ema(closes, fast)
-    ema_s = _ema(closes, slow)
-    if ema_f is None or ema_s is None:
+
+    # _ema() trong file của mày đang trả về LIST (chuỗi EMA),
+    # nên phải lấy EMA cuối cùng để so sánh.
+    ema_f_series = _ema(closes, 20)
+    ema_s_series = _ema(closes, 50)
+
+    if not ema_f_series or not ema_s_series:
         return "sideways"
-    # Small deadzone to avoid flip-flop
+
+    ema_f = float(ema_f_series[-1])
+    ema_s = float(ema_s_series[-1])
+
+    # tránh chia/so sánh kiểu “rất sát nhau”
     if abs(ema_f - ema_s) <= 1e-9:
         return "sideways"
+
     return "bullish" if ema_f > ema_s else "bearish"
-from typing import List, Dict, Any, Optional, Tuple
-import math
-import os
-
-from app.risk import calc_smart_sl_tp
-
 
 # =========================
 # Data model (MUST exist for import in main.py)
