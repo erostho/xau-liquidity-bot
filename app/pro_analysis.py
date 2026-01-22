@@ -490,21 +490,21 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["levels_info"] = levels_unique[:8]
     base["levels"] = [round(p, 3) for p, _ in levels_unique[:8]]
 
-    # Observation triggers for M15 close (simple, trader-friendly)
-    try:
-        obs_buffer = float(os.getenv("OBS_BUFFER", "0.40"))  # default XAU
-    except Exception:
-        obs_buffer = 0.40
-    cur = float(last_close_15)
-    above = [p for p, _ in levels_unique if p > cur]
-    below = [p for p, _ in levels_unique if p < cur]
-    buy_level = min(above) if above else (max([p for p, _ in levels_unique]) if levels_unique else None)
-    sell_level = max(below) if below else (min([p for p, _ in levels_unique]) if levels_unique else None)
+    # Observation triggers for M15 close (thuần range 30 nến M15 gần nhất ~8h)
+    # NOTE: Không dùng swing H1/M30 để tránh ngưỡng quan sát "xa lắc".
+    use = m15c[-31:-1] if len(m15c) >= 31 else (m15c[:-1] if len(m15c) > 1 else m15c)
+    if use:
+        r_lo = min(c["low"] for c in use)
+        r_hi = max(c["high"] for c in use)
+    else:
+        # fallback (rất hiếm): dùng giá hiện tại
+        r_lo = r_hi = float(m15c[-1]["close"]) if m15c else 0.0
+
     base["observation"] = {
         "tf": "M15",
-        "buffer": obs_buffer,
-        "buy": float(buy_level) if buy_level is not None else None,
-        "sell": float(sell_level) if sell_level is not None else None,
+        "buy": float(r_hi),
+        "sell": float(r_lo),
+        "buffer": 0.0,
     }
 
     # Market state spike
