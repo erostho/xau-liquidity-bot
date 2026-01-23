@@ -274,6 +274,116 @@ def _build_short_hint_m15(m15: list[Candle], h1_trend: str, m30_trend: str) -> l
         lines.append(f"- (Tham khảo) H1: {h1_trend} | M30: {m30_trend}.")
 
     return lines
+def _pick_trade_method_m30(m30c: List[Candle], atr30: Optional[float]) -> Dict[str, Any]:
+    """
+    Dựa 20 nến M30 đã đóng → gợi ý METHOD + entry/SL/TP dạng hướng dẫn.
+    Return dict: {"method": str, "lines": list[str]}
+    """
+    if not m30c or len(m30c) < 25:
+        return {"method": "UNKNOWN", "lines": ["Chưa đủ dữ liệu M30 để gợi ý phương pháp trade."]}
+
+    closed = m30c[:-1] if len(m30c) > 1 else m30c
+    use = closed[-20:] if len(closed) >= 20 else closed
+    if len(use) < 20:
+        return {"method": "UNKNOWN", "lines": ["Chưa đủ 20 nến M30 đã đóng → CHỜ."]}
+
+    hi = max(c.high for c in use)
+    lo = min(c.low for c in use)
+    rng = max(1e-9, hi - lo)
+
+    # atr30 fallback
+    a = atr30 if (atr30 is not None and atr30 > 0) else max(1e-6, rng / 8.0)
+
+    cur = use[-1].close
+    pos = (cur - lo) / rng  # 0..1
+
+    # slope: avg last5 - avg prev5
+    last5 = [c.close for c in use[-5:]]
+    prev5 = [c.close for c in use[-10:-5]]
+    slope = (sum(last5)/5.0) - (sum(prev5)/5.0)
+    thr = 0.20 * a
+
+    # range/atr: biết đang nén hay giãn
+    rng_atr = rng / max(1e-9, a)
+
+    # --- Detect RANGE trading (điều kiện: slope nhỏ + range vừa phải)
+    is_range = abs(slope) <= thr and rng_atr <= 3.2
+
+    # --- Detect BREAKOUT-RETEST (điều kiện: có nén trước đó + close vượt biên rõ)
+    # nén: 10 nến đầu range nhỏ hơn 10 nến sau (đang bung)
+    first10 = use[:10]
+    last10  = use[10:]
+    r1 = max(c.high for c in first10) - min(c.low for c in first10)
+    r2 = max(c.high for c in last10)  - min(c.low for c in last10)
+    was_compress = (r1 / max(1e-9, a)) <= 1.8
+    breakout_up = cur > hi - 0.05 * a and slope > thr
+    breakout_dn = cur < lo + 0.05 * a and slope < -thr
+    is_breakout = was_compress and (breakout_up or breakout_dn)
+
+    # --- Detect IPC (Impulse–Pullback–Continuation)
+    # impulse: 1-2 nến range lớn; pullback: 2-4 nến range nhỏ ngược hướng; continuation: close quay lại theo hướng impulse
+    ranges = [c.high - c.low for c in use]
+    big = [r for r in ranges if r >= 1.3 * a]
+    has_impulse = len(big) >= 1
+    is_ipc = (has_impulse and abs(slope) > thr and rng_atr >= 2.0)
+
+    lines: List[str] = []
+    # ưu tiên chọn method theo tính “rõ”
+    if is_breakout:
+        method = "BREAKOUT-RETEST"
+        direction = "BUY" if breakout_up else "SELL"
+        # entry: chờ retest về biên range
+        entry = hi - 0.30 * a if direction == "BUY" else lo + 0.30 * a
+        sl = entry - 1.1 * a if direction == "BUY" else entry + 1.1 * a
+        tp1 = entry + 1.2 * a if direction == "BUY" else entry - 1.2 * a
+        tp2 = entry + 2.0 * a if direction == "BUY" else entry - 2.0 * a
+
+        lines.append(f"Method: {method} ({direction}).")
+        lines.append(f"Vị trí: giá đang {'gần biên trên' if pos>0.75 else 'gần biên dưới' if pos<0.25 else 'giữa range'} của 20 nến M30.")
+        lines.append(f"Entry gợi ý: chờ RETEST về ~{_fmt(entry)} rồi mới vào ({direction}).")
+        lines.append(f"SL gợi ý: {_fmt(sl)} | TP1: {_fmt(tp1)} | TP2: {_fmt(tp2)}.")
+        lines.append("Trigger: ưu tiên có nến M30/M15 từ chối tại vùng retest (đuôi/wick) rồi mới bấm.")
+        return {"method": method, "lines": lines}
+
+    if is_range:
+        method = "RANGE"
+        # range trading: buy near lo, sell near hi
+        buy_zone = lo + 0.20 * a
+        sell_zone = hi - 0.20 * a
+        buy_sl = lo - 0.80 * a
+        sell_sl = hi + 0.80 * a
+        buy_tp = lo + 1.0 * a
+        sell_tp = hi - 1.0 * a
+
+        lines.append(f"Method: {method} (đánh trong biên).")
+        lines.append(f"Range20 M30: {_fmt(lo)} – {_fmt(hi)} | Range≈{rng_atr:.1f} ATR | slope nhỏ.")
+        lines.append(f"BUY gần đáy range: ~{_fmt(buy_zone)} | SL: {_fmt(buy_sl)} | TP: {_fmt(buy_tp)}.")
+        lines.append(f"SELL gần đỉnh range: ~{_fmt(sell_zone)} | SL: {_fmt(sell_sl)} | TP: {_fmt(sell_tp)}.")
+        lines.append("Trigger: chờ nến từ chối (rejection) ở biên range, không FOMO giữa range.")
+        return {"method": method, "lines": lines}
+
+    if is_ipc:
+        method = "IPC"
+        direction = "BUY" if slope > 0 else "SELL"
+        # IPC: entry pullback 0.5-0.8 ATR từ điểm hiện tại
+        entry = cur - 0.6 * a if direction == "BUY" else cur + 0.6 * a
+        sl = entry - 1.2 * a if direction == "BUY" else entry + 1.2 * a
+        tp1 = entry + 1.2 * a if direction == "BUY" else entry - 1.2 * a
+        tp2 = entry + 2.1 * a if direction == "BUY" else entry - 2.1 * a
+
+        lines.append(f"Method: {method} ({direction}) – xung lực mạnh, chờ hồi.")
+        lines.append(f"Vị trí: giá ~{pos*100:.0f}% trong range 20 nến M30 | Range≈{rng_atr:.1f} ATR.")
+        lines.append(f"Entry gợi ý: chờ PULLBACK về ~{_fmt(entry)} rồi canh {direction} (ưu tiên có HL/LH).")
+        lines.append(f"SL gợi ý: {_fmt(sl)} | TP1: {_fmt(tp1)} | TP2: {_fmt(tp2)}.")
+        lines.append("Trigger: M15 tạo cấu trúc (HL cho BUY / LH cho SELL) tại vùng pullback.")
+        return {"method": method, "lines": lines}
+
+    # default
+    method = "WAIT"
+    lines.append("Method: CHỜ – 20 nến M30 chưa ra mẫu rõ (không range đẹp, không breakout rõ, không IPC sạch).")
+    lines.append(f"Range20 M30: {_fmt(lo)} – {_fmt(hi)} | Range≈{rng_atr:.1f} ATR | slope={_fmt(slope)}.")
+    lines.append("Chờ: hoặc nén thêm (range/ATR giảm) rồi breakout, hoặc chạm biên rồi rejection rõ.")
+    return {"method": method, "lines": lines}
 
 
 def _swing_high(candles: List[Candle], lookback: int = 80) -> Optional[float]:
@@ -450,6 +560,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     ema50_h1 = _ema(h1_closes, 50)
     rsi15 = _rsi(m15_closes, 14)
     atr15 = _atr(m15c, 14)
+    # --- Trade method suggestion (20 nến M30)
+    m30_closed = m30c[:-1] if len(m30c) > 1 else m30c
+    atr30 = _atr(m30_closed, 14)
+    base["trade_method"] = _pick_trade_method_m30(m30c, atr30)
 
     # --- Trend H1
     h1_trend = "NEUTRAL"
@@ -880,6 +994,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append("")
     lines.append(f"🎯 Khuyến nghị: {rec}")
     lines.append(f"Độ tin cậy: {stars_txt} ({max(1, min(5, stars))}/5)")
+    tm = sig.get("trade_method", None)
+    if isinstance(tm, dict):
+        tm_lines = tm.get("lines", [])
+        if tm_lines:
+            lines.append("")
+            lines.append("📌 Phương pháp trade gợi ý (M30/20 nến):")
+            for s in tm_lines:
+                lines.append(f"- {s}")
     lines.append("")
     lines.append(f"ENTRY: {nf(entry)}")
     lines.append(f"SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
