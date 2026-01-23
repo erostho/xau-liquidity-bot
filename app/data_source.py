@@ -17,7 +17,7 @@ _TD_CACHE = {}  # key -> (ts_minute, candles)
 # MT5 symbol mapping (so XAU/USD can find XAUUSDm, etc.)
 MT5_SYMBOL_XAU = os.getenv("MT5_SYMBOL_XAU", "XAUUSDm")
 MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDm")
-
+MT5_SYMBOL_XAG = os.getenv("MT5_SYMBOL_XAG", "XAGUSDm")
 # How "fresh" MT5 data must be to be trusted (seconds)
 MT5_MAX_AGE_SEC = int(os.getenv("MT5_MAX_AGE_SEC", "1200"))  # 20 minutes default
 
@@ -57,7 +57,11 @@ def _symbol_variants(symbol: str) -> List[str]:
         out.append("BTCUSD")
         out.append("BTCUSDm")
         out.append("BTC/USD")
-
+    if "xag" in low:
+        out.append(MT5_SYMBOL_XAG)
+        out.append("XAGUSD")
+        out.append("XAGUSDm")
+        out.append("XAG/USD")
     if "/" in s:
         out.append(s.replace("/", ""))
         out.append(s.replace("/", "") + "m")
