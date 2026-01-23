@@ -20,6 +20,76 @@ MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDm")
 MT5_SYMBOL_XAG = os.getenv("MT5_SYMBOL_XAG", "XAGUSDm")
 # How "fresh" MT5 data must be to be trusted (seconds)
 MT5_MAX_AGE_SEC = int(os.getenv("MT5_MAX_AGE_SEC", "1200"))  # 20 minutes default
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def _disk_key(symbol: str, tf2: str) -> str:
+    # file name safe
+    s = (symbol or "").replace("/", "").replace(" ", "")
+    return f"mt5_{s}_{tf2}.json"
+
+def _disk_path(symbol: str, tf2: str) -> str:
+    return os.path.join(DATA_DIR, _disk_key(symbol, tf2))
+
+def _candles_to_dicts(candles: List[Candle]) -> List[Dict[str, Any]]:
+    out = []
+    for c in candles or []:
+        out.append({
+            "ts": int(getattr(c, "ts", 0) or 0),
+            "open": float(getattr(c, "open", 0.0) or 0.0),
+            "high": float(getattr(c, "high", 0.0) or 0.0),
+            "low": float(getattr(c, "low", 0.0) or 0.0),
+            "close": float(getattr(c, "close", 0.0) or 0.0),
+            "volume": float(getattr(c, "volume", 0.0) or 0.0),
+        })
+    return out
+
+def _dicts_to_candles(items: List[Dict[str, Any]]) -> List[Candle]:
+    out: List[Candle] = []
+    for d in items or []:
+        try:
+            ts = int(d.get("ts", 0) or 0)
+            out.append(Candle(
+                ts=ts,
+                open=float(d.get("open", 0.0) or 0.0),
+                high=float(d.get("high", 0.0) or 0.0),
+                low=float(d.get("low", 0.0) or 0.0),
+                close=float(d.get("close", 0.0) or 0.0),
+                volume=float(d.get("volume", 0.0) or 0.0),
+            ))
+        except Exception:
+            continue
+    out.sort(key=lambda x: x.ts)
+    return out
+
+def _save_disk_cache(symbol: str, tf2: str, candles: List[Candle]) -> None:
+    try:
+        payload = {
+            "symbol": symbol,
+            "tf": tf2,
+            "saved_at": int(time.time()),
+            "candles": _candles_to_dicts(candles),
+        }
+        path = _disk_path(symbol, tf2)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            import json
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.warning(f"[MT5][DISK] save failed {symbol} {tf2}: {e}")
+
+def _load_disk_cache(symbol: str, tf2: str) -> Optional[Dict[str, Any]]:
+    path = _disk_path(symbol, tf2)
+    if not os.path.exists(path):
+        return None
+    try:
+        import json
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"[MT5][DISK] load failed {symbol} {tf2}: {e}")
+        return None
 
 def _tf_seconds(tf: str) -> int:
     tf2 = _tf_alias(tf)
@@ -120,11 +190,14 @@ def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> i
     if not parsed:
         raise ValueError("No candles to ingest")
     now_ts = int(time.time())
+    # ✅ lưu RAM theo nhiều variants để lookup ăn ngay
     for symv in _symbol_variants(sym):
         _MT5_CACHE[(symv, tf2)] = {"candles": parsed, "ts": now_ts}
+        # ✅ lưu DISK luôn (mỗi variant 1 file) để restart vẫn còn
+        _save_disk_cache(symv, tf2, parsed)
     logger.info(f"[MT5] Received {len(parsed)} candles {sym} {tf2}")
-    logger.info(f"[MT5][CACHE_SET] sym={sym} tf2={tf2} first_ts={parsed[0].ts} last_ts={parsed[-1].ts} n={len(parsed)}")
     return len(parsed)
+
 def _get_mt5_cached(symbol: str, tf: str, limit: int):
     tf2 = _tf_alias(tf)
     now = int(time.time())
@@ -133,9 +206,22 @@ def _get_mt5_cached(symbol: str, tf: str, limit: int):
     for sym in _symbol_variants(symbol):
         key = (sym, tf2)
         item = _MT5_CACHE.get(key)
+        # ✅ RAM MISS -> thử DISK
         if not item:
-            logger.info(f"[MT5][MISS] key={key}")
+            disk = _load_disk_cache(sym, tf2)
+            if disk:
+                saved_at = int(disk.get("saved_at", 0) or 0)
+                age_disk = now - saved_at
+                if age_disk <= MT5_MAX_AGE_SEC:
+                    candles = _dicts_to_candles(disk.get("candles") or [])
+                    if len(candles) >= 20:
+                        # nạp lại vào RAM cho lần sau HIT
+                        _MT5_CACHE[key] = {"candles": candles, "ts": saved_at}
+                        item = _MT5_CACHE.get(key)
+
+        if not item:
             continue
+
 
         age = now - int(item.get("ts", 0))
         if age > MT5_MAX_AGE_SEC:
