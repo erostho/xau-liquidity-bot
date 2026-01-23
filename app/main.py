@@ -73,12 +73,18 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
 
 
 def _parse_symbol_from_text(text: str) -> str:
-    t = (text or "").lower()
+    t = text.lower()
+
+    if "xag" in t or "silver" in t:
+        return "XAG/USD"
+
     if "xau" in t or "gold" in t:
         return "XAU/USD"
+
     if "btc" in t:
         return "BTC/USD"
-    return DEFAULT_SYMBOLS[0] if DEFAULT_SYMBOLS else "XAU/USD"
+
+    return DEFAULT_SYMBOL[0] if DEFAULT_SYMBOLS else "XAU/USD"
 
 
 def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
