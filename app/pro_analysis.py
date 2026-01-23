@@ -816,7 +816,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 # Formatter (MUST be named format_signal for main.py import)
 # =========================
 def format_signal(sig: Dict[str, Any]) -> str:
-    symbol = sig.get("symbol", "XAUUSD")
+    symbol = sig.get("symbol", "XAUUSD,XAGUSD")
     tf = sig.get("tf", "M15")
     session = sig.get("session", "Phiên Mỹ")
 
