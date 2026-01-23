@@ -21,15 +21,33 @@ MT5_SYMBOL_XAG = os.getenv("MT5_SYMBOL_XAG", "XAGUSDm")
 # How "fresh" MT5 data must be to be trusted (seconds)
 MT5_MAX_AGE_SEC = int(os.getenv("MT5_MAX_AGE_SEC", "1200"))  # 20 minutes default
 
+def _tf_alias(tf: str) -> str:
+    t = (tf or "").strip().lower()
+
+    # 30m / m30
+    if t in ["30", "30m", "m30", "30min", "30mins", "30minute", "30minutes"]:
+        return "30min"
+
+    if t in ["15", "15m", "m15", "15min", "15mins", "15minute", "15minutes"]:
+        return "15min"
+    if t in ["60", "1h", "h1", "60m", "60min", "1hour", "1hr"]:
+        return "1h"
+    if t in ["5", "5m", "m5", "5min"]:
+        return "5min"
+    return t
+
 def _tf_seconds(tf: str) -> int:
     tf2 = _tf_alias(tf)
-    if tf2 == "15min":
-        return 15 * 60
     if tf2 == "5min":
         return 5 * 60
+    if tf2 == "15min":
+        return 15 * 60
+    if tf2 == "30min":
+        return 30 * 60
     if tf2 == "1h":
         return 60 * 60
     return 0
+
 
 def _norm_symbol(s: str) -> str:
     return (s or "").strip()
@@ -117,6 +135,7 @@ def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> i
     for symv in _symbol_variants(sym):
         _MT5_CACHE[(symv, tf2)] = {"candles": parsed, "ts": now_ts}
     logger.info(f"[MT5] Received {len(parsed)} candles {sym} {tf2}")
+    logger.info(f"[MT5][CACHE_SET] sym={sym} tf2={tf2} first_ts={parsed[0].ts} last_ts={parsed[-1].ts} n={len(parsed)}")
     return len(parsed)
 def _get_mt5_cached(symbol: str, tf: str, limit: int):
     tf2 = _tf_alias(tf)
