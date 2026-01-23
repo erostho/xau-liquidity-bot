@@ -226,7 +226,7 @@ def get_candles(symbol: str, tf: str, limit: int = 220) -> Tuple[List[Candle], s
     return td, "TWELVEDATA_FALLBACK"
 
 
-def get_data_source(symbol="XAU/USD", tf="15min") -> str:
+def get_data_source(symbol="XAU/USD,XAG/USD", tf="15min") -> str:
     mt5 = _get_mt5_cached(symbol, tf, 50)
     return "MT5" if mt5 else "TWELVEDATA_FALLBACK"
 
