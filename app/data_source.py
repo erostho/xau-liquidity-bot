@@ -118,38 +118,36 @@ def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> i
         _MT5_CACHE[(symv, tf2)] = {"candles": parsed, "ts": now_ts}
     logger.info(f"[MT5] Received {len(parsed)} candles {sym} {tf2}")
     return len(parsed)
-
-
-def _get_mt5_cached(symbol: str, tf: str, limit: int) -> Optional[List[Candle]]:
+def _get_mt5_cached(symbol: str, tf: str, limit: int):
     tf2 = _tf_alias(tf)
     now = int(time.time())
+    logger.info(f"[MT5][LOOKUP] symbol={symbol} tf={tf} alias={tf2} variants={_symbol_variants(symbol)} now={now}")
+
     for sym in _symbol_variants(symbol):
         key = (sym, tf2)
         item = _MT5_CACHE.get(key)
         if not item:
+            logger.info(f"[MT5][MISS] key={key}")
             continue
+
         age = now - int(item.get("ts", 0))
         if age > MT5_MAX_AGE_SEC:
+            logger.info(f"[MT5][STALE_CACHE] key={key} age={age}s > {MT5_MAX_AGE_SEC}")
             continue
 
         candles = item.get("candles") or []
         if len(candles) < 20:
+            logger.info(f"[MT5][TOO_FEW] key={key} n={len(candles)}")
             continue
 
-        # ✅ NEW: check cây nến cuối có quá cũ không
         tf_sec = _tf_seconds(tf2)
         last_ts = int(getattr(candles[-1], "ts", 0) or 0)
-
-        # cho phép trễ ~ 2 cây nến
         if tf_sec and last_ts > 0:
-            # Cho XAG nới thêm thời gian vì thanh khoản chậm
-            max_delay = (3 * tf_sec + 120)
-            if "XAG" in sym.upper():
-                max_delay = (5 * tf_sec + 300)
-            
-            if now - last_ts > max_delay:
+            if now - last_ts > (2 * tf_sec + 60):
+                logger.info(f"[MT5][LAST_CANDLE_OLD] key={key} now-last_ts={now-last_ts}s tf_sec={tf_sec}")
                 continue
 
+        logger.info(f"[MT5][HIT] key={key} n={len(candles)} last_ts={last_ts} age={age}s")
         return candles[-limit:]
 
     return None
