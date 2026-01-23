@@ -101,20 +101,21 @@ def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> i
     parsed: List[Candle] = []
     for c in candles or []:
         # support both formats
-        ts = int(c.get("time", c.get("ts", 0)))
+        ts = int(c.get("time", c.get("ts", 0)) or 0)
+        # FIX: nếu MT5 gửi millisecond → đổi về second
+        if ts > 10_000_000_000:   # > year 2286 (seconds) => chắc chắn là ms
+            ts = ts // 1000
         o = float(c.get("open"))
         h = float(c.get("high"))
         l = float(c.get("low"))
         cl = float(c.get("close"))
         vol = float(c.get("tick_volume", c.get("volume", 0.0)) or 0.0)
         parsed.append(Candle(ts=ts, open=o, high=h, low=l, close=cl, volume=vol))
-
     if not parsed:
         raise ValueError("No candles to ingest")
-
-    _MT5_CACHE[(sym, tf2)] = {"candles": parsed, "ts": int(time.time())}
-
-
+    now_ts = int(time.time())
+    for symv in _symbol_variants(sym):
+        _MT5_CACHE[(symv, tf2)] = {"candles": parsed, "ts": now_ts}
     logger.info(f"[MT5] Received {len(parsed)} candles {sym} {tf2}")
     return len(parsed)
 
@@ -122,7 +123,6 @@ def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> i
 def _get_mt5_cached(symbol: str, tf: str, limit: int) -> Optional[List[Candle]]:
     tf2 = _tf_alias(tf)
     now = int(time.time())
-
     for sym in _symbol_variants(symbol):
         key = (sym, tf2)
         item = _MT5_CACHE.get(key)
