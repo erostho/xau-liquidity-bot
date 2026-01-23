@@ -142,7 +142,12 @@ def _get_mt5_cached(symbol: str, tf: str, limit: int) -> Optional[List[Candle]]:
 
         # cho phép trễ ~ 2 cây nến
         if tf_sec and last_ts > 0:
-            if now - last_ts > (2 * tf_sec + 60):
+            # Cho XAG nới thêm thời gian vì thanh khoản chậm
+            max_delay = (3 * tf_sec + 120)
+            if "XAG" in sym.upper():
+                max_delay = (5 * tf_sec + 300)
+            
+            if now - last_ts > max_delay:
                 continue
 
         return candles[-limit:]
@@ -226,7 +231,7 @@ def get_candles(symbol: str, tf: str, limit: int = 220) -> Tuple[List[Candle], s
     return td, "TWELVEDATA_FALLBACK"
 
 
-def get_data_source(symbol="XAU/USD,XAG/USD", tf="15min") -> str:
+def get_data_source(symbol="XAU/USD", tf="15min") -> str:
     mt5 = _get_mt5_cached(symbol, tf, 50)
     return "MT5" if mt5 else "TWELVEDATA_FALLBACK"
 
