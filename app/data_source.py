@@ -20,7 +20,6 @@ MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDm")
 MT5_SYMBOL_XAG = os.getenv("MT5_SYMBOL_XAG", "XAGUSDm")
 # How "fresh" MT5 data must be to be trusted (seconds)
 MT5_MAX_AGE_SEC = int(os.getenv("MT5_MAX_AGE_SEC", "1200"))  # 20 minutes default
- t
 
 def _tf_seconds(tf: str) -> int:
     tf2 = _tf_alias(tf)
