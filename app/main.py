@@ -94,6 +94,19 @@ def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
     h1, _ = get_candles(symbol, "1h", limit)
     return {"m15": m15, "m30": m30, "h1": h1}
 
+def _force_send(sig: dict) -> bool:
+    ctx = " | ".join(sig.get("context_lines", []) or [])
+    notes = " | ".join(sig.get("notes", []) or [])
+
+    # Liquidity warning
+    if "Liquidity WARNING" in ctx:
+        return True
+
+    # Post-sweep state
+    if "POST-SWEEP" in ctx or "POST-SWEEP" in notes:
+        return True
+
+    return False
 
 def _ingest_mt5_payload(payload: Dict[str, Any]) -> None:
     """
@@ -170,41 +183,19 @@ async def telegram_webhook(request: Request):
             symbols = [_parse_symbol_from_text(text)]
 
         for sym in symbols:
-
-
             try:
-
-
                 data = _fetch_triplet(sym, limit=260)
-
-
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"])
-
-
                 stars = int(sig.get("stars", 0) or 0)
-
-
-                # Manual query: ALWAYS trả về đầy đủ format, dù < MIN_STARS
-
-
-                if stars < MIN_STARS:
-
-
-                    prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ — tham khảo thôi.\n\n"
-
+                force_send = _force_send(sig)
+                if force_send:
+                    prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\n\n"
                     _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
-
-
+                elif stars < MIN_STARS:
+                    prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\n\n"
+                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id) 
                 else:
-
-
                     _send_telegram(format_signal(sig), chat_id=chat_id)
-
-
-            except Exception as e:
-                logger.exception("analysis failed: %s", e)
-                _send_telegram(f"❌ Analysis failed ({sym}): {e}", chat_id=chat_id)
-
     return "OK"
 
 
