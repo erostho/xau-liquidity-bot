@@ -265,7 +265,6 @@ def _vol_spike(candles: List[Candle], n: int = 20, k: float = 1.5) -> bool:
         return False
     return vols[-1] >= k * base
 
-
 def detect_sweep(
     candles: List[Candle],
     side: str,  # "SELL" (sweep high) hoặc "BUY" (sweep low)
@@ -924,8 +923,12 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     liq_buy  = bool(sweep_buy.get("ok"))  or bool(spring_buy.get("ok"))
 
     # Build liquidity_lines with explanations
-    liquidity_lines = []
-
+    #liquidity_lines = []
+    context_lines: List[str] = []
+    position_lines: List[str] = []
+    liquidity_lines: List[str] = []
+    quality_lines: List[str] = []
+    notes: List[str] = []
     if sweep_sell.get("ok"):
         vtxt = " +VOL" if sweep_sell.get("vol_ok") else ""
         liquidity_lines.append(f"🔴 Sweep HIGH (quét đỉnh){vtxt}: chọc { _fmt(sweep_sell['level']) } rồi đóng xuống lại.")
