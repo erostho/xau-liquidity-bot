@@ -753,7 +753,12 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "key_levels": [],
         "meta": {},
     }
-
+    context_lines = base["context_lines"]
+    position_lines = base.get("position_lines", [])
+    liquidity_lines = base["liquidity_lines"]
+    quality_lines = base["quality_lines"]
+    notes = base.setdefault("notes", [])
+    score = 0 
     # ---- Safety / normalize candles
     if not m15 or not m30 or not h1:
         base["note_lines"].append("⚠️ Thiếu dữ liệu M15/M30/H1 → không phân tích được.")
@@ -804,8 +809,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["trade_method"] = _pick_trade_method_m30(m30c, atr30)
 
     # --- Trend H1
-    h1_trend = "NEUTRAL"
-    m30_trend = "sideway"
+    h1_trend = "sideways"
+    m30_trend = "sideways"
+
     if ema20_h1 and ema50_h1:
         if ema20_h1[-1] > ema50_h1[-1]:
             h1_trend = "bullish"
@@ -923,12 +929,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     liq_buy  = bool(sweep_buy.get("ok"))  or bool(spring_buy.get("ok"))
 
     # Build liquidity_lines with explanations
-    #liquidity_lines = []
-    context_lines: List[str] = []
-    position_lines: List[str] = []
-    liquidity_lines: List[str] = []
-    quality_lines: List[str] = []
-    notes: List[str] = []
+    liquidity_lines = []
     if sweep_sell.get("ok"):
         vtxt = " +VOL" if sweep_sell.get("vol_ok") else ""
         liquidity_lines.append(f"🔴 Sweep HIGH (quét đỉnh){vtxt}: chọc { _fmt(sweep_sell['level']) } rồi đóng xuống lại.")
