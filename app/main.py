@@ -196,6 +196,10 @@ async def telegram_webhook(request: Request):
                     _send_telegram(prefix + format_signal(sig), chat_id=chat_id) 
                 else:
                     _send_telegram(format_signal(sig), chat_id=chat_id)
+            
+            except Exception as e:
+                logger.exception("analysis failed: %s", e)
+                _send_telegram(f"❌ Analysis failed ({sym}): {e}", chat_id=chat_id)
     return "OK"
 
 
