@@ -759,6 +759,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     quality_lines = base["quality_lines"]
     notes = base.setdefault("notes", [])
     score = 0 
+    # --- BASE CONTEXT (ALWAYS) ---
+    # (không phụ thuộc liquidity/sweep/spring)
+    try:
+        # H1 trend text
+        h1_txt = f"H1: {h1_trend}" if "h1_trend" in locals() else "H1: n/a"
+        # Market state text
+        ms_txt = f"Thị trường: {market_state}" if "market_state" in locals() else "Thị trường: n/a"
+        context_lines.extend([ms_txt, h1_txt])
+    except Exception:
+        # fail-safe: vẫn có context để không bị trống
+        context_lines.extend(["Thị trường: n/a", "H1: n/a"])
+
     # ---- Safety / normalize candles
     if not m15 or not m30 or not h1:
         base["note_lines"].append("⚠️ Thiếu dữ liệu M15/M30/H1 → không phân tích được.")
@@ -1179,7 +1191,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     symbol = sig.get("symbol", "XAUUSD,XAGUSD")
     tf = sig.get("tf", "M15")
     session = sig.get("session", "Phiên Mỹ")
-
     context_lines = sig.get("context_lines", [])
     position_lines = sig.get("position_lines", [])
     short_hint = sig.get("short_hint", [])
@@ -1210,15 +1221,15 @@ def format_signal(sig: Dict[str, Any]) -> str:
             return f"{x:.3f}".rstrip("0").rstrip(".")
         except Exception:
             return "..."
-
     lines: List[str] = []
     lines.append(f"📊 {symbol} | {tf} | {session}")
     lines.append("TF: Signal=M15 | Entry=M30 | Confirm=H1")
     lines.append("")
-    lines.append("Context:")
-    for s in context_lines:
-        lines.append(f"- {s}")
-    lines.append("")
+    if context_lines:
+        lines.append("Context:")
+        for s in context_lines:
+            lines.append(f"- {s}")
+        lines.append("")
     lines.append("Thanh khoản:")
     for s in liquidity_lines:
         lines.append(f"- {s}")
