@@ -759,17 +759,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     quality_lines = base["quality_lines"]
     notes = base.setdefault("notes", [])
     score = 0 
-    # --- BASE CONTEXT (ALWAYS) ---
-    # (không phụ thuộc liquidity/sweep/spring)
-    try:
-        # H1 trend text
-        h1_txt = f"H1: {h1_trend}" if "h1_trend" in locals() else "H1: n/a"
-        # Market state text
-        ms_txt = f"Thị trường: {market_state}" if "market_state" in locals() else "Thị trường: n/a"
-        context_lines.extend([ms_txt, h1_txt])
-    except Exception:
-        # fail-safe: vẫn có context để không bị trống
-        context_lines.extend(["Thị trường: n/a", "H1: n/a"])
+
 
     # ---- Safety / normalize candles
     if not m15 or not m30 or not h1:
@@ -902,11 +892,21 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "buffer": obs_buffer,
     }
 
-
     # Market state spike
     ranges20 = [c.high - c.low for c in m15c[-20:]]
     ranges80 = [c.high - c.low for c in m15c[-80:]]
     spike = (sum(ranges20) / max(1, len(ranges20))) > 1.35 * (sum(ranges80) / max(1, len(ranges80)))
+    # --- CONTEXT (TRADER FRIENDLY) ---
+    context_lines.clear() 
+    trend_txt = {
+        "bullish": "TĂNG",
+        "bearish": "GIẢM",
+        "sideways": "SIDEWAY"
+    }.get(h1_trend, "KHÔNG RÕ")
+    state_txt = "GIÁ CHẠY MẠNH (dễ quét SL)" if spike else "GIÁ ĐI ĐỀU"
+    context_lines.append(f"Xu hướng H1: {trend_txt}")
+    context_lines.append(f"Trạng thái: {state_txt}")
+    context_lines.append(f"M30: {m30_trend}")
 
     # Lower-high-ish
     lower_highish = False
