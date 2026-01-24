@@ -134,6 +134,7 @@ def _safe_candles(raw) -> List[Candle]:
 # =========================
 # Indicators
 # =========================
+
 def _ema(values: List[float], period: int) -> List[float]:
     if period <= 0 or len(values) < period:
         return []
@@ -192,6 +193,244 @@ def _atr(candles, period: int = 14):
     for i in range(period, len(trs)):
         atr = (atr * (period - 1) + trs[i]) / period
     return atr
+
+# =========================
+# SYMBOL PROFILES (XAG vs XAU/BTC)
+# =========================
+SYMBOL_PROFILE = {
+    "XAG": {
+        # wick must be big (XAG hay quét sâu)
+        "sweep_wick_min": 0.48,
+        # nến sweep phải đóng lại vào trong range tối thiểu bao nhiêu %
+        "close_back_ratio": 0.28,
+        # volume confirm (tick_volume cũng ok nhưng chỉ "bonus")
+        "vol_spike_k": 1.7,
+        # buffer để tránh "chạm nhẹ/spread"
+        "buf_atr_k": 0.25,
+        # spring follow-through tối thiểu
+        "spring_follow_k": 0.60,
+        # cooldown ý nghĩa là: chỉ coi là spring nếu có follow-through trong N nến sau
+        "spring_lookahead": 3,
+    },
+    "XAU": {
+        "sweep_wick_min": 0.42,
+        "close_back_ratio": 0.22,
+        "vol_spike_k": 1.4,
+        "buf_atr_k": 0.20,
+        "spring_follow_k": 0.50,
+        "spring_lookahead": 3,
+    },
+    "BTC": {
+        "sweep_wick_min": 0.36,
+        "close_back_ratio": 0.18,
+        "vol_spike_k": 1.3,
+        "buf_atr_k": 0.18,
+        "spring_follow_k": 0.45,
+        "spring_lookahead": 3,
+    },
+}
+
+def _get_profile(symbol: str) -> dict:
+    s = (symbol or "").upper()
+    if "XAG" in s:
+        return SYMBOL_PROFILE["XAG"]
+    if "XAU" in s:
+        return SYMBOL_PROFILE["XAU"]
+    if "BTC" in s:
+        return SYMBOL_PROFILE["BTC"]
+    return SYMBOL_PROFILE["XAU"]
+
+
+def _median(xs: List[float]) -> float:
+    xs = [float(x) for x in (xs or []) if x is not None]
+    if not xs:
+        return 0.0
+    xs = sorted(xs)
+    n = len(xs)
+    mid = n // 2
+    if n % 2 == 1:
+        return xs[mid]
+    return 0.5 * (xs[mid - 1] + xs[mid])
+
+
+def _vol_spike(candles: List[Candle], n: int = 20, k: float = 1.5) -> bool:
+    """Volume spike so với median volume của n nến gần nhất (đã đóng)."""
+    if not candles or len(candles) < max(6, n + 1):
+        return False
+    closed = candles[:-1]  # bỏ nến đang chạy
+    use = closed[-n:]
+    vols = [max(0.0, float(getattr(c, "volume", 0.0) or 0.0)) for c in use]
+    base = _median(vols)
+    if base <= 0:
+        return False
+    return vols[-1] >= k * base
+
+
+def detect_sweep(
+    candles: List[Candle],
+    side: str,  # "SELL" (sweep high) hoặc "BUY" (sweep low)
+    level: float,
+    atr: Optional[float],
+    symbol: str,
+) -> Dict[str, Any]:
+    """
+    Sweep liquidity:
+    - SELL sweep: giá chọc lên trên level rồi đóng xuống lại (rejection upper wick)
+    - BUY sweep : giá chọc xuống dưới level rồi đóng lên lại (rejection lower wick)
+
+    Trả về dict: {"ok":bool, "type": "...", "reason": "...", "score": int, ...}
+    """
+    cfg = _get_profile(symbol)
+    if not candles or len(candles) < 6 or level is None:
+        return {"ok": False, "reason": "not_enough_candles"}
+
+    c = candles[-2] if len(candles) >= 2 else candles[-1]  # dùng nến đã đóng gần nhất
+    a = float(atr or 0.0)
+    buf = max(1e-9, (cfg["buf_atr_k"] * a) if a > 0 else abs(level) * 0.0002)
+
+    rng = max(1e-9, c.high - c.low)
+    body = abs(c.close - c.open)
+    upper_wick = c.high - max(c.close, c.open)
+    lower_wick = min(c.close, c.open) - c.low
+
+    wick_min = float(cfg["sweep_wick_min"])
+    close_back_ratio = float(cfg["close_back_ratio"])
+
+    score = 0
+    vol_ok = _vol_spike(candles, n=20, k=float(cfg["vol_spike_k"]))
+
+    if side.upper() == "SELL":
+        # 1) phá đỉnh
+        pierced = c.high >= (level + buf)
+        # 2) đóng lại xuống (nằm trong range cũ)
+        close_back = (c.close <= (level - buf * 0.15))  # đóng dưới level một chút cho “thật”
+        # 3) wick trên đủ dài
+        wick_ok = (upper_wick / rng) >= wick_min and (body / rng) <= 0.65
+
+        # 4) đóng lại vào thân dưới của nến (để tránh phá rồi kéo tiếp)
+        # close_back_ratio: vị trí close tính từ đáy lên
+        pos_close = (c.close - c.low) / rng  # 0..1
+        close_in_lower = pos_close <= (1.0 - close_back_ratio)
+
+        if pierced: score += 1
+        if close_back: score += 1
+        if wick_ok: score += 1
+        if close_in_lower: score += 1
+        if vol_ok: score += 1
+
+        ok = (pierced and close_back and wick_ok and close_in_lower)
+        return {
+            "ok": bool(ok),
+            "type": "sweep_high",
+            "score": int(score),
+            "vol_ok": bool(vol_ok),
+            "level": float(level),
+            "buf": float(buf),
+        }
+
+    else:  # BUY
+        pierced = c.low <= (level - buf)
+        close_back = (c.close >= (level + buf * 0.15))
+        wick_ok = (lower_wick / rng) >= wick_min and (body / rng) <= 0.65
+
+        pos_close = (c.close - c.low) / rng
+        close_in_upper = pos_close >= close_back_ratio
+
+        if pierced: score += 1
+        if close_back: score += 1
+        if wick_ok: score += 1
+        if close_in_upper: score += 1
+        if vol_ok: score += 1
+
+        ok = (pierced and close_back and wick_ok and close_in_upper)
+        return {
+            "ok": bool(ok),
+            "type": "sweep_low",
+            "score": int(score),
+            "vol_ok": bool(vol_ok),
+            "level": float(level),
+            "buf": float(buf),
+        }
+
+
+def detect_spring(
+    candles: List[Candle],
+    side: str,  # "BUY" spring (phá đáy giả) hoặc "SELL" upthrust (phá đỉnh giả)
+    range_low: float,
+    range_high: float,
+    atr: Optional[float],
+    symbol: str,
+) -> Dict[str, Any]:
+    """
+    Spring / Upthrust:
+    - BUY spring: chọc thủng range_low rồi kéo lên đóng lại trong range + có follow-through
+    - SELL upthrust: chọc thủng range_high rồi kéo xuống đóng lại trong range + follow-through
+
+    Đây là “cú phá vỡ cuối cùng” (false break + reversal confirmation).
+    """
+    cfg = _get_profile(symbol)
+    if not candles or len(candles) < 10:
+        return {"ok": False, "reason": "not_enough_candles"}
+    if range_low is None or range_high is None or range_high <= range_low:
+        return {"ok": False, "reason": "bad_range"}
+
+    closed = candles[:-1] if len(candles) > 1 else candles
+    c0 = closed[-1]  # nến đã đóng gần nhất (nến spring)
+    a = float(atr or 0.0)
+    buf = max(1e-9, (cfg["buf_atr_k"] * a) if a > 0 else abs(c0.close) * 0.0002)
+
+    lookahead = int(cfg.get("spring_lookahead", 3))
+    follow_k = float(cfg.get("spring_follow_k", 0.5))
+
+    # follow-through: trong lookahead nến sau spring phải đi theo hướng reversal ít nhất k*ATR
+    # (dùng max/min close để đơn giản, tránh nhiễu wick)
+    after = closed[-lookahead:] if len(closed) >= lookahead else closed
+    max_after_close = max(x.close for x in after)
+    min_after_close = min(x.close for x in after)
+
+    vol_ok = _vol_spike(candles, n=20, k=float(cfg["vol_spike_k"]))
+
+    if side.upper() == "BUY":
+        # phá đáy
+        pierced = c0.low <= (range_low - buf)
+        # đóng lại trong range
+        close_back_in = c0.close >= (range_low + buf * 0.15)
+        # follow-through lên
+        need = (follow_k * a) if a > 0 else (range_high - range_low) * 0.20
+        follow = (max_after_close - c0.close) >= max(1e-9, need)
+
+        score = int(pierced) + int(close_back_in) + int(follow) + int(vol_ok)
+        ok = pierced and close_back_in and follow
+        return {
+            "ok": bool(ok),
+            "type": "spring_buy",
+            "score": int(score),
+            "vol_ok": bool(vol_ok),
+            "range_low": float(range_low),
+            "range_high": float(range_high),
+            "buf": float(buf),
+            "need": float(need),
+        }
+
+    else:  # SELL upthrust
+        pierced = c0.high >= (range_high + buf)
+        close_back_in = c0.close <= (range_high - buf * 0.15)
+        need = (follow_k * a) if a > 0 else (range_high - range_low) * 0.20
+        follow = (c0.close - min_after_close) >= max(1e-9, need)
+
+        score = int(pierced) + int(close_back_in) + int(follow) + int(vol_ok)
+        ok = pierced and close_back_in and follow
+        return {
+            "ok": bool(ok),
+            "type": "spring_sell",
+            "score": int(score),
+            "vol_ok": bool(vol_ok),
+            "range_low": float(range_low),
+            "range_high": float(range_high),
+            "buf": float(buf),
+            "need": float(need),
+        }
+
 
 def _build_short_hint_m15(m15: list[Candle], h1_trend: str, m30_trend: str) -> list[str]:
     """
@@ -663,55 +902,58 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     rej = _is_rejection(last15)
 
     # Liquidity proxy
-    liq_sell = False
-    liq_buy = False
-    if sh15 is not None and last15.high >= sh15 * 0.999 and rej["upper_reject"]:
-        liq_sell = True
-    if sl15 is not None and last15.low <= sl15 * 1.001 and rej["lower_reject"]:
-        liq_buy = True
+    # =========================
+    # LIQUIDITY: sweep / spring (profile-based)
+    # =========================
 
-    # Build lines + score
-    score = 0
-    context_lines: List[str] = []
-    position_lines: List[str] = []
-    liquidity_lines: List[str] = []
-    quality_lines: List[str] = []
-    notes: List[str] = []
+    # Range 30 nến M15 đã đóng để làm "range" cho spring
+    closed15 = m15c[:-1] if len(m15c) > 1 else m15c
+    use15 = closed15[-30:] if len(closed15) >= 30 else closed15
+    range15_low = min(c.low for c in use15) if use15 else (sl15 or last_close_15)
+    range15_high = max(c.high for c in use15) if use15 else (sh15 or last_close_15)
 
-    if spike:
-        context_lines.append("Thị trường: SPIKE → HỒI")
-        score += 1
-    else:
-        context_lines.append("Thị trường: SIDEWAY / HỒI NHẸ")
+    # Sweep theo swing levels (m15 swing)
+    sweep_sell = detect_sweep(m15c, side="SELL", level=float(sh15) if sh15 else float(range15_high), atr=atr15, symbol=symbol)
+    sweep_buy  = detect_sweep(m15c, side="BUY",  level=float(sl15) if sl15 else float(range15_low),  atr=atr15, symbol=symbol)
 
-    if h1_trend == "bullish":
-        context_lines.append("H1: bullish (EMA20 > EMA50)" + (" nhưng lực suy yếu" if weakening else ""))
-        score += 1
-    elif h1_trend == "bearish":
-        context_lines.append("H1: bearish (EMA20 < EMA50)" + (" nhưng lực suy yếu" if weakening else ""))
-        score += 1
-    else:
-        context_lines.append("H1: neutral")
+    # Spring / Upthrust theo range 30 nến M15
+    spring_buy  = detect_spring(m15c, side="BUY",  range_low=float(range15_low),  range_high=float(range15_high), atr=atr15, symbol=symbol)
+    spring_sell = detect_spring(m15c, side="SELL", range_low=float(range15_low),  range_high=float(range15_high), atr=atr15, symbol=symbol)
 
-    if atr15 is None:
-        # fallback ATR = range cây vừa đóng
-        atr15 = max(1e-6, last15.high - last15.low)
+    liq_sell = bool(sweep_sell.get("ok")) or bool(spring_sell.get("ok"))
+    liq_buy  = bool(sweep_buy.get("ok"))  or bool(spring_buy.get("ok"))
 
-    if sh15 is not None and abs(sh15 - last_close_15) <= atr15 * 0.8:
-        position_lines.append("Giá gần đỉnh phiên")
-        score += 1
-    if sl15 is not None and abs(last_close_15 - sl15) <= atr15 * 0.8:
-        position_lines.append("Giá gần đáy phiên")
+    # Build liquidity_lines with explanations
+    liquidity_lines = []
+
+    if sweep_sell.get("ok"):
+        vtxt = " +VOL" if sweep_sell.get("vol_ok") else ""
+        liquidity_lines.append(f"🔴 Sweep HIGH (quét đỉnh){vtxt}: chọc { _fmt(sweep_sell['level']) } rồi đóng xuống lại.")
         score += 1
 
-    if liq_sell:
-        liquidity_lines.append("🔴 Dấu hiệu SELL limit lớn phía trên (proxy: sweep + rejection)")
+    if sweep_buy.get("ok"):
+        vtxt = " +VOL" if sweep_buy.get("vol_ok") else ""
+        liquidity_lines.append(f"🟢 Sweep LOW (quét đáy){vtxt}: chọc { _fmt(sweep_buy['level']) } rồi đóng lên lại.")
         score += 1
-    if liq_buy:
-        liquidity_lines.append("🟢 Dấu hiệu BUY limit lớn phía dưới (proxy: sweep + rejection)")
+
+    if spring_buy.get("ok"):
+        vtxt = " +VOL" if spring_buy.get("vol_ok") else ""
+        liquidity_lines.append(f"🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through.")
         score += 1
+
+    if spring_sell.get("ok"):
+        vtxt = " +VOL" if spring_sell.get("vol_ok") else ""
+        liquidity_lines.append(f"🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through.")
+        score += 1
+
     if not liquidity_lines:
-        liquidity_lines.append("Chưa thấy sweep/rejection rõ (liquidity proxy).")
+        liquidity_lines.append("Chưa thấy sweep/spring rõ (liquidity proxy).")
+
+    # (Gợi ý thêm) Nếu spring/sweep có nhưng H1 ngược trend -> note cho bot “đừng vội”
+    if (spring_buy.get("ok") or sweep_buy.get("ok")) and h1_trend == "bearish":
+        notes.append("⚠️ Có dấu hiệu hút thanh khoản dưới nhưng H1 đang bearish → ưu tiên CHỜ confirm M30.")
+    if (spring_sell.get("ok") or sweep_sell.get("ok")) and h1_trend == "bullish":
+        notes.append("⚠️ Có dấu hiệu hút thanh khoản trên nhưng H1 đang bullish → ưu tiên CHỜ confirm M30.")
 
     if rej["upper_reject"] or rej["lower_reject"]:
         quality_lines.append("Nến từ chối rõ")
@@ -973,17 +1215,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     for s in context_lines:
         lines.append(f"- {s}")
     lines.append("")
-    lines.append("GỢI Ý NGẮN HẠN:")
-    if short_hint:
-        for s in short_hint:
-            lines.append(f"- {s}")
-    elif position_lines:
-        for s in position_lines:
-            lines.append(f"- {s}")
-    else:
-        lines.append("- Chưa có gợi ý ngắn hạn rõ ràng → CHỜ KÈO")
-
-    lines.append("")
     lines.append("Thanh khoản:")
     for s in liquidity_lines:
         lines.append(f"- {s}")
@@ -992,8 +1223,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
     for s in quality_lines:
         lines.append(f"- {s}")
     lines.append("")
-    lines.append(f"🎯 Khuyến nghị: {rec}")
-    lines.append(f"Độ tin cậy: {stars_txt} ({max(1, min(5, stars))}/5)")
+    lines.append("GỢI Ý NGẮN HẠN:")
+    if short_hint:
+        for s in short_hint:
+            lines.append(f"- {s}")
+    elif position_lines:
+        for s in position_lines:
+            lines.append(f"- {s}")
+    else:
+        lines.append("- Chưa có gợi ý ngắn hạn rõ ràng → CHỜ TÍN HIỆU")
+    lines.append("")
     tm = sig.get("trade_method", None)
     if isinstance(tm, dict):
         tm_lines = tm.get("lines", [])
@@ -1003,6 +1242,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
             for s in tm_lines:
                 lines.append(f"- {s}")
     lines.append("")
+    lines.append(f"🎯 Khuyến nghị: {rec}")
+    lines.append(f"Độ tin cậy: {stars_txt} ({max(1, min(5, stars))}/5)")
     lines.append(f"ENTRY: {nf(entry)}")
     lines.append(f"SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
     lines.append("")
