@@ -732,8 +732,10 @@ def _safe_float(x: Any) -> Optional[float]:
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
-    NOTE: Phần chấm sao/logic entry/SLTP giữ nguyên như bản gốc.
-    Chỉ bổ sung/ổn định 'GỢI Ý NGẮN HẠN' dựa trên 30 nến M15 (~7.5h).
+    Patch:
+    - Context luôn có: Thị trường (TĂNG MẠNH/GIẢM MẠNH/SIDEWAY) + H1 trend
+    - Liquidity WARNING (chưa quét nhưng nguy cơ quét) -> đẩy vào context_lines (để main.py dễ ưu tiên gửi)
+    - Quét xong -> POST-SWEEP -> CHỜ CẤU TRÚC (HL/LH + BOS) rồi mới cho BUY/SELL
     """
     base = {
         "symbol": symbol,
@@ -753,18 +755,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "key_levels": [],
         "meta": {},
     }
+
     context_lines = base["context_lines"]
     position_lines = base.get("position_lines", [])
     liquidity_lines = base["liquidity_lines"]
     quality_lines = base["quality_lines"]
     notes = base.setdefault("notes", [])
-    score = 0 
-
+    score = 0
 
     # ---- Safety / normalize candles
     if not m15 or not m30 or not h1:
         base["note_lines"].append("⚠️ Thiếu dữ liệu M15/M30/H1 → không phân tích được.")
         base["short_hint"] = ["- Chưa đủ dữ liệu → CHỜ KÈO"]
+        # Context vẫn phải có để telegram không bị n/a trống
+        base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         return base
 
     m15c = _safe_candles(m15)
@@ -772,62 +776,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     h1c = _safe_candles(h1)
 
     if len(m15c) < 20 or len(m30c) < 5 or len(h1c) < 5:
-        base["note_lines"].append("⚠️ Dữ liệu candles chưa đủ → kết quả có thể thiếu chính xác.")
-        # vẫn tiếp tục, vì có thể đủ để hiển thị thông tin
+        base["note_lines"].append("⚠️ Dữ liệu candles chưa đủ → kết quả có thể thiếu chính xác (vẫn hiển thị).")
 
     last15 = m15c[-1]
-    last_close_15 = last15.close
+    last30 = m30c[-1]
+    last_close_15 = float(last15.close)
 
     # Indicators (M15)
     m15_closes = [c.close for c in m15c]
     atr15 = _atr(m15c, 14) or 0.0
     rsi15 = _rsi(m15_closes, 14) or 50.0
 
-    # Trends (H1 + M30)
-    h1_trend = _trend_label(h1c)   # bullish / bearish / sideways
-    m30_trend = _trend_label(m30c) # bullish / bearish / sideways
+    # Trends (H1 + M30) (dùng _trend_label có sẵn)
+    h1_trend = _trend_label(h1c)    # bullish / bearish / sideways
+    m30_trend = _trend_label(m30c)  # bullish / bearish / sideways
 
-    # --- GỢI Ý NGẮN HẠN (dựa 30 nến M15 gần nhất)
-    try:
-        base["short_hint"] = _build_short_hint_m15(m15c, h1_trend, m30_trend)
-    except Exception:
-        base["short_hint"] = []
+    # ====== Market state: chỉ 3 trạng thái (đúng ý mày) ======
+    # spike volatility (M15): range 20 > 1.35 * range 80
+    ranges20 = [c.high - c.low for c in m15c[-20:]] if len(m15c) >= 20 else [c.high - c.low for c in m15c]
+    ranges80 = [c.high - c.low for c in m15c[-80:]] if len(m15c) >= 80 else [c.high - c.low for c in m15c]
+    avg20 = sum(ranges20) / max(1, len(ranges20))
+    avg80 = sum(ranges80) / max(1, len(ranges80))
+    spike = (avg20 > 1.35 * avg80) if avg80 > 0 else False
 
-    last30 = m30c[-1]
-
-    last_close_15 = last15.close
-    last_close_30 = last30.close
-
-    m15_closes = [c.close for c in m15c]
-    h1_closes  = [c.close for c in h1c]
-
+    # weakening trend trên H1 dựa EMA20-EMA50 (đã có đoạn dưới, nhưng ta cần dùng sớm)
+    h1_closes = [c.close for c in h1c]
     ema20_h1 = _ema(h1_closes, 20)
     ema50_h1 = _ema(h1_closes, 50)
-    rsi15 = _rsi(m15_closes, 14)
-    atr15 = _atr(m15c, 14)
-    # --- Trade method suggestion (20 nến M30)
-    m30_closed = m30c[:-1] if len(m30c) > 1 else m30c
-    atr30 = _atr(m30_closed, 14)
-    base["trade_method"] = _pick_trade_method_m30(m30c, atr30)
-
-    # --- Trend H1
-    h1_trend = "sideways"
-    m30_trend = "sideways"
-
-    if ema20_h1 and ema50_h1:
-        if ema20_h1[-1] > ema50_h1[-1]:
-            h1_trend = "bullish"
-        elif ema20_h1[-1] < ema50_h1[-1]:
-            h1_trend = "bearish"
-
-        # M30 trend (confirm): EMA20 vs EMA50
-        m30_closes = [c.close for c in m30c]
-        ema20_m30 = _ema(m30_closes, 20)
-        ema50_m30 = _ema(m30_closes, 50)
-        if ema20_m30 and ema50_m30 and len(ema20_m30) > 0 and len(ema50_m30) > 0:
-            m30_trend = "bullish" if ema20_m30[-1] > ema50_m30[-1] else "bearish"
-        else:
-            m30_trend = "sideway"
 
     weakening = False
     if ema20_h1 and ema50_h1 and len(ema20_h1) >= 6 and len(ema50_h1) >= 6:
@@ -838,7 +813,30 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         if h1_trend == "bearish" and sep_now > sep_prev:
             weakening = True
 
-    # Key levels (important prices)
+    # chỉ 3 nhãn:
+    if h1_trend == "bullish" and spike and not weakening:
+        market_state = "TĂNG MẠNH"
+    elif h1_trend == "bearish" and spike and not weakening:
+        market_state = "GIẢM MẠNH"
+    else:
+        market_state = "SIDEWAY"
+
+    # ====== Context luôn có (không còn n/a vô nghĩa) ======
+    context_lines.append(f"Thị trường: {market_state}")
+    context_lines.append(f"H1: {h1_trend}")
+
+    # --- GỢI Ý NGẮN HẠN (dựa 30 nến M15 gần nhất)
+    try:
+        base["short_hint"] = _build_short_hint_m15(m15c, h1_trend, m30_trend)
+    except Exception:
+        base["short_hint"] = []
+
+    # --- Trade method suggestion (20 nến M30)
+    m30_closed = m30c[:-1] if len(m30c) > 1 else m30c
+    atr30 = _atr(m30_closed, 14)
+    base["trade_method"] = _pick_trade_method_m30(m30c, atr30)
+
+    # ===== Key levels =====
     sh15 = _swing_high(m15c, 80)
     sl15 = _swing_low(m15c, 80)
     sh30 = _swing_high(m30c, 80)
@@ -847,14 +845,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     sl1  = _swing_low(h1c, 80)
 
     levels_info: List[Tuple[float, str]] = []
-    if sh15 is not None: levels_info.append((float(sh15), "M15 Swing High (đỉnh gần)") )
-    if sl15 is not None: levels_info.append((float(sl15), "M15 Swing Low (đáy gần)") )
-    if sh30 is not None: levels_info.append((float(sh30), "M30 Swing High (kháng cự)") )
-    if sl30 is not None: levels_info.append((float(sl30), "M30 Swing Low (hỗ trợ)") )
-    if sh1 is not None:  levels_info.append((float(sh1),  "H1 Swing High (kháng cự lớn)") )
-    if sl1 is not None:  levels_info.append((float(sl1),  "H1 Swing Low (hỗ trợ lớn)") )
+    if sh15 is not None: levels_info.append((float(sh15), "M15 Swing High (đỉnh gần)"))
+    if sl15 is not None: levels_info.append((float(sl15), "M15 Swing Low (đáy gần)"))
+    if sh30 is not None: levels_info.append((float(sh30), "M30 Swing High (kháng cự)"))
+    if sl30 is not None: levels_info.append((float(sl30), "M30 Swing Low (hỗ trợ)"))
+    if sh1 is not None:  levels_info.append((float(sh1),  "H1 Swing High (kháng cự lớn)"))
+    if sl1 is not None:  levels_info.append((float(sl1),  "H1 Swing Low (hỗ trợ lớn)"))
 
-    # unique by rounded price, keep the most informative label (first seen)
     seen = set()
     levels_unique: List[Tuple[float, str]] = []
     for price, label in sorted(levels_info, key=lambda x: x[0], reverse=True):
@@ -867,12 +864,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["levels_info"] = levels_unique[:8]
     base["levels"] = [round(p, 3) for p, _ in levels_unique[:8]]
 
-    # Observation triggers for M15 close (thuần range 30 nến M15 gần nhất ~8h, giữ logic gốc: breakout/swing-based))
-    # NOTE: Phần "GỢI Ý NGẮN HẠN" phía trên dùng range 30 nến M15, nhưng "Gợi ý quan sát vào lệnh" phải giữ theo các mốc swing/HTF như bản cũ.
-    # Giá hiện tại dùng close nến M15 mới nhất (không cần biến current_price)
-   # ===== SHORT-TERM HINT (30 candles M15 ONLY) =====
-   
-    # levels_unique = [(price, label), ...] đã được build ở phần mốc giá quan trọng
+    # ===== Observation triggers =====
     cur = float(last_close_15)
     lv_prices = [float(p) for (p, _lbl) in (levels_unique or []) if p is not None]
     if lv_prices:
@@ -882,9 +874,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         sell_level = max(below) if below else min(lv_prices)
     else:
         buy_level = sell_level = cur
-    
+
     obs_buffer = float((atr15 or 0.0) * 0.10)
-    
     base["observation"] = {
         "tf": "M15",
         "buy": float(buy_level),
@@ -892,23 +883,178 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "buffer": obs_buffer,
     }
 
-    # Market state spike
-    ranges20 = [c.high - c.low for c in m15c[-20:]]
-    ranges80 = [c.high - c.low for c in m15c[-80:]]
-    spike = (sum(ranges20) / max(1, len(ranges20))) > 1.35 * (sum(ranges80) / max(1, len(ranges80)))
-    # --- CONTEXT (TRADER FRIENDLY) ---
-    context_lines.clear() 
-    trend_txt = {
-        "bullish": "TĂNG",
-        "bearish": "GIẢM",
-        "sideways": "SIDEWAY"
-    }.get(h1_trend, "KHÔNG RÕ")
-    state_txt = "GIÁ CHẠY MẠNH (dễ quét SL)" if spike else "GIÁ ĐI ĐỀU"
-    context_lines.append(f"Xu hướng H1: {trend_txt}")
-    context_lines.append(f"Trạng thái: {state_txt}")
-    context_lines.append(f"M30: {m30_trend}")
+    # ===== Helper: slope micro (dùng cho WARNING) =====
+    slope = 0.0
+    closed15 = m15c[:-1] if len(m15c) > 1 else m15c
+    use = closed15[-20:] if len(closed15) >= 20 else closed15
+    if len(use) >= 20:
+        last10 = [c.close for c in use[-10:]]
+        prev10 = [c.close for c in use[-20:-10]]
+        slope = (sum(last10)/10.0) - (sum(prev10)/10.0)
 
-    # Lower-high-ish
+    # ===== 1) LIQUIDITY WARNING (chưa quét nhưng nguy hiểm) =====
+    # Nguy cơ quét khi giá tiệm cận swing + có động lượng (rsi/slope) -> in vào context_lines
+    def _liquidity_warning_lines(cur_price: float) -> List[str]:
+        out = []
+        if atr15 <= 0:
+            return out
+        buf = 0.30 * atr15  # vùng "dễ quét"
+
+        # WARNING quét đỉnh
+        if sh15 is not None and cur_price >= float(sh15) - buf:
+            if rsi15 >= 60 or slope > 0.20 * atr15:
+                out.append(f"⚠️ Liquidity WARNING: gần đỉnh {float(sh15):.2f} → dễ QUÉT ĐỈNH rồi đảo chiều.")
+
+        # WARNING quét đáy
+        if sl15 is not None and cur_price <= float(sl15) + buf:
+            if rsi15 <= 40 or slope < -0.20 * atr15:
+                out.append(f"⚠️ Liquidity WARNING: gần đáy {float(sl15):.2f} → dễ QUÉT ĐÁY rồi bật lại.")
+
+        return out
+
+    lw = _liquidity_warning_lines(cur)
+    if lw:
+        context_lines.extend(lw)
+
+    # ===== Rejection =====
+    rej = _is_rejection(last15)
+
+    # ===== LIQUIDITY: sweep / spring =====
+    use15 = closed15[-30:] if len(closed15) >= 30 else closed15
+    range15_low = min(c.low for c in use15) if use15 else (sl15 or last_close_15)
+    range15_high = max(c.high for c in use15) if use15 else (sh15 or last_close_15)
+
+    sweep_sell = detect_sweep(m15c, side="SELL", level=float(sh15) if sh15 else float(range15_high), atr=atr15, symbol=symbol)
+    sweep_buy  = detect_sweep(m15c, side="BUY",  level=float(sl15) if sl15 else float(range15_low),  atr=atr15, symbol=symbol)
+
+    spring_buy  = detect_spring(m15c, side="BUY",  range_low=float(range15_low),  range_high=float(range15_high), atr=atr15, symbol=symbol)
+    spring_sell = detect_spring(m15c, side="SELL", range_low=float(range15_low),  range_high=float(range15_high), atr=atr15, symbol=symbol)
+
+    liq_sell = bool(sweep_sell.get("ok")) or bool(spring_sell.get("ok"))
+    liq_buy  = bool(sweep_buy.get("ok"))  or bool(spring_buy.get("ok"))
+
+    liquidity_lines = []
+    if sweep_sell.get("ok"):
+        vtxt = " +VOL" if sweep_sell.get("vol_ok") else ""
+        liquidity_lines.append(f"🔴 Sweep HIGH (quét đỉnh){vtxt}: chọc {_fmt(sweep_sell['level'])} rồi đóng xuống lại.")
+        score += 1
+
+    if sweep_buy.get("ok"):
+        vtxt = " +VOL" if sweep_buy.get("vol_ok") else ""
+        liquidity_lines.append(f"🟢 Sweep LOW (quét đáy){vtxt}: chọc {_fmt(sweep_buy['level'])} rồi đóng lên lại.")
+        score += 1
+
+    if spring_buy.get("ok"):
+        vtxt = " +VOL" if spring_buy.get("vol_ok") else ""
+        liquidity_lines.append("🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through.")
+        score += 1
+
+    if spring_sell.get("ok"):
+        vtxt = " +VOL" if spring_sell.get("vol_ok") else ""
+        liquidity_lines.append("🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through.")
+        score += 1
+
+    if not liquidity_lines:
+        liquidity_lines.append("Chưa thấy sweep/spring rõ (liquidity proxy).")
+
+    # ===== 2) POST-SWEEP: Quét xong -> CHỜ CẤU TRÚC =====
+    # Cấu trúc rõ để biết khi nào vào:
+    # BUY: HL + BOS_UP
+    # SELL: LH + BOS_DN
+    def _post_sweep_structure_state(side: str) -> Tuple[bool, List[str]]:
+        """
+        Return (ok_to_trade, explain_lines)
+        """
+        explain = []
+        if atr15 <= 0 or len(closed15) < 16:
+            explain.append("POST-SWEEP: thiếu dữ liệu để xác nhận cấu trúc → CHỜ.")
+            return False, explain
+
+        # dùng 10 nến đóng gần nhất để kiểm tra cấu trúc
+        # prev5 = 5 nến trước, last5 = 5 nến sau
+        prev5 = closed15[-11:-6]
+        last5 = closed15[-6:-1]
+        if len(prev5) < 5 or len(last5) < 5:
+            explain.append("POST-SWEEP: thiếu đủ 10 nến đóng để xét HL/LH → CHỜ.")
+            return False, explain
+
+        buf = 0.10 * atr15  # buffer nhỏ để tránh nhiễu
+
+        prev_low = min(c.low for c in prev5)
+        last_low = min(c.low for c in last5)
+        prev_high = max(c.high for c in prev5)
+        last_high = max(c.high for c in last5)
+
+        last_close = float(closed15[-1].close)
+
+        if side == "BUY":
+            hl = (last_low > prev_low + buf)
+            bos_up = (last_close > prev_high + buf)
+
+            explain.append(f"POST-SWEEP BUY: chờ HL + BOS.")
+            explain.append(f"- HL (Higher-Low): đáy 5 nến mới > đáy 5 nến trước (buf~{_fmt(buf)}).")
+            explain.append(f"- BOS: M15 đóng > đỉnh 5 nến trước.")
+            explain.append(f"Trạng thái: HL={'OK' if hl else 'NO'} | BOS={'OK' if bos_up else 'NO'}.")
+
+            return (hl and bos_up), explain
+
+        else:  # SELL
+            lh = (last_high < prev_high - buf)
+            bos_dn = (last_close < prev_low - buf)
+
+            explain.append(f"POST-SWEEP SELL: chờ LH + BOS.")
+            explain.append(f"- LH (Lower-High): đỉnh 5 nến mới < đỉnh 5 nến trước (buf~{_fmt(buf)}).")
+            explain.append(f"- BOS: M15 đóng < đáy 5 nến trước.")
+            explain.append(f"Trạng thái: LH={'OK' if lh else 'NO'} | BOS={'OK' if bos_dn else 'NO'}.")
+
+            return (lh and bos_dn), explain
+
+    # Nếu có quét -> vào POST-SWEEP mode (báo context) + KHÓA vào lệnh cho tới khi có cấu trúc
+    post_sweep_buy = bool(sweep_buy.get("ok")) or bool(spring_buy.get("ok"))
+    post_sweep_sell = bool(sweep_sell.get("ok")) or bool(spring_sell.get("ok"))
+    if post_sweep_buy or post_sweep_sell:
+        context_lines.append("POST-SWEEP: Đã xảy ra QUÉT thanh khoản → KHÔNG vào ngay, chờ cấu trúc.")
+        # (để telegram đọc là biết)
+        if post_sweep_buy:
+            ok_struct, explain = _post_sweep_structure_state("BUY")
+            notes.extend(explain)
+            if not ok_struct:
+                base.update({
+                    "context_lines": context_lines,
+                    "position_lines": position_lines,
+                    "liquidity_lines": liquidity_lines,
+                    "quality_lines": quality_lines + [f"RSI(14) M15: {_fmt(rsi15)}", f"ATR(14) M15: ~{_fmt(atr15)}", "RR ~ 1:2 (mục tiêu)"],
+                    "recommendation": "CHỜ",
+                    "stars": 2,
+                    "notes": notes + ["➡️ Khi HL + BOS xuất hiện (trạng thái OK/OK) → mới canh BUY theo H1 + chờ M30 confirm."],
+                })
+                return base
+
+        if post_sweep_sell:
+            ok_struct, explain = _post_sweep_structure_state("SELL")
+            notes.extend(explain)
+            if not ok_struct:
+                base.update({
+                    "context_lines": context_lines,
+                    "position_lines": position_lines,
+                    "liquidity_lines": liquidity_lines,
+                    "quality_lines": quality_lines + [f"RSI(14) M15: {_fmt(rsi15)}", f"ATR(14) M15: ~{_fmt(atr15)}", "RR ~ 1:2 (mục tiêu)"],
+                    "recommendation": "CHỜ",
+                    "stars": 2,
+                    "notes": notes + ["➡️ Khi LH + BOS xuất hiện (trạng thái OK/OK) → mới canh SELL theo H1 + chờ M30 confirm."],
+                })
+                return base
+
+    # ===== Quality =====
+    if rej["upper_reject"] or rej["lower_reject"]:
+        quality_lines.append("Nến từ chối rõ")
+        score += 1
+
+    quality_lines.append(f"RSI(14) M15: {_fmt(rsi15)}")
+    quality_lines.append(f"ATR(14) M15: ~{_fmt(atr15)}")
+    score += 1
+
+    # ===== Lower-high-ish (giữ logic cũ) =====
     lower_highish = False
     if len(m15c) >= 30:
         recent_high = max(c.high for c in m15c[-10:])
@@ -916,72 +1062,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         if recent_high <= prev_high:
             lower_highish = True
 
-    rej = _is_rejection(last15)
-
-    # Liquidity proxy
-    # =========================
-    # LIQUIDITY: sweep / spring (profile-based)
-    # =========================
-
-    # Range 30 nến M15 đã đóng để làm "range" cho spring
-    closed15 = m15c[:-1] if len(m15c) > 1 else m15c
-    use15 = closed15[-30:] if len(closed15) >= 30 else closed15
-    range15_low = min(c.low for c in use15) if use15 else (sl15 or last_close_15)
-    range15_high = max(c.high for c in use15) if use15 else (sh15 or last_close_15)
-
-    # Sweep theo swing levels (m15 swing)
-    sweep_sell = detect_sweep(m15c, side="SELL", level=float(sh15) if sh15 else float(range15_high), atr=atr15, symbol=symbol)
-    sweep_buy  = detect_sweep(m15c, side="BUY",  level=float(sl15) if sl15 else float(range15_low),  atr=atr15, symbol=symbol)
-
-    # Spring / Upthrust theo range 30 nến M15
-    spring_buy  = detect_spring(m15c, side="BUY",  range_low=float(range15_low),  range_high=float(range15_high), atr=atr15, symbol=symbol)
-    spring_sell = detect_spring(m15c, side="SELL", range_low=float(range15_low),  range_high=float(range15_high), atr=atr15, symbol=symbol)
-
-    liq_sell = bool(sweep_sell.get("ok")) or bool(spring_sell.get("ok"))
-    liq_buy  = bool(sweep_buy.get("ok"))  or bool(spring_buy.get("ok"))
-
-    # Build liquidity_lines with explanations
-    liquidity_lines = []
-    if sweep_sell.get("ok"):
-        vtxt = " +VOL" if sweep_sell.get("vol_ok") else ""
-        liquidity_lines.append(f"🔴 Sweep HIGH (quét đỉnh){vtxt}: chọc { _fmt(sweep_sell['level']) } rồi đóng xuống lại.")
-        score += 1
-
-    if sweep_buy.get("ok"):
-        vtxt = " +VOL" if sweep_buy.get("vol_ok") else ""
-        liquidity_lines.append(f"🟢 Sweep LOW (quét đáy){vtxt}: chọc { _fmt(sweep_buy['level']) } rồi đóng lên lại.")
-        score += 1
-
-    if spring_buy.get("ok"):
-        vtxt = " +VOL" if spring_buy.get("vol_ok") else ""
-        liquidity_lines.append(f"🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through.")
-        score += 1
-
-    if spring_sell.get("ok"):
-        vtxt = " +VOL" if spring_sell.get("vol_ok") else ""
-        liquidity_lines.append(f"🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through.")
-        score += 1
-
-    if not liquidity_lines:
-        liquidity_lines.append("Chưa thấy sweep/spring rõ (liquidity proxy).")
-
-    # (Gợi ý thêm) Nếu spring/sweep có nhưng H1 ngược trend -> note cho bot “đừng vội”
-    if (spring_buy.get("ok") or sweep_buy.get("ok")) and h1_trend == "bearish":
-        notes.append("⚠️ Có dấu hiệu hút thanh khoản dưới nhưng H1 đang bearish → ưu tiên CHỜ confirm M30.")
-    if (spring_sell.get("ok") or sweep_sell.get("ok")) and h1_trend == "bullish":
-        notes.append("⚠️ Có dấu hiệu hút thanh khoản trên nhưng H1 đang bullish → ưu tiên CHỜ confirm M30.")
-
-    if rej["upper_reject"] or rej["lower_reject"]:
-        quality_lines.append("Nến từ chối rõ")
-        score += 1
-
-    if rsi15 is not None:
-        quality_lines.append(f"RSI(14) M15: {_fmt(rsi15)}")
-
-    quality_lines.append(f"ATR(14) M15: ~{_fmt(atr15)}")
-    score += 1
-
-    # Decide bias
+    # ===== Bias decision (giữ logic cũ) =====
     sell_ok = (rej["upper_reject"] or liq_sell) and (lower_highish or spike or weakening) and (sh15 is not None)
     buy_ok  = (rej["lower_reject"] or liq_buy)  and (spike or weakening) and (sl15 is not None)
 
@@ -1036,13 +1117,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 
     recommendation = "🔴 SELL" if bias == "SELL" else "🟢 BUY"
 
-    # Entry logic:
-    # - Signal + retest zone from M15
-    # - Entry trigger only when M30 candle CLOSE confirms direction
+    # Entry logic (giữ logic cũ)
     RETEST_K = float(os.getenv("RETEST_K", "0.35"))
     RETEST_K = max(0.15, min(0.80, RETEST_K))
 
-    # Default XAU zone padding (small) to tolerate spread/rung
     ZONE_PAD_K = float(os.getenv("ENTRY_ZONE_PAD_K", "0.20"))
     ZONE_PAD_K = max(0.05, min(0.60, ZONE_PAD_K))
 
@@ -1076,7 +1154,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         if sl15 is not None:
             notes.append(f"Không BUY nếu M15 đóng < {_fmt(sl15)}")
 
-    # Nếu M30 chưa confirm: trả về trạng thái CHỜ nhưng vẫn show zone quan sát
     if not confirm_m30:
         base.update({
             "context_lines": context_lines,
@@ -1094,18 +1171,16 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         })
         return base
 
-    # Confirmed: use entry_center as entry
+    # Confirmed -> SL/TP bằng risk engine (giữ logic cũ)
     entry = float(entry_center)
 
-    # ---- SMART SL/TP (CÁCH ĐÚNG: không bỏ kèo, chỉ warn + clamp trong risk.py)
     equity_usd = float(os.getenv("EQUITY_USD", "1000"))
-    risk_pct   = float(os.getenv("RISK_PCT", "0.0075"))  # 0.005..0.01
+    risk_pct   = float(os.getenv("RISK_PCT", "0.0075"))
 
-    plan: Dict[str, Any]
     try:
         plan = calc_smart_sl_tp(
             symbol=symbol,
-            side=bias,  # BUY/SELL
+            side=bias,
             entry=float(entry),
             atr=float(atr15),
             liquidity_level=float(liq_level) if liq_level is not None else None,
@@ -1115,7 +1190,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     except Exception as e:
         plan = {"ok": False, "reason": f"risk_engine_error: {e}"}
 
-    # nếu plan không ok: vẫn trả kèo nhưng set SL/TP fallback theo ATR để bot vẫn “báo”
     sl: Optional[float] = _safe_float(plan.get("sl"))
     tp1: Optional[float] = _safe_float(plan.get("tp1"))
     tp2: Optional[float] = _safe_float(plan.get("tp2"))
@@ -1124,7 +1198,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 
     if not plan.get("ok", True):
         quality_lines.append(f"⚠️ Risk warn: {plan.get('reason', 'risk check failed')}")
-        # Fallback SL/TP theo ATR (an toàn, không crash)
         fallback_r = max(0.6, float(atr15) * 1.0)
         if bias == "SELL":
             sl = float(entry) + fallback_r
@@ -1138,7 +1211,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         lot = lot or 0.01
         notes.append("⚠️ SL/TP dùng fallback theo ATR do risk engine báo không hợp lệ.")
 
-    # đảm bảo vẫn có số
     if sl is None or tp1 is None or tp2 is None:
         fallback_r = max(0.6, float(atr15) * 1.0)
         if bias == "SELL":
@@ -1152,7 +1224,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         rdist = fallback_r if rdist is None else rdist
         lot = lot or 0.01
 
-    # Stars
     stars = 1
     if score >= 6:
         stars = 5
@@ -1182,7 +1253,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "notes": notes,
     })
     return base
-
 
 # =========================
 # Formatter (MUST be named format_signal for main.py import)
