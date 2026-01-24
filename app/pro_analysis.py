@@ -1236,7 +1236,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
             lines.append(f"- {s}")
     else:
         lines.append("- Chưa có gợi ý ngắn hạn rõ ràng → CHỜ TÍN HIỆU")
-    lines.append("")
     tm = sig.get("trade_method", None)
     if isinstance(tm, dict):
         tm_lines = tm.get("lines", [])
