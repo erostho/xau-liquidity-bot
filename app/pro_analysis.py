@@ -193,6 +193,183 @@ def _atr(candles, period: int = 14):
     for i in range(period, len(trs)):
         atr = (atr * (period - 1) + trs[i]) / period
     return atr
+# =========================
+# EXTRA MODULES: Volume / Candle / Divergence
+# =========================
+
+def _sma(xs: List[float], n: int) -> Optional[float]:
+    xs = [float(x) for x in (xs or []) if x is not None]
+    if len(xs) < n or n <= 0:
+        return None
+    return sum(xs[-n:]) / float(n)
+
+def _vol_quality(candles: List[Candle], n: int = 20) -> Dict[str, Any]:
+    """
+    Volume quality: so sánh volume nến đã đóng gần nhất với SMA/Median của n nến trước đó.
+    Return: {"state": "HIGH"/"NORMAL"/"LOW"/"N/A", "ratio": float|None}
+    """
+    if not candles or len(candles) < n + 3:
+        return {"state": "N/A", "ratio": None}
+
+    closed = candles[:-1]  # bỏ nến đang chạy
+    use = closed[-(n+1):]  # n+1 để lấy last + n trước
+    vols = [max(0.0, float(getattr(c, "volume", 0.0) or 0.0)) for c in use]
+    v_last = vols[-1]
+    base = _sma(vols[:-1], n)  # SMA của n nến trước đó
+    if base is None or base <= 0:
+        return {"state": "N/A", "ratio": None}
+
+    ratio = v_last / base
+    if ratio >= 1.4:
+        st = "HIGH"
+    elif ratio <= 0.75:
+        st = "LOW"
+    else:
+        st = "NORMAL"
+    return {"state": st, "ratio": ratio}
+
+def _candle_patterns(candles: List[Candle]) -> Dict[str, Any]:
+    """
+    Nhận diện 1 số mẫu nến quan trọng để review/confirm:
+    - engulfing (bull/bear)
+    - strong rejection (pinbar kiểu chuẩn)
+    Dùng 2 nến đã đóng gần nhất.
+    """
+    if not candles or len(candles) < 4:
+        return {"engulf": None, "rejection": None, "txt": "N/A"}
+
+    c1 = candles[-2]  # nến đã đóng gần nhất
+    c0 = candles[-3]  # nến trước đó
+
+    def _rng(c: Candle) -> float:
+        return max(1e-9, c.high - c.low)
+
+    # Engulfing (body engulf body)
+    b0_hi = max(c0.open, c0.close)
+    b0_lo = min(c0.open, c0.close)
+    b1_hi = max(c1.open, c1.close)
+    b1_lo = min(c1.open, c1.close)
+
+    bull_engulf = (c1.close > c1.open) and (b1_hi >= b0_hi) and (b1_lo <= b0_lo)
+    bear_engulf = (c1.close < c1.open) and (b1_hi >= b0_hi) and (b1_lo <= b0_lo)
+
+    engulf = "BULL" if bull_engulf else ("BEAR" if bear_engulf else None)
+
+    # Rejection / pinbar “chuẩn” (wick dài, thân nhỏ)
+    rng1 = _rng(c1)
+    body1 = abs(c1.close - c1.open)
+    up_w = c1.high - max(c1.open, c1.close)
+    lo_w = min(c1.open, c1.close) - c1.low
+
+    upper_reject = (up_w / rng1 >= 0.50) and (body1 / rng1 <= 0.35)
+    lower_reject = (lo_w / rng1 >= 0.50) and (body1 / rng1 <= 0.35)
+
+    rejection = "UPPER" if upper_reject else ("LOWER" if lower_reject else None)
+
+    txt_parts = []
+    if engulf:
+        txt_parts.append(f"Engulfing={engulf}")
+    if rejection:
+        txt_parts.append(f"Rejection={rejection}")
+    txt = " | ".join(txt_parts) if txt_parts else "None"
+
+    return {"engulf": engulf, "rejection": rejection, "txt": txt}
+
+def _find_swings(values: List[float], left: int = 2, right: int = 2) -> Dict[str, List[int]]:
+    """
+    Trả về index swing highs/lows đơn giản trên chuỗi values.
+    """
+    n = len(values)
+    highs, lows = [], []
+    if n < (left + right + 3):
+        return {"highs": highs, "lows": lows}
+
+    for i in range(left, n - right):
+        v = values[i]
+        if all(v > values[i - j] for j in range(1, left + 1)) and all(v > values[i + j] for j in range(1, right + 1)):
+            highs.append(i)
+        if all(v < values[i - j] for j in range(1, left + 1)) and all(v < values[i + j] for j in range(1, right + 1)):
+            lows.append(i)
+    return {"highs": highs, "lows": lows}
+
+def _rsi_series(values: List[float], period: int = 14) -> List[float]:
+    """
+    RSI series để detect divergence (tránh chỉ 1 số).
+    """
+    if not values or len(values) < period + 2:
+        return []
+    values = [float(x) for x in values]
+    gains, losses = [], []
+    for i in range(1, len(values)):
+        ch = values[i] - values[i - 1]
+        gains.append(max(ch, 0.0))
+        losses.append(max(-ch, 0.0))
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    out = [50.0] * (period)  # pad
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        if avg_loss == 0:
+            rsi = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+        out.append(rsi)
+    # align length to closes
+    out = [out[0]] + out  # because gains len = closes-1
+    return out[:len(values)]
+
+def _divergence_rsi(candles: List[Candle], period: int = 14, lookback: int = 50) -> Dict[str, Any]:
+    """
+    Divergence RSI đơn giản:
+    - Bearish div: price HH nhưng RSI LH (tín hiệu nên chốt BUY / cẩn thận SELL reversal)
+    - Bullish div: price LL nhưng RSI HL (tín hiệu nên chốt SELL / cẩn thận BUY reversal)
+    Dùng closes trong lookback nến đã đóng.
+    """
+    if not candles or len(candles) < lookback + period + 5:
+        return {"bear": False, "bull": False, "txt": "N/A"}
+
+    closed = candles[:-1]
+    use = closed[-lookback:]
+    closes = [c.close for c in use]
+    rsis = _rsi_series(closes, period=period)
+    if not rsis or len(rsis) != len(closes):
+        return {"bear": False, "bull": False, "txt": "N/A"}
+
+    swings = _find_swings(closes, left=2, right=2)
+    hs = swings["highs"]
+    ls = swings["lows"]
+
+    bear = False
+    bull = False
+
+    # bearish: last 2 swing highs
+    if len(hs) >= 2:
+        i1, i2 = hs[-2], hs[-1]
+        p1, p2 = closes[i1], closes[i2]
+        r1, r2 = rsis[i1], rsis[i2]
+        if p2 > p1 and r2 < r1:
+            bear = True
+
+    # bullish: last 2 swing lows
+    if len(ls) >= 2:
+        i1, i2 = ls[-2], ls[-1]
+        p1, p2 = closes[i1], closes[i2]
+        r1, r2 = rsis[i1], rsis[i2]
+        if p2 < p1 and r2 > r1:
+            bull = True
+
+    if bear and bull:
+        txt = "RSI divergence: MIXED"
+    elif bear:
+        txt = "RSI divergence: BEARISH (đà lên yếu dần)"
+    elif bull:
+        txt = "RSI divergence: BULLISH (đà xuống yếu dần)"
+    else:
+        txt = "RSI divergence: None"
+
+    return {"bear": bear, "bull": bull, "txt": txt}
 
 # =========================
 # SYMBOL PROFILES (XAG vs XAU/BTC)
@@ -789,6 +966,34 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # Trends (H1 + M30) (dùng _trend_label có sẵn)
     h1_trend = _trend_label(h1c)    # bullish / bearish / sideways
     m30_trend = _trend_label(m30c)  # bullish / bearish / sideways
+    # ===== EXTRA: Volume / Candle / Divergence (for PRO review) =====
+    volq = _vol_quality(m15c, n=20)
+    cpat = _candle_patterns(m15c)
+    div  = _divergence_rsi(m15c, period=14, lookback=50)
+
+    # nhét vào meta để main.py / review lệnh dùng lại
+    base["meta"]["volq"] = volq
+    base["meta"]["candle"] = cpat
+    base["meta"]["div"] = div
+
+    # show vào quality_lines (đọc phát hiểu)
+    if volq["state"] != "N/A":
+        quality_lines.append(f"Volume: {volq['state']} (x{volq['ratio']:.2f} vs SMA20)")
+        # volume cao → thêm điểm chất lượng (đỡ fake breakout)
+        if volq["state"] == "HIGH":
+            score += 1
+        elif volq["state"] == "LOW":
+            notes.append("⚠️ Volume thấp → dễ fake move (ưu tiên TP nhanh / không add).")
+
+    # candle reaction
+    if cpat.get("engulf") or cpat.get("rejection"):
+        quality_lines.append(f"Candle: {cpat['txt']}")
+        score += 1
+
+    # divergence
+    if div.get("bear") or div.get("bull"):
+        quality_lines.append(div["txt"])
+        score += 1
 
     # ====== Market state: chỉ 3 trạng thái (đúng ý mày) ======
     # spike volatility (M15): range 20 > 1.35 * range 80
@@ -1169,10 +1374,27 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "notes": notes + ["Chờ nến M30 đóng xác nhận rồi mới vào lệnh."],
         })
         return base
+    # ===== PRO adjustments: divergence/candle/volume affect confidence & management =====
+    # 1) Divergence: nếu đánh ngược divergence → warn mạnh
+    if bias == "BUY" and base["meta"]["div"].get("bear"):
+        notes.append("⚠️ Bearish divergence → BUY dễ bị hụt hơi: ưu tiên TP1 nhanh, dời SL sớm.")
+    if bias == "SELL" and base["meta"]["div"].get("bull"):
+        notes.append("⚠️ Bullish divergence → SELL dễ bị hụt hơi: ưu tiên TP1 nhanh, dời SL sớm.")
+
+    # 2) Candle phản công ngay trước entry: nếu bias=SELL mà có BULL engulfing/lower rejection → cảnh báo
+    engulf = base["meta"]["candle"].get("engulf")
+    rej = base["meta"]["candle"].get("rejection")
+    if bias == "SELL" and (engulf == "BULL" or rej == "LOWER"):
+        notes.append("⚠️ Nến phản công (bull engulf / lower rejection) → SELL nên chờ confirm thêm, tránh vào sớm.")
+    if bias == "BUY" and (engulf == "BEAR" or rej == "UPPER"):
+        notes.append("⚠️ Nến phản công (bear engulf / upper rejection) → BUY nên chờ confirm thêm, tránh vào sớm.")
+
+    # 3) Volume LOW: giảm “máu chiến”
+    if base["meta"]["volq"].get("state") == "LOW":
+        notes.append("⚠️ Volume thấp → nếu vào, ưu tiên đánh NGẮN + TP1, không gồng.")
 
     # Confirmed -> SL/TP bằng risk engine (giữ logic cũ)
     entry = float(entry_center)
-
     equity_usd = float(os.getenv("EQUITY_USD", "1000"))
     risk_pct   = float(os.getenv("RISK_PCT", "0.0075"))
 
