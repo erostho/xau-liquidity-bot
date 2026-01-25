@@ -145,86 +145,154 @@ def parse_manual_trade(text: str):
         "sl": sl,
     }
 
-
 def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float, tp: float | None, sl: float | None) -> str:
-    # 1) lấy candles
-    m15, _ = get_candles(symbol, "15min", limit=200)
-    m30, _ = get_candles(symbol, "30min", limit=200)
-    h1,  _ = get_candles(symbol, "1h",    limit=200)
-
+    # 1) lấy candles (đồng bộ với get_candles trả tuple)
+    m15, _ = get_candles(symbol, "15min", limit=220)
+    m30, _ = get_candles(symbol, "30min", limit=220)
+    h1,  _ = get_candles(symbol, "1h",    limit=220)
 
     sig = analyze_pro(symbol, m15, m30, h1)
 
-    # 2) tính RR đơn giản
+    # 2) Giá hiện tại
+    try:
+        cur = float(m15[-1]["close"]) if isinstance(m15[-1], dict) else float(getattr(m15[-1], "close"))
+    except Exception:
+        cur = None
+
+    # 3) RR
     entry = (entry_lo + entry_hi) / 2.0
     rr_txt = "RR: n/a"
+    rr = None
     if tp is not None and sl is not None and abs(entry - sl) > 1e-9:
         r = abs(entry - sl)
         rew = abs(tp - entry)
         rr = rew / r
         rr_txt = f"RR≈{rr:.2f}"
 
-    # 3) lấy context/liquidity/quality từ sig
-    ctx = sig.get("context_lines", [])
-    liq = sig.get("liquidity_lines", [])
-    qlt = sig.get("quality_lines", [])
-    notes = sig.get("notes", [])
+    # 4) lấy context/liquidity/quality/notes
+    ctx = sig.get("context_lines", []) or []
+    liq = sig.get("liquidity_lines", []) or []
+    qlt = sig.get("quality_lines", []) or []
+    notes = sig.get("notes", []) or []
+    levels_info = sig.get("levels_info", []) or []
 
-    atr_line = next((x for x in qlt if "ATR(" in x), None)
+    # 5) ATR M15
     atr_val = None
-    if atr_line:
-        # ATR(14) M15: ~101.231
-        try:
-            atr_val = float(atr_line.split("~")[-1].strip())
-        except:
-            atr_val = None
+    for x in qlt:
+        if "ATR(" in x and "~" in x:
+            try:
+                atr_val = float(x.split("~")[-1].strip())
+            except Exception:
+                atr_val = None
+            break
 
-    # 4) gợi ý hành động rất rõ ràng
-    actions = []
+    # 6) các level quan trọng gần nhất (để invalidation)
+    # ưu tiên swing gần/kháng cự hỗ trợ
+    swing_hi = None
+    swing_lo = None
+    for price, label in levels_info:
+        lb = (label or "").lower()
+        if swing_hi is None and ("swing high" in lb or "kháng cự" in lb):
+            swing_hi = float(price)
+        if swing_lo is None and ("swing low" in lb or "hỗ trợ" in lb):
+            swing_lo = float(price)
+    # nếu thiếu thì lấy từ observation
+    obs = sig.get("observation", {}) or {}
+    if swing_hi is None and obs.get("buy") is not None:
+        swing_hi = float(obs.get("buy"))
+    if swing_lo is None and obs.get("sell") is not None:
+        swing_lo = float(obs.get("sell"))
 
-    # rule cơ bản: nếu H1 ngược hướng thì cảnh báo
+    buf = 0.10 * atr_val if atr_val else 0.0
+
+    # 7) Tính trạng thái lời/lỗ, khoảng cách TP/SL
+    pnl_txt = ""
+    dist_tp = dist_sl = None
+    if cur is not None:
+        if side == "BUY":
+            pnl = cur - entry
+            pnl_txt = f"P/L (ước tính): {pnl:+.2f} điểm"
+            if tp is not None: dist_tp = tp - cur
+            if sl is not None: dist_sl = cur - sl
+        else:
+            pnl = entry - cur
+            pnl_txt = f"P/L (ước tính): {pnl:+.2f} điểm"
+            if tp is not None: dist_tp = cur - tp
+            if sl is not None: dist_sl = sl - cur
+
+    # 8) Quyết định GIỮ/THOÁT/CHỈNH (rõ ràng)
+    decisions = []
+
+    # 8.1) Invalidation theo swing + buffer
+    if cur is not None:
+        if side == "SELL" and swing_hi is not None and cur > (swing_hi + buf):
+            decisions.append("🛑 KÈO SAI (invalidation): giá vượt vùng swing/high + buffer → ưu tiên THOÁT hoặc giảm mạnh rủi ro.")
+        if side == "BUY" and swing_lo is not None and cur < (swing_lo - buf):
+            decisions.append("🛑 KÈO SAI (invalidation): giá thủng vùng swing/low + buffer → ưu tiên THOÁT hoặc giảm mạnh rủi ro.")
+
+    # 8.2) H1 ngược hướng -> giảm rủi ro
     h1_txt = " ".join(ctx).lower()
     if side == "BUY" and "h1: bearish" in h1_txt:
-        actions.append("⚠️ BUY ngược H1 bearish → ưu tiên giảm rủi ro (chốt sớm/siết SL) hoặc chờ cấu trúc HL rồi re-entry.")
+        decisions.append("⚠️ BUY ngược H1 bearish → ưu tiên chốt sớm / dời SL chặt / không gồng.")
     if side == "SELL" and "h1: bullish" in h1_txt:
-        actions.append("⚠️ SELL ngược H1 bullish → ưu tiên giảm rủi ro (chốt sớm/siết SL) hoặc chờ LH rồi re-entry.")
+        decisions.append("⚠️ SELL ngược H1 bullish → ưu tiên chốt sớm / dời SL chặt / không gồng.")
 
-    # rule ATR: TP/SL có “thoáng” không
+    # 8.3) TP/SL quá sát so với ATR
     if atr_val and sl is not None:
-        dist_sl = abs(entry - sl)
-        if dist_sl < 0.6 * atr_val:
-            actions.append(f"⚠️ SL hơi sát (<0.6 ATR). Gợi ý: SL ≥ 0.9–1.2 ATR (đặc biệt nếu vừa có sweep).")
+        dist = abs(entry - sl)
+        if dist < 0.6 * atr_val:
+            decisions.append(f"⚠️ SL đang sát (<0.6 ATR). Gợi ý SL ≥ 0.9–1.2 ATR (hoặc đặt sau vùng sweep).")
     if atr_val and tp is not None:
-        dist_tp = abs(tp - entry)
-        if dist_tp < 0.6 * atr_val:
-            actions.append(f"⚠️ TP hơi ngắn (<0.6 ATR). Nếu muốn chắc: TP1 ~0.8–1.0 ATR, TP2 ~1.6–2.0 ATR.")
+        dist = abs(tp - entry)
+        if dist < 0.6 * atr_val:
+            decisions.append("⚠️ TP đang ngắn (<0.6 ATR). Gợi ý TP1 ~0.8–1.0 ATR, TP2 ~1.6–2.0 ATR.")
 
-    # nếu có liquidity warning / sweep/spring trong sig notes/liq → nhắc “chờ cấu trúc”
-    liq_txt = " ".join(liq).lower() + " " + " ".join(notes).lower()
-    if "sweep" in liq_txt or "spring" in liq_txt or "liquidity" in liq_txt:
-        actions.append("✅ Nếu vừa quét: CHỜ cấu trúc rồi mới add/giữ mạnh (BUY: M15 tạo HL + break đỉnh gần | SELL: M15 tạo LH + break đáy gần).")
+    # 8.4) Quản trị lệnh theo ATR (TP1/BE)
+    if atr_val and cur is not None:
+        move = (cur - entry) if side == "BUY" else (entry - cur)
+        if move >= 0.8 * atr_val:
+            decisions.append("✅ Đã đi được ~0.8 ATR: chốt TP1 30–50% + dời SL về BE (hoặc BE+0.1 ATR).")
+        elif move <= -0.6 * atr_val:
+            decisions.append("⚠️ Đang ngược ~0.6 ATR: nếu không có lý do giữ (HTF/structure) → cân nhắc cắt sớm để tránh hit SL.")
 
-    if not actions:
-        actions.append("✅ Lệnh không thấy lỗi rõ ràng theo context hiện tại. Ưu tiên: TP1 chốt 30–50%, dời SL về BE khi đạt +0.8 ATR.")
+    # 8.5) Fix lỗi “nếu vừa quét” (chỉ nói khi THẬT SỰ có sweep/spring ok)
+    liq_join = " ".join(liq).lower()
+    has_real_sweep = ("sweep high" in liq_join) or ("sweep low" in liq_join) or ("spring" in liq_join) or ("upthrust" in liq_join)
+    if has_real_sweep:
+        decisions.append("🧱 Sau quét: CHỜ CẤU TRÚC rồi mới add/giữ mạnh (BUY: M15 tạo HL + break đỉnh gần | SELL: M15 tạo LH + break đáy gần).")
 
-    # 5) build reply
+    if not decisions:
+        decisions.append("✅ Chưa thấy tín hiệu ‘sai kèo’ rõ ràng → ưu tiên GIỮ theo plan, chia TP1/TP2 và dời SL về BE khi có lợi nhuận.")
+
+    # 9) Build reply gọn mà “ra quyết định”
     lines = []
     lines.append("🧠 REVIEW LỆNH (Manual)")
     lines.append(f"📌 {symbol} | {side}")
     lines.append(f"- Entry: {entry_lo:.2f} – {entry_hi:.2f}")
     lines.append(f"- TP: {tp if tp is not None else '...'} | SL: {sl if sl is not None else '...'} | {rr_txt}")
+    if cur is not None:
+        lines.append(f"- Giá hiện tại (M15 close): {cur:.2f}")
+    if pnl_txt:
+        lines.append(f"- {pnl_txt}")
     lines.append("")
+
     if ctx:
         lines.append("Context:")
-        for s in ctx: lines.append(f"- {s}")
+        for s in ctx:
+            lines.append(f"- {s}")
         lines.append("")
-    lines.append("Liquidity:")
-    for s in liq[:4]: lines.append(f"- {s}")
+
+    lines.append("Liquidity (tóm tắt):")
+    for s in liq[:3]:
+        lines.append(f"- {s}")
     lines.append("")
-    lines.append("Gợi ý hành động:")
-    for a in actions: lines.append(f"- {a}")
+
+    lines.append("✅ Kết luận / Gợi ý hành động:")
+    for d in decisions[:6]:
+        lines.append(f"- {d}")
 
     return "\n".join(lines)
+
 
 def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
     # M15, M30, H1
