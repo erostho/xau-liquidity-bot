@@ -430,88 +430,87 @@ def detect_spring(
             "need": float(need),
         }
 
-
 def _build_short_hint_m15(m15: list[Candle], h1_trend: str, m30_trend: str) -> list[str]:
     """
-    Gợi ý NGẮN HẠN: thuần 30 nến M15 gần nhất (~7.5h), bỏ nến đang chạy.
-    Micro-bias dùng SLOPE: avg(close last10) vs avg(close prev10).
-    (h1_trend/m30_trend chỉ để hiển thị/nhắc thêm, không dùng làm ngưỡng.)
+    GỢI Ý NGẮN HẠN (M15):
+    - Quan sát breakout / chờ kèo chính
+    - + SCALE NHANH (hớt sóng) nếu đủ điều kiện
     """
-    if not m15 or len(m15) < 12:
-        return ["- Chưa đủ dữ liệu M15 để gợi ý ngắn hạn → CHỜ KÈO"]
 
-    # dùng 30 nến đã đóng (bỏ nến cuối nếu muốn tránh nến đang chạy)
+    if not m15 or len(m15) < 30:
+        return ["- Chưa đủ dữ liệu M15 → CHỜ"]
+
+    lines: list[str] = []
+
+    # ====== PREP DATA ======
     closed = m15[:-1] if len(m15) > 1 else m15
-    use = closed[-30:] if len(closed) >= 30 else closed
-    if len(use) < 12:
-        return ["- Chưa đủ dữ liệu M15 (sau khi bỏ nến đang chạy) → CHỜ KÈO"]
-
-    lo = min(c.low for c in use)
-    hi = max(c.high for c in use)
-
-    # giá tham chiếu = close nến đã đóng gần nhất
+    use = closed[-30:]
     cur = use[-1].close
 
-    # ATR dùng trên chuỗi M15 đã normalize
+    hi = max(c.high for c in use)
+    lo = min(c.low for c in use)
+    rng = max(1e-9, hi - lo)
+
     atr15 = _atr(closed, 14)
     if atr15 is None or atr15 <= 0:
-        # fallback nhẹ nếu thiếu ATR
-        atr15 = max(1e-6, (hi - lo) / 10.0 if hi > lo else abs(cur) * 0.001)
+        return ["- ATR M15 chưa sẵn sàng → CHỜ"]
 
-    rng = max(1e-9, hi - lo)
-    pos = (cur - lo) / rng  # 0..1
-    pos_pct = max(0.0, min(1.0, pos)) * 100.0
+    rsi15 = _rsi([c.close for c in closed], 14) or 50.0
+    rej = _is_rejection(use[-1])
 
-    # === SLOPE micro-bias (A) ===
-    # last10 vs prev10 (đều là nến đã đóng)
-    micro = "neutral"
-    micro_txt = "Micro-bias: NEUTRAL"
-    slope = 0.0
-    if len(use) >= 20:
-        last10 = [c.close for c in use[-10:]]
-        prev10 = [c.close for c in use[-20:-10]]
-        avg_last = sum(last10) / 10.0
-        avg_prev = sum(prev10) / 10.0
-        slope = avg_last - avg_prev
-
-        # ngưỡng “đáng kể” theo ATR
-        thr = 0.15 * atr15
-        if slope > thr:
-            micro = "buy"
-            micro_txt = f"Micro-bias: BUY nhẹ (slope +{_fmt(slope)} > { _fmt(thr) })"
-        elif slope < -thr:
-            micro = "sell"
-            micro_txt = f"Micro-bias: SELL nhẹ (slope {_fmt(slope)} < -{ _fmt(thr) })"
-        else:
-            micro = "neutral"
-            micro_txt = f"Micro-bias: NEUTRAL (slope {_fmt(slope)} ~ nhỏ)"
-
-    # Range/ATR để biết đang nén hay đang giãn
-    rng_atr = rng / max(1e-9, atr15)
-    if rng_atr <= 2.0:
-        state = "NÉN (range chặt)"
-    elif rng_atr >= 3.5:
-        state = "GIÃN (biến động cao)"
-    else:
-        state = "BÌNH THƯỜNG"
-
-    # breakout trigger theo range30 + buffer
+    # ====== PHẦN 1: GỢI Ý QUAN SÁT (LOGIC CŨ – GIỮ) ======
+    pos = (cur - lo) / rng * 100.0
     buf = 0.20 * atr15
+
+    lines.append(f"- Range 30 nến M15: {_fmt(lo)} – {_fmt(hi)}.")
+    lines.append(f"- Giá hiện tại: {_fmt(cur)} (~{pos:.0f}% trong range).")
+
     buy_trig = hi + buf
     sell_trig = lo - buf
 
-    lines: list[str] = []
-    lines.append(f"- Range 30 nến M15: {_fmt(lo)} – {_fmt(hi)}.")
-    lines.append(f"- Giá hiện tại: {_fmt(cur)} (~{pos_pct:.0f}% trong range) | {state} | Range≈{rng_atr:.1f} ATR.")
-    lines.append(f"- {micro_txt}.")
-    lines.append(f"- QUAN SÁT (breakout): M15 đóng > {_fmt(buy_trig)} → canh BUY | M15 đóng < {_fmt(sell_trig)} → canh SELL.")
-    lines.append("- Nếu vẫn nằm trong range → ưu tiên CHỜ (đợi chạm biên + nến từ chối/retest rồi mới tính).")
+    lines.append(
+        f"- Quan sát breakout: M15 đóng > {_fmt(buy_trig)} → canh BUY | "
+        f"M15 đóng < {_fmt(sell_trig)} → canh SELL."
+    )
 
-    # optional: nhắc trend HTF (không dùng làm điều kiện)
+    # ====== PHẦN 2: SCALE NHANH (HỚT SÓNG) ======
+    # Điều kiện: chỉ scale khi KHÔNG có trend mạnh
+    allow_scale = (h1_trend == "sideways" or m30_trend == "sideways")
+
+    scale_buf = 0.15 * atr15
+
+    # ---- SCALE BUY ----
+    if allow_scale and cur <= lo + scale_buf and rej["lower_reject"] and rsi15 < 45:
+        entry = cur
+        sl = cur - 0.4 * atr15
+        tp = cur + 0.7 * atr15
+
+        lines.append("")
+        lines.append("⚡ GỢI Ý SCALE NHANH (M15 – hớt sóng):")
+        lines.append(f"- BUY quanh {_fmt(entry)}")
+        lines.append(f"- SL: {_fmt(sl)} | TP nhanh: {_fmt(tp)}")
+        lines.append("- Lệnh ngắn, vào ra nhanh, KHÔNG gồng.")
+
+    # ---- SCALE SELL ----
+    elif allow_scale and cur >= hi - scale_buf and rej["upper_reject"] and rsi15 > 55:
+        entry = cur
+        sl = cur + 0.4 * atr15
+        tp = cur - 0.7 * atr15
+
+        lines.append("")
+        lines.append("⚡ GỢI Ý SCALE NHANH (M15 – hớt sóng):")
+        lines.append(f"- SELL quanh {_fmt(entry)}")
+        lines.append(f"- SL: {_fmt(sl)} | TP nhanh: {_fmt(tp)}")
+        lines.append("- Lệnh ngắn, vào ra nhanh, KHÔNG gồng.")
+
+    # ====== PHẦN 3: NHẮC TREND LỚN (THAM KHẢO) ======
     if h1_trend in ("bullish", "bearish"):
+        lines.append("")
         lines.append(f"- (Tham khảo) H1: {h1_trend} | M30: {m30_trend}.")
 
     return lines
+
+
 def _pick_trade_method_m30(m30c: List[Candle], atr30: Optional[float]) -> Dict[str, Any]:
     """
     Dựa 20 nến M30 đã đóng → gợi ý METHOD + entry/SL/TP dạng hướng dẫn.
