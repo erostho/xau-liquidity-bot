@@ -260,7 +260,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     volq = meta.get("volq", {}) or {}
     cpat = meta.get("candle", {}) or {}
     div  = meta.get("div", {}) or {}
-
+    actions = []
     # thêm 3 dòng PRO vào phần "Gợi ý hành động"
     if volq.get("state") and volq.get("state") != "N/A":
         actions.append(f"📦 Volume: {volq.get('state')} (x{volq.get('ratio', 0):.2f} vs SMA20)")
@@ -324,7 +324,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     is_warn = ("Liquidity WARNING" in ctx_all) or ("POST-SWEEP" in ctx_all)
 
     # 7) ĐÁNH GIÁ “ĐÚNG/SẠI” + HÀNH ĐỘNG
-    actions = []
+
     verdict = "TRUNG TÍNH"
     hold_style = "NGẮN HẠN"
 
@@ -470,11 +470,16 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
 
 
-def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
+#def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
     # M15, M30, H1
-    m15, _ = get_candles(symbol, "15min", limit)
-    m30, _ = get_candles(symbol, "30min", limit)
-    h1, _ = get_candles(symbol, "1h", limit)
+    #m15, _ = get_candles(symbol, "15min", limit)
+    #m30, _ = get_candles(symbol, "30min", limit)
+    #h1, _ = get_candles(symbol, "1h", limit)
+    #return {"m15": m15, "m30": m30, "h1": h1}
+def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
+    m15 = _as_list_from_get_candles(get_candles(symbol, "15min", limit=limit))
+    m30 = _as_list_from_get_candles(get_candles(symbol, "30min", limit=limit))
+    h1  = _as_list_from_get_candles(get_candles(symbol, "1h",    limit=limit))
     return {"m15": m15, "m30": m30, "h1": h1}
 
 def _force_send(sig: dict) -> bool:
