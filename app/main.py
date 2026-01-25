@@ -256,6 +256,33 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     h1  = _as_list_from_get_candles(get_candles(symbol, "1h",    limit=220))
 
     sig = analyze_pro(symbol, m15, m30, h1)
+    meta = sig.get("meta", {}) or {}
+    volq = meta.get("volq", {}) or {}
+    cpat = meta.get("candle", {}) or {}
+    div  = meta.get("div", {}) or {}
+
+    # thêm 3 dòng PRO vào phần "Gợi ý hành động"
+    if volq.get("state") and volq.get("state") != "N/A":
+        actions.append(f"📦 Volume: {volq.get('state')} (x{volq.get('ratio', 0):.2f} vs SMA20)")
+        if volq.get("state") == "LOW":
+            actions.append("⚠️ Volume thấp → ưu tiên TP nhanh, KHÔNG add.")
+        elif volq.get("state") == "HIGH":
+            actions.append("✅ Volume cao → move đáng tin hơn (có thể giữ theo plan).")
+
+    if cpat.get("txt") and cpat.get("txt") != "N/A":
+        actions.append(f"🕯 Candle: {cpat.get('txt')}")
+        # candle phản công theo hướng ngược lệnh -> cảnh báo thoát/giảm
+        if side == "SELL" and (cpat.get("engulf") == "BULL" or cpat.get("rejection") == "LOWER"):
+            actions.append("⚠️ Nến phản công chống SELL → cân nhắc chốt non/giảm size nếu chưa có break đáy.")
+        if side == "BUY" and (cpat.get("engulf") == "BEAR" or cpat.get("rejection") == "UPPER"):
+            actions.append("⚠️ Nến phản công chống BUY → cân nhắc chốt non/giảm size nếu chưa có break đỉnh.")
+
+    if div.get("txt") and div.get("txt") != "N/A":
+        actions.append(f"📉 {div.get('txt')}")
+        if side == "SELL" and div.get("bull"):
+            actions.append("⚠️ Bullish divergence → SELL dễ hụt hơi: ưu tiên TP1 sớm + dời SL về BE khi đạt +0.8 ATR.")
+        if side == "BUY" and div.get("bear"):
+            actions.append("⚠️ Bearish divergence → BUY dễ hụt hơi: ưu tiên TP1 sớm + dời SL về BE khi đạt +0.8 ATR.")
 
     ctx = sig.get("context_lines", []) or []
     liq = sig.get("liquidity_lines", []) or []
