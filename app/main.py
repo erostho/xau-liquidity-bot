@@ -627,11 +627,19 @@ async def cron_run(token: str = "", request: Request = None):
             try:
                 data = _fetch_triplet(sym, limit=260)
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"])
-                if int(sig.get("stars", 1)) >= MIN_STARS:
+                stars = int(sig.get("stars", 0) or 0)
+                short_hint = sig.get("short_hint") or []
+                
+                # ----- LUỒNG A: KÈO CHÍNH -----
+                if stars >= MIN_STARS:
                     _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
-                    logger.info("[CRON] %s sent telegram stars=%s", sym, sig.get("stars"))
+                
+                # ----- LUỒNG B: KÈO NGẮN HẠN (KHÔNG QUA ⭐) -----
+                elif short_hint:
+                    prefix = "⚡ KÈO NGẮN HẠN (SCALP M15 – SCALE)\n\n"
+                    _send_telegram(prefix + format_signal(sig), chat_id=ADMIN_CHAT_ID) 
                 else:
-                    logger.info("[CRON] %s skip: stars=%s < %s", sym, sig.get("stars"), MIN_STARS)
+                    logger.info("[CRON] %s skip: no main signal, no short hint", sym)
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
