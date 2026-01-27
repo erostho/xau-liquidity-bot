@@ -652,9 +652,6 @@ async def cron_run(token: str = "", request: Request = None):
                 # ----- CÒN LẠI: KHÔNG GỬI -----
                 else:
                     logger.info("[CRON] %s: only observation, no trade", sym)
-
-                else:
-                    logger.info("[CRON] %s skip: no main signal, no short hint", sym)
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
