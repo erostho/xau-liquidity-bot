@@ -629,15 +629,30 @@ async def cron_run(token: str = "", request: Request = None):
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"])
                 stars = int(sig.get("stars", 0) or 0)
                 short_hint = sig.get("short_hint") or []
+                entry = sig.get("entry")
+                sl = sig.get("sl")
+                tp1 = sig.get("tp1")
+                rec = sig.get("recommendation", "")
                 
                 # ----- LUỒNG A: KÈO CHÍNH -----
-                if stars >= MIN_STARS:
+                if stars >= MIN_STARS and rec != "CHỜ":
                     _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
                 
-                # ----- LUỒNG B: KÈO NGẮN HẠN (KHÔNG QUA ⭐) -----
-                elif short_hint:
-                    prefix = "⚡ KÈO NGẮN HẠN (SCALP M15 – SCALE)\n\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=ADMIN_CHAT_ID) 
+                # ----- LUỒNG B: KÈO NGẮN HẠN THẬT -----
+                elif (
+                    entry is not None
+                    and sl is not None
+                    and tp1 is not None
+                    and rec in ("🟢 BUY", "🔴 SELL")
+                ):
+                    prefix = "⚡ KÈO NGẮN HẠN (SCALP M15 – SCALE)\n"
+                    prefix += "⚠️ Kèo ngắn – vào nhanh, ra nhanh – KHÔNG GỒNG\n\n"
+                    _send_telegram(prefix + format_signal(sig), chat_id=ADMIN_CHAT_ID)
+                
+                # ----- CÒN LẠI: KHÔNG GỬI -----
+                else:
+                    logger.info("[CRON] %s: only observation, no trade", sym)
+
                 else:
                     logger.info("[CRON] %s skip: no main signal, no short hint", sym)
             except Exception as e:
