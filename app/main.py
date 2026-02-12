@@ -72,7 +72,7 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
 
-    if "XAG" in t or "silver" in t:
+    if "xag" in t or "silver" in t:
         return "XAG/USD"
 
     if "xau" in t or "gold" in t:
