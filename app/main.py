@@ -21,7 +21,7 @@ LAST_CRON_TS = 0
 MIN_CRON_GAP_SEC = int(os.getenv("MIN_CRON_GAP_SEC", "25"))
 
 # Default symbols (override by env SYMBOLS="XAU/USD,BTC/USD")
-DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD,ETH/USD").split(",") if s.strip()]
+DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD,XAG/USD").split(",") if s.strip()]
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # default chat for cron
@@ -72,8 +72,8 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
 
-    if "eth" in t or "silver" in t:
-        return "ETH/USD"
+    if "XAG" in t or "silver" in t:
+        return "XAG/USD"
 
     if "xau" in t or "gold" in t:
         return "XAU/USD"
@@ -95,8 +95,8 @@ def normalize_symbol(user_sym: str) -> str:
         return "BTC/USD"
     if s in ("XAU", "XAUUSD", "XAU/USD"):
         return "XAU/USD"
-    if s in ("ETH", "ETHUSD", "ETH/USD"):
-        return "ETH/USD"
+    if s in ("XAG", "XAGUSD", "XAG/USD"):
+        return "XAG/USD"
 
     # fallback: nếu user gõ kiểu BTC/USDT -> BTC/USD (mày đang dùng USD)
     if s.endswith("/USDT"):
@@ -570,7 +570,7 @@ async def telegram_webhook(request: Request):
     # 1) "now/scan" -> mới chạy analyze_pro
     if "now" in low or "scan" in low or "all" in low:
         if "scan" in low or "all" in low:
-            symbols = DEFAULT_SYMBOLS or ["XAU/USD", "BTC/USD", "ETH/USD"]
+            symbols = DEFAULT_SYMBOLS or ["XAU/USD", "BTC/USD", "XAG/USD"]
         else:
             symbols = [_parse_symbol_from_text(text)]
 
@@ -621,7 +621,7 @@ async def cron_run(token: str = "", request: Request = None):
         client = getattr(getattr(request, "client", None), "host", "unknown") if request else "unknown"
         logger.info("[CRON] start from=%s", client)
 
-        symbols = DEFAULT_SYMBOLS or ["XAU/USD", "BTC/USD", "ETH/USD"]
+        symbols = DEFAULT_SYMBOLS or ["XAU/USD", "BTC/USD", "XAG/USD"]
 
         for sym in symbols:
             try:
