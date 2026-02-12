@@ -130,7 +130,7 @@ def _symbol_variants(symbol: str) -> List[str]:
         out.append("BTCUSD")
         out.append("BTCUSDm")
         out.append("BTC/USD")
-    if "XAG" in low:
+    if "xag" in low:
         out.append(MT5_SYMBOL_XAG)
         out.append("XAGUSD")
         out.append("XAGUSDm")
