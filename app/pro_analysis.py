@@ -372,11 +372,11 @@ def _divergence_rsi(candles: List[Candle], period: int = 14, lookback: int = 50)
     return {"bear": bear, "bull": bull, "txt": txt}
 
 # =========================
-# SYMBOL PROFILES (ETH vs XAU/BTC)
+# SYMBOL PROFILES (XAG vs XAU/BTC)
 # =========================
 SYMBOL_PROFILE = {
-    "ETH": {
-        # wick must be big (ETH hay quét sâu)
+    "XAG": {
+        # wick must be big (XAG hay quét sâu)
         "sweep_wick_min": 0.42,
         # nến sweep phải đóng lại vào trong range tối thiểu bao nhiêu %
         "close_back_ratio": 0.22,
@@ -409,8 +409,8 @@ SYMBOL_PROFILE = {
 
 def _get_profile(symbol: str) -> dict:
     s = (symbol or "").upper()
-    if "ETH" in s:
-        return SYMBOL_PROFILE["ETH"]
+    if "XAG" in s:
+        return SYMBOL_PROFILE["XAG"]
     if "XAU" in s:
         return SYMBOL_PROFILE["XAU"]
     if "BTC" in s:
@@ -1479,7 +1479,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 # Formatter (MUST be named format_signal for main.py import)
 # =========================
 def format_signal(sig: Dict[str, Any]) -> str:
-    symbol = sig.get("symbol", "XAUUSD,ETHUSD")
+    symbol = sig.get("symbol", "XAUUSD,XAGUSD")
     tf = sig.get("tf", "M15")
     session = sig.get("session", "Phiên Mỹ")
     context_lines = sig.get("context_lines", [])
