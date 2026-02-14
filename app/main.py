@@ -254,8 +254,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     m15 = _as_list_from_get_candles(get_candles(symbol, "15min", limit=220))
     m30 = _as_list_from_get_candles(get_candles(symbol, "30min", limit=220))
     h1  = _as_list_from_get_candles(get_candles(symbol, "1h",    limit=220))
+    h4  = _as_list_from_get_candles(get_candles(symbol, "4h",    limit=220))
 
-    sig = analyze_pro(symbol, m15, m30, h1)
+    sig = analyze_pro(symbol, m15, m30, h1, h4)
     meta = sig.get("meta", {}) or {}
     volq = meta.get("volq", {}) or {}
     cpat = meta.get("candle", {}) or {}
@@ -477,10 +478,12 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     #h1, _ = get_candles(symbol, "1h", limit)
     #return {"m15": m15, "m30": m30, "h1": h1}
 def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
+    # M15, M30, H1, H4 (H1+H4 confluence for Bias)
     m15 = _as_list_from_get_candles(get_candles(symbol, "15min", limit=limit))
     m30 = _as_list_from_get_candles(get_candles(symbol, "30min", limit=limit))
     h1  = _as_list_from_get_candles(get_candles(symbol, "1h",    limit=limit))
-    return {"m15": m15, "m30": m30, "h1": h1}
+    h4  = _as_list_from_get_candles(get_candles(symbol, "4h",    limit=limit))
+    return {"m15": m15, "m30": m30, "h1": h1, "h4": h4}
 
 def _force_send(sig: dict) -> bool:
     ctx = " | ".join(sig.get("context_lines", []) or [])
@@ -577,7 +580,7 @@ async def telegram_webhook(request: Request):
         for sym in symbols:
             try:
                 data = _fetch_triplet(sym, limit=260)
-                sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"])
+                sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
                 stars = int(sig.get("stars", 0) or 0)
                 force_send = _force_send(sig)
 
@@ -626,7 +629,7 @@ async def cron_run(token: str = "", request: Request = None):
         for sym in symbols:
             try:
                 data = _fetch_triplet(sym, limit=260)
-                sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"])
+                sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
                 stars = int(sig.get("stars", 0) or 0)
                 short_hint = sig.get("short_hint") or []
                 entry = sig.get("entry")
@@ -637,18 +640,9 @@ async def cron_run(token: str = "", request: Request = None):
                 # ----- LUỒNG A: KÈO CHÍNH -----
                 if stars >= MIN_STARS and rec != "CHỜ":
                     _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
-                
-                # ----- LUỒNG B: KÈO NGẮN HẠN THẬT -----
-                elif (
-                    entry is not None
-                    and sl is not None
-                    and tp1 is not None
-                    and rec in ("🟢 BUY", "🔴 SELL")
-                ):
-                    prefix = "⚡ KÈO NGẮN HẠN (SCALP M15 – SCALE)\n"
-                    prefix += "⚠️ Kèo ngắn – vào nhanh, ra nhanh – KHÔNG GỒNG\n\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=ADMIN_CHAT_ID)
-                
+                # ----- LUỒNG B (DISABLED): KÈO NGẮN HẠN / SCALE / SCALP -----
+                # Đã tắt theo cấu hình chiến lược: chỉ gửi kèo theo scoring engine FULL/HALF.
+
                 # ----- CÒN LẠI: KHÔNG GỬI -----
                 else:
                     logger.info("[CRON] %s: only observation, no trade", sym)
