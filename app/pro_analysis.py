@@ -1637,6 +1637,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "H1_LL": h1_struct.get("ll"),
         "M15_BOS": m15_struct.get("bos_level"),
         "M15_PB_EXT": m15_struct.get("pullback_extreme"),
+        # Always-available context levels (even when HH/HL/LH/LL are n/a)
+        "M15_RANGE_LOW": _range_levels(m15c, n=20)[0],
+        "M15_RANGE_HIGH": _range_levels(m15c, n=20)[1],
+        "M15_LAST": float(m15c[-1].close) if m15c else None,
     }
 
     # build levels_info list for rendering (2 decimals)
@@ -2077,6 +2081,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # Key levels (prices)
     lines.append("Key levels:")
     # Print only the most useful ones (avoid spam)
+    # Always show M15 range context (helps when structure is n/a)
+    if kl.get("M15_RANGE_LOW") is not None and kl.get("M15_RANGE_HIGH") is not None:
+        lines.append(f"- M15 Range: {nf2(kl.get('M15_RANGE_LOW'))} – {nf2(kl.get('M15_RANGE_HIGH'))}")
+    if kl.get("M15_LAST") is not None:
+        lines.append(f"- M15 Last close: {nf2(kl.get('M15_LAST'))}")
     if kl.get("H1_HH") is not None:
         lines.append(f"- H1 HH: {nf2(kl.get('H1_HH'))}")
     if kl.get("H1_HL") is not None:
