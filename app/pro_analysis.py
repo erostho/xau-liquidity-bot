@@ -70,6 +70,7 @@ class Candle:
     low: float
     close: float
     volume: float = 0.0
+    spread: float = 0.0
 
 
 # =========================
@@ -106,6 +107,7 @@ def _safe_candles(raw) -> List[Candle]:
                 low=_f(c.get("low")),
                 close=_f(c.get("close")),
                 volume=_f(c.get("volume") if c.get("volume") is not None else c.get("tick_volume"), 0.0),
+                spread=_f(c.get("spread"), 0.0),
             ))
             continue
         # object payloads
@@ -126,7 +128,7 @@ def _safe_candles(raw) -> List[Candle]:
             vol_f = float(vol)
         except Exception:
             vol_f = 0.0
-        out.append(Candle(ts=ts_i, open=_fa("open"), high=_fa("high"), low=_fa("low"), close=_fa("close"), volume=vol_f))
+        out.append(Candle(ts=ts_i, open=_fa("open"), high=_fa("high"), low=_fa("low"), close=_fa("close"), volume=vol_f, spread=_fa("spread", 0.0)))
     out.sort(key=lambda x: x.ts)
     return out
 
@@ -652,7 +654,7 @@ def _build_short_hint_m15(m15: list[Candle], h1_trend: str, m30_trend: str) -> l
 
     # ====== PHẦN 2: SCALE NHANH (HỚT SÓNG) ======
     # Điều kiện: chỉ scale khi KHÔNG có trend mạnh
-    allow_scale = (h1_trend == "sideways" or m30_trend == "sideways")
+    allow_scale = False  # DISABLED: scale/scalp branch turned off
 
     scale_buf = 0.15 * atr15
 
@@ -905,7 +907,7 @@ def _safe_float(x: Any) -> Optional[float]:
 # =========================
 # PRO Analyzer (MUST be named analyze_pro for main.py import)
 # =========================
-def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict]) -> dict:
+def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
     Patch:
@@ -950,8 +952,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     m15c = _safe_candles(m15)
     m30c = _safe_candles(m30)
     h1c = _safe_candles(h1)
+    h4c = _safe_candles(h4)
 
-    if len(m15c) < 20 or len(m30c) < 5 or len(h1c) < 5:
+    if len(m15c) < 20 or len(m30c) < 5 or len(h1c) < 5 or len(h4c) < 5:
         base["note_lines"].append("⚠️ Dữ liệu candles chưa đủ → kết quả có thể thiếu chính xác (vẫn hiển thị).")
 
     last15 = m15c[-1]
@@ -1445,6 +1448,273 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         rdist = fallback_r if rdist is None else rdist
         lot = lot or 0.01
 
+
+    # =========================
+    # SYSTEMATIC CONTINUATION SCORING ENGINE (Bias-Pullback-Momentum)
+    # - Bias = H1 + H4 confluence + EMA200 slope/distance
+    # - Pullback = M15 pullback into EMA20-EMA50 zone + basic HL/LH structure
+    # - Momentum = M15 BOS (break minor structure) OR engulfing in direction
+    # Bonus/Filter:
+    # - Volume quality + candle patterns add stars (bonus)
+    # - Liquidity warning can downgrade / require stronger score
+    # =========================
+
+    def _ema_last(closes: list[float], n: int) -> float | None:
+        s = _ema(closes, n)
+        return float(s[-1]) if s and len(s) else None
+
+    def _ema_slope_pct(closes: list[float], n: int, slope_n: int) -> float:
+        s = _ema(closes, n)
+        if not s or len(s) < slope_n + 5:
+            return 0.0
+        last = float(s[-1])
+        prev = float(s[-1 - slope_n])
+        cur = float(closes[-1]) if closes else last
+        return ((last - prev) / max(1e-9, cur)) * 100.0
+
+    # ---- Bias (H1 + H4 confluence) ----
+    h1_tr = _trend_label(h1c)
+    h4_tr = _trend_label(h4c)
+
+    bias_ok = int(h1_tr in ("bullish", "bearish") and h1_tr == h4_tr)
+    bias_side = "BUY" if h1_tr == "bullish" else ("SELL" if h1_tr == "bearish" else "NONE")
+
+    # EMA200 slope/distance (extra bias strictness)
+    slope_n = 20
+    xau_priority = str(symbol).upper().startswith("XAU")
+    # XAU: siết nhẹ để tăng độ chuẩn xác
+    slope_min = 0.03 if xau_priority else 0.02
+    dist_min = 0.07 if xau_priority else 0.05
+    h1_cl = _closes(h1c)
+    h4_cl = _closes(h4c)
+    m15_cl = _closes(m15c)
+
+    ema200_h1 = _ema_last(h1_cl, 200)
+    ema200_h4 = _ema_last(h4_cl, 200)
+
+    slope200_h1 = _ema_slope_pct(h1_cl, 200, slope_n)
+    slope200_h4 = _ema_slope_pct(h4_cl, 200, slope_n)
+
+    if bias_ok and ema200_h1 and ema200_h4 and h1_cl and h4_cl:
+        last_h1 = float(h1_cl[-1])
+        last_h4 = float(h4_cl[-1])
+        dist_h1 = abs(last_h1 - float(ema200_h1)) / max(1e-9, last_h1) * 100.0
+        dist_h4 = abs(last_h4 - float(ema200_h4)) / max(1e-9, last_h4) * 100.0
+
+        slope_ok = (abs(slope200_h1) >= slope_min) and (abs(slope200_h4) >= slope_min)
+        dist_ok = (dist_h1 >= dist_min) and (dist_h4 >= dist_min)
+
+        if not (slope_ok and dist_ok):
+            # still allow bias, but we treat as weaker; push to HALF at best
+            bias_ok = 1
+            base.setdefault("meta", {}).setdefault("score_detail", {})["bias_strength"] = "WEAK"
+        else:
+            base.setdefault("meta", {}).setdefault("score_detail", {})["bias_strength"] = "STRONG"
+
+    # ---- Pullback (M15) ----
+    pullback_ok = 0
+    if bias_side != "NONE" and m15_cl and len(m15_cl) >= 80:
+        e20 = _ema_last(m15_cl, 20)
+        e50 = _ema_last(m15_cl, 50)
+        if e20 and e50:
+            band_lo = min(e20, e50)
+            band_hi = max(e20, e50)
+            last_close = float(m15c[-2].close)  # last closed candle
+            tol_pct = 0.10 if xau_priority else 0.12
+            tol = tol_pct / 100.0
+            in_zone = (band_lo * (1 - tol)) <= last_close <= (band_hi * (1 + tol))
+
+            # basic HL/LH structure check using swing blocks
+            look = 10
+            a = m15c[-(2*look+5):-5]  # older block
+            b = m15c[-(look+5):-5]   # recent block
+            if len(a) >= look and len(b) >= look:
+                a_low = min(c.low for c in a)
+                b_low = min(c.low for c in b)
+                a_high = max(c.high for c in a)
+                b_high = max(c.high for c in b)
+
+                if bias_side == "BUY":
+                    struct_ok = b_low >= a_low  # HL-ish
+                else:
+                    struct_ok = b_high <= a_high  # LH-ish
+
+                pullback_ok = int(in_zone and struct_ok)
+
+    # ---- Momentum (M15) ----
+    momentum_ok = 0
+    if bias_side != "NONE" and len(m15c) >= 40:
+        # Momentum: BOS + retest (giảm fake breakout, đặc biệt XAU)
+        # We require: candle[-3] breaks structure, candle[-2] retests broken level and holds.
+        # Note: m15c[-1] is forming, so we use closed candles -3 and -2.
+        look = 14 if xau_priority else 12
+        base_prev = m15c[-(look+5):-5]  # candles before BOS+retest window
+        bos_c = m15c[-3]
+        ret_c = m15c[-2]
+
+        prev_high = max(c.high for c in base_prev) if base_prev else None
+        prev_low  = min(c.low for c in base_prev) if base_prev else None
+
+        # tolerance for retest around level (percent)
+        ret_tol_pct = 0.08 if xau_priority else 0.12
+        ret_tol = ret_tol_pct / 100.0
+
+        bos_retest = False
+        if bias_side == "BUY" and prev_high is not None:
+            bos_ok = bos_c.close > prev_high
+            ret_ok = (ret_c.low <= prev_high * (1 + ret_tol)) and (ret_c.close >= prev_high)
+            # prefer bullish close on retest candle
+            ret_bull = ret_c.close >= ret_c.open
+            bos_retest = bool(bos_ok and ret_ok and ret_bull)
+
+        if bias_side == "SELL" and prev_low is not None:
+            bos_ok = bos_c.close < prev_low
+            ret_ok = (ret_c.high >= prev_low * (1 - ret_tol)) and (ret_c.close <= prev_low)
+            ret_bear = ret_c.close <= ret_c.open
+            bos_retest = bool(bos_ok and ret_ok and ret_bear)
+
+        cpat = _candle_patterns(m15c)
+        engulf = (cpat.get("engulf") == "bull" and bias_side == "BUY") or (cpat.get("engulf") == "bear" and bias_side == "SELL")
+
+        # XAU: strictly require BOS+retest
+        if xau_priority:
+            momentum_ok = int(bos_retest)
+        else:
+            # BTC/others: BOS+retest is best, but allow engulf as fallback to keep opportunities
+            momentum_ok = int(bool(bos_retest or engulf))
+
+
+    score3 = int(bias_ok + pullback_ok + momentum_ok)
+
+    # 2/3 rule: NEVER allow missing Bias
+    if score3 == 2 and bias_ok != 1:
+        score3 = 1  # force WAIT
+
+    # XAU ưu tiên độ chuẩn xác: nếu 2/3 mà thiếu Momentum thì bỏ (tránh vào khi chưa có lực)
+    if xau_priority and score3 == 2 and momentum_ok == 0:
+        score3 = 1
+
+    # Liquidity warning filter: if warning exists, require 3/3 for FULL; 2/3 becomes HALF only if momentum_ok==1
+    liq_warn = any(("WARNING" in str(x).upper()) or ("NGUY" in str(x).upper()) for x in (liquidity_lines or []))
+    if liq_warn and score3 == 2 and momentum_ok == 0:
+        score3 = 1  # too risky without momentum
+
+    
+    # ---- Spread filter (né lúc spread nở) ----
+    # MT5 bars thường có field 'spread' (points). Nếu không có, spread=0 và filter sẽ bỏ qua.
+    spread_now = getattr(m15c[-2], "spread", 0.0) if len(m15c) >= 3 else 0.0
+    spread_list = [float(getattr(c, "spread", 0.0) or 0.0) for c in m15c[-90:-2]]
+    spread_list = [s for s in spread_list if s and s > 0]
+
+    spread_ratio = None
+    spread_warn = False
+    spread_block = False
+    if spread_now and spread_now > 0 and spread_list:
+        med = float(sorted(spread_list)[len(spread_list)//2])
+        if med > 0:
+            spread_ratio = float(spread_now) / med
+            # Warn when spread > 1.6x median; Block when > 2.0x median (stricter for XAU)
+            warn_k = 1.6
+            block_k = 2.0 if xau_priority else 2.2
+            if spread_ratio >= warn_k:
+                spread_warn = True
+            if spread_ratio >= block_k:
+                spread_block = True
+
+    if spread_ratio is not None:
+        base.setdefault("meta", {}).setdefault("spread", {})["ratio"] = spread_ratio
+        base.setdefault("meta", {}).setdefault("spread", {})["now"] = spread_now
+
+    # XAU: nếu spread nở mạnh thì bỏ kèo luôn (đỡ tín hiệu sai vì phí/spread)
+    if xau_priority and spread_block:
+        score3 = 1  # force WAIT
+        base.setdefault("meta", {}).setdefault("spread", {})["state"] = "BLOCK"
+    elif spread_warn:
+        base.setdefault("meta", {}).setdefault("spread", {})["state"] = "HIGH"
+
+# ---- Reversal warning layer (cảnh báo đảo chiều) ----
+    reversal_flags: list[str] = []
+    severe_reversal = False
+
+    # 1) Divergence against bias (existing meta div)
+    div = base.get("meta", {}).get("div", {}) or {}
+    if bias_side == "BUY" and div.get("bear"):
+        reversal_flags.append("Bearish divergence (M15) chống BUY")
+    if bias_side == "SELL" and div.get("bull"):
+        reversal_flags.append("Bullish divergence (M15) chống SELL")
+
+    # 2) Opposite engulf / rejection on H1/H4 (báo sớm đảo chiều)
+    h1_pat = _candle_patterns(h1c) if h1c else {}
+    h4_pat = _candle_patterns(h4c) if h4c else {}
+
+    if bias_side == "BUY" and (h1_pat.get("engulf") == "bear" or h1_pat.get("rejection") == "upper"):
+        reversal_flags.append("H1 có nến phản công (bear engulf / upper rejection)")
+        severe_reversal = True
+    if bias_side == "SELL" and (h1_pat.get("engulf") == "bull" or h1_pat.get("rejection") == "lower"):
+        reversal_flags.append("H1 có nến phản công (bull engulf / lower rejection)")
+        severe_reversal = True
+
+    if bias_side == "BUY" and (h4_pat.get("engulf") == "bear" or h4_pat.get("rejection") == "upper"):
+        reversal_flags.append("H4 có nến phản công (bear engulf / upper rejection)")
+        severe_reversal = True
+    if bias_side == "SELL" and (h4_pat.get("engulf") == "bull" or h4_pat.get("rejection") == "lower"):
+        reversal_flags.append("H4 có nến phản công (bull engulf / lower rejection)")
+        severe_reversal = True
+
+    # 3) Minor CHoCH on H1: phá swing gần nhất ngược bias
+    if len(h1c) >= 30:
+        look = 10
+        prev_h1 = h1c[-(look+3):-3]
+        last_h1 = h1c[-2]  # last closed
+        prev_high = max(c.high for c in prev_h1) if prev_h1 else None
+        prev_low = min(c.low for c in prev_h1) if prev_h1 else None
+        if bias_side == "BUY" and prev_low is not None and last_h1.close < prev_low:
+            reversal_flags.append("H1 CHoCH nhỏ: close phá đáy gần nhất (nguy cơ đảo chiều)")
+            severe_reversal = True
+        if bias_side == "SELL" and prev_high is not None and last_h1.close > prev_high:
+            reversal_flags.append("H1 CHoCH nhỏ: close phá đỉnh gần nhất (nguy cơ đảo chiều)")
+            severe_reversal = True
+
+    if reversal_flags:
+        base.setdefault("meta", {})["reversal_warnings"] = reversal_flags
+
+    # Nếu đảo chiều mạnh: FULL -> HALF, HALF -> WAIT (an toàn cho XAU/BTC)
+    if severe_reversal:
+        if score3 == 3:
+            score3 = 2
+        elif score3 == 2:
+            score3 = 1
+
+    trade_mode = "WAIT"
+    if score3 == 3:
+        trade_mode = "FULL"
+    elif score3 == 2:
+        trade_mode = "HALF"
+
+    # Bonus stars from vol + candle pattern, and penalty from liquidity warning
+    bonus = 0
+    volq = _vol_quality(m15c, 20)
+    if volq.get("state") == "HIGH":
+        bonus += 1
+    cpat2 = _candle_patterns(m15c)
+    if (cpat2.get("engulf") == "bull" and bias_side == "BUY") or (cpat2.get("engulf") == "bear" and bias_side == "SELL"):
+        bonus += 1
+    if liq_warn:
+        bonus -= 1
+
+    base.setdefault("meta", {}).setdefault("score_detail", {}).update({
+        "bias_ok": int(bias_ok),
+        "pullback_ok": int(pullback_ok),
+        "momentum_ok": int(momentum_ok),
+        "bias_tf": "H1+H4",
+        "bias_side": bias_side,
+        "score": int(score3),
+        "liq_warn": bool(liq_warn),
+        "volq": volq,
+        "candle": cpat2,
+    })
+    base["trade_mode"] = trade_mode
+
     stars = 1
     if score >= 6:
         stars = 5
@@ -1455,10 +1725,42 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     elif score >= 2:
         stars = 2
 
+
+    # ---- Override recommendation/stars by scoring engine (FULL/HALF/WAIT) ----
+    try:
+        sm = base.get("trade_mode", "WAIT")
+        sd = (base.get("meta", {}) or {}).get("score_detail", {}) or {}
+        side2 = sd.get("bias_side", None)
+
+        if sm in ("FULL", "HALF") and side2 in ("BUY", "SELL") and entry is not None and sl is not None and tp1 is not None:
+            recommendation = "🟢 BUY" if side2 == "BUY" else "🔴 SELL"
+
+            # base stars by mode
+            stars_mode = 4 if sm == "FULL" else 3
+            b = 0
+            # bonus from meta (already computed)
+            if (sd.get("volq", {}) or {}).get("state") == "HIGH":
+                b += 1
+            c = sd.get("candle", {}) or {}
+            if (c.get("engulf") == "bull" and side2 == "BUY") or (c.get("engulf") == "bear" and side2 == "SELL"):
+                b += 1
+            if sd.get("liq_warn"):
+                b -= (2 if str(symbol).upper().startswith("XAU") else 1)
+
+            stars = max(stars, stars_mode + b)
+        else:
+            # WAIT or missing components -> no trade
+            base["trade_mode"] = "WAIT"
+            recommendation = "CHỜ"
+            stars = min(stars, 2)
+    except Exception:
+        pass
+
     quality_lines.append("RR ~ 1:2")
     if rdist is not None:
         quality_lines.append(f"R~{rdist:.2f} | SL=MIN(Liq, ATR, Risk) (risk engine)")
 
+    stars = max(1, min(5, int(stars)))
     base.update({
         "context_lines": context_lines,
         "position_lines": position_lines,
@@ -1494,6 +1796,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
     stars = int(sig.get("stars", 1))
     stars_txt = "⭐️" * max(1, min(5, stars))
 
+    trade_mode = sig.get("trade_mode", "") or ""
+    sd = (sig.get("meta", {}) or {}).get("score_detail", {}) or {}
+    score3 = sd.get("score", None)
+    mode_line = ""
+    if trade_mode in ("FULL", "HALF"):
+        mode_line = f"Mode: <b>{trade_mode}</b> | Score: <b>{score3}/3</b> (Bias:{sd.get('bias_ok')} PB:{sd.get('pullback_ok')} MOM:{sd.get('momentum_ok')})"
+
+    # Spread info (né lúc spread nở)
+    sp = (sig.get("meta", {}) or {}).get("spread", {}) or {}
+    spread_line = ""
+    if sp.get("state") == "BLOCK":
+        spread_line = f"⚠️ Spread: <b>BLOCK</b> (x{float(sp.get('ratio', 0)):.2f} median)"
+    elif sp.get("state") == "HIGH":
+        spread_line = f"⚠️ Spread: <b>HIGH</b> (x{float(sp.get('ratio', 0)):.2f} median)"
+
     entry = sig.get("entry")
     sl = sig.get("sl")
     tp1 = sig.get("tp1")
@@ -1514,7 +1831,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
             return "..."
     lines: List[str] = []
     lines.append(f"📊 {symbol} | {tf} | {session}")
-    lines.append("TF: Signal=M15 | Entry=M30 | Confirm=H1")
+    lines.append("TF: Signal=M15 | Entry=M30 | Confirm=H1 | Bias=H1+H4")
     lines.append("")
     if context_lines:
         lines.append("Context:")
@@ -1548,6 +1865,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 lines.append(f"- {s}")
     lines.append("")
     lines.append(f"🎯 Khuyến nghị: {rec}")
+    if mode_line:
+        lines.append(mode_line)
+    if spread_line:
+        lines.append(spread_line)
+
+    # Reversal warnings (if any)
+    revs = (sig.get("meta", {}) or {}).get("reversal_warnings", []) or []
+    if revs:
+        lines.append("⚠️ Cảnh báo đảo chiều:")
+        for r in revs[:5]:
+            lines.append(f"- {r}")
+        lines.append("")
+
     lines.append(f"Độ tin cậy: {stars_txt} ({max(1, min(5, stars))}/5)")
     lines.append(f"ENTRY: {nf(entry)}")
     lines.append(f"SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
