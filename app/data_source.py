@@ -148,21 +148,51 @@ def _symbol_variants(symbol: str) -> List[str]:
             uniq.append(x)
     return uniq
 
-
 def _tf_alias(tf: str) -> str:
     t = (tf or "").strip().lower()
 
-    # 30m / m30
+    # 5m
+    if t in ["5", "5m", "m5", "5min", "5mins", "5minute", "5minutes"]:
+        return "5min"
+
+    # 15m
+    if t in ["15", "15m", "m15", "15min", "15mins", "15minute", "15minutes"]:
+        return "15min"
+
+    # 30m
     if t in ["30", "30m", "m30", "30min", "30mins", "30minute", "30minutes"]:
         return "30min"
 
-    if t in ["15", "15m", "m15", "15min", "15mins", "15minute", "15minutes"]:
-        return "15min"
-    if t in ["60", "1h", "h1", "60m", "60min", "1hour", "1hr"]:
+    # 45m (twelve supports)
+    if t in ["45", "45m", "m45", "45min", "45mins", "45minute", "45minutes"]:
+        return "45min"
+
+    # 1h
+    if t in ["60", "60m", "h1", "1h", "1hr", "hour", "1hour"]:
         return "1h"
-    if t in ["5", "5m", "m5", "5min"]:
-        return "5min"
-    return
+
+    # 2h
+    if t in ["h2", "2h", "2hr", "2hour", "120", "120m"]:
+        return "2h"
+
+    # 4h  ✅ (cái bạn đang thiếu)
+    if t in ["h4", "4h", "4hr", "4hour", "240", "240m"]:
+        return "4h"
+
+    # 8h
+    if t in ["h8", "8h", "8hr", "8hour", "480", "480m"]:
+        return "8h"
+
+    # daily / weekly / monthly
+    if t in ["d1", "1d", "day", "1day", "daily"]:
+        return "1day"
+    if t in ["w1", "1w", "week", "1week", "weekly"]:
+        return "1week"
+    if t in ["mn1", "1mo", "1mth", "month", "1month", "monthly"]:
+        return "1month"
+
+    return None
+
 
 def ingest_mt5_candles(symbol: str, tf: str, candles: List[Dict[str, Any]]) -> int:
     """
@@ -316,9 +346,11 @@ def get_candles(symbol: str, tf: str, limit: int = 220) -> Tuple[List[Candle], s
 
     # 2) TwelveData
     interval = _tf_alias(tf)
-    if not USE_TWELVEDATA:
-        return None, "NO_TWELVEDATA"
+    if not interval:
+        # không gọi twelvedata nếu tf không map được
+        return None, "NO_TWELVEDATA_BAD_TF"
     td = _fetch_twelvedata(symbol, interval, limit)
+
     return td, "TWELVEDATA_FALLBACK"
 
 
