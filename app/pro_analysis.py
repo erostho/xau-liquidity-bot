@@ -1473,43 +1473,66 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         return ((last - prev) / max(1e-9, cur)) * 100.0
 
     # ---- Bias (H1 + H4 confluence) ----
+    # NORMAL mục tiêu: tín hiệu "trung bình" (không gắt quá, không rác quá)
+    # - Bias phải có (không cho phép thiếu Bias)
+    # - Confluence H1+H4 quyết định FULL (lệch nhau thì tối đa HALF)
+    mode = str(os.getenv("SIGNAL_MODE", "NORMAL") or "NORMAL").upper()
+
     h1_tr = _trend_label(h1c)
     h4_tr = _trend_label(h4c)
 
-    bias_ok = int(h1_tr in ("bullish", "bearish") and h1_tr == h4_tr)
+    confluence_ok = int(h1_tr in ("bullish", "bearish") and h1_tr == h4_tr)
     bias_side = "BUY" if h1_tr == "bullish" else ("SELL" if h1_tr == "bearish" else "NONE")
 
-    # EMA200 slope/distance (extra bias strictness)
+    # Bias base: chỉ cần H1 có trend rõ (bull/bear)
+    bias_ok = int(bias_side in ("BUY", "SELL"))
+
+    # EMA200 slope/distance (để né đoạn "lẹt đẹt quanh EMA200")
+    # NORMAL: dùng H1 là chính; nếu confluence_ok thì check thêm H4 (được cộng strength)
     slope_n = 20
     xau_priority = str(symbol).upper().startswith("XAU")
-    # XAU: siết nhẹ để tăng độ chuẩn xác
-    slope_min = 0.03 if xau_priority else 0.02
-    dist_min = 0.07 if xau_priority else 0.05
+
+    # Ngưỡng NORMAL: XAU hơi siết hơn BTC nhưng không "gắt"
+    slope_min_h1 = 0.025 if xau_priority else 0.02
+    dist_min_h1  = 0.06  if xau_priority else 0.05
+    slope_min_h4 = 0.02
+    dist_min_h4  = 0.05
+
     h1_cl = _closes(h1c)
     h4_cl = _closes(h4c)
     m15_cl = _closes(m15c)
 
-    ema200_h1 = _ema_last(h1_cl, 200)
-    ema200_h4 = _ema_last(h4_cl, 200)
+    ema200_h1 = _ema_last(h1_cl, 200) if h1_cl else None
+    ema200_h4 = _ema_last(h4_cl, 200) if h4_cl else None
 
-    slope200_h1 = _ema_slope_pct(h1_cl, 200, slope_n)
-    slope200_h4 = _ema_slope_pct(h4_cl, 200, slope_n)
+    slope200_h1 = _ema_slope_pct(h1_cl, 200, slope_n) if h1_cl else 0.0
+    slope200_h4 = _ema_slope_pct(h4_cl, 200, slope_n) if h4_cl else 0.0
 
-    if bias_ok and ema200_h1 and ema200_h4 and h1_cl and h4_cl:
+    bias_strength = "UNKNOWN"
+    if bias_ok and ema200_h1 and h1_cl:
         last_h1 = float(h1_cl[-1])
-        last_h4 = float(h4_cl[-1])
         dist_h1 = abs(last_h1 - float(ema200_h1)) / max(1e-9, last_h1) * 100.0
-        dist_h4 = abs(last_h4 - float(ema200_h4)) / max(1e-9, last_h4) * 100.0
-
-        slope_ok = (abs(slope200_h1) >= slope_min) and (abs(slope200_h4) >= slope_min)
-        dist_ok = (dist_h1 >= dist_min) and (dist_h4 >= dist_min)
-
-        if not (slope_ok and dist_ok):
-            # still allow bias, but we treat as weaker; push to HALF at best
-            bias_ok = 1
-            base.setdefault("meta", {}).setdefault("score_detail", {})["bias_strength"] = "WEAK"
+        slope_ok_h1 = abs(slope200_h1) >= slope_min_h1
+        dist_ok_h1  = dist_h1 >= dist_min_h1
+        if slope_ok_h1 and dist_ok_h1:
+            bias_strength = "STRONG"
         else:
-            base.setdefault("meta", {}).setdefault("score_detail", {})["bias_strength"] = "STRONG"
+            bias_strength = "WEAK"
+
+    # Nếu có confluence, có thể nâng strength khi H4 cũng đạt
+    if confluence_ok and bias_ok and ema200_h4 and h4_cl:
+        last_h4 = float(h4_cl[-1])
+        dist_h4 = abs(last_h4 - float(ema200_h4)) / max(1e-9, last_h4) * 100.0
+        slope_ok_h4 = abs(slope200_h4) >= slope_min_h4
+        dist_ok_h4  = dist_h4 >= dist_min_h4
+        if bias_strength == "STRONG" and slope_ok_h4 and dist_ok_h4:
+            bias_strength = "STRONG"
+        else:
+            # confluence nhưng H4 yếu => vẫn cho trade, nhưng FULL sẽ bị kiểm soát bởi confluence/score
+            bias_strength = "WEAK"
+
+    base.setdefault("meta", {}).setdefault("score_detail", {})["bias_strength"] = bias_strength
+    base.setdefault("meta", {}).setdefault("score_detail", {})["confluence_ok"] = int(confluence_ok)
 
     # ---- Pullback (M15) ----
     pullback_ok = 0
@@ -1520,6 +1543,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             band_lo = min(e20, e50)
             band_hi = max(e20, e50)
             last_close = float(m15c[-2].close)  # last closed candle
+            # NORMAL: XAU chặt hơn chút, BTC thoáng hơn
             tol_pct = 0.10 if xau_priority else 0.12
             tol = tol_pct / 100.0
             in_zone = (band_lo * (1 - tol)) <= last_close <= (band_hi * (1 + tol))
@@ -1528,6 +1552,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             look = 10
             a = m15c[-(2*look+5):-5]  # older block
             b = m15c[-(look+5):-5]   # recent block
+            struct_ok = True
             if len(a) >= look and len(b) >= look:
                 a_low = min(c.low for c in a)
                 b_low = min(c.low for c in b)
@@ -1539,71 +1564,87 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 else:
                     struct_ok = b_high <= a_high  # LH-ish
 
-                pullback_ok = int(in_zone and struct_ok)
+            pullback_ok = int(in_zone and struct_ok)
 
-    # ---- Momentum (M15) ----
+    # ---- Momentum (M15): BOS + (micro) retest ----
     momentum_ok = 0
-    if bias_side != "NONE" and len(m15c) >= 40:
-        # Momentum: BOS + retest (giảm fake breakout, đặc biệt XAU)
-        # We require: candle[-3] breaks structure, candle[-2] retests broken level and holds.
-        # Note: m15c[-1] is forming, so we use closed candles -3 and -2.
+    bos_retest = False
+    bos_micro_retest = False
+    engulf_aligned = False
+
+    if bias_side != "NONE" and len(m15c) >= 50:
+        # Use closed candles: -3 (BOS), -2 (retest/micro-retest)
         look = 14 if xau_priority else 12
-        base_prev = m15c[-(look+5):-5]  # candles before BOS+retest window
+        base_prev = m15c[-(look+6):-6]  # before BOS window
         bos_c = m15c[-3]
         ret_c = m15c[-2]
 
         prev_high = max(c.high for c in base_prev) if base_prev else None
         prev_low  = min(c.low for c in base_prev) if base_prev else None
 
-        # tolerance for retest around level (percent)
-        ret_tol_pct = 0.08 if xau_priority else 0.12
-        ret_tol = ret_tol_pct / 100.0
+        # ATR-based tolerance (micro-retest)
+        atr15_local = _atr(m15c[:-1], 14) or (atr15 or 0.0) or 0.0
+        tol_atr = 0.35 if xau_priority else 0.45
+        micro_tol = float(tol_atr) * float(atr15_local)
 
-        bos_retest = False
         if bias_side == "BUY" and prev_high is not None:
             bos_ok = bos_c.close > prev_high
-            ret_ok = (ret_c.low <= prev_high * (1 + ret_tol)) and (ret_c.close >= prev_high)
-            # prefer bullish close on retest candle
+            # retest: wick touches near level, close holds above
+            ret_ok = (ret_c.low <= prev_high + micro_tol) and (ret_c.close >= prev_high)
             ret_bull = ret_c.close >= ret_c.open
             bos_retest = bool(bos_ok and ret_ok and ret_bull)
 
+            # micro-retest (không chạm đúng level): quay về 30-70% thân nến BOS
+            bos_body_low = min(bos_c.open, bos_c.close)
+            bos_body_high = max(bos_c.open, bos_c.close)
+            zone_lo = bos_body_low + 0.30 * (bos_body_high - bos_body_low)
+            zone_hi = bos_body_low + 0.70 * (bos_body_high - bos_body_low)
+            micro_ok = (ret_c.low <= zone_hi + micro_tol) and (ret_c.close >= zone_lo)
+            bos_micro_retest = bool(bos_ok and micro_ok and ret_bull)
+
         if bias_side == "SELL" and prev_low is not None:
             bos_ok = bos_c.close < prev_low
-            ret_ok = (ret_c.high >= prev_low * (1 - ret_tol)) and (ret_c.close <= prev_low)
+            ret_ok = (ret_c.high >= prev_low - micro_tol) and (ret_c.close <= prev_low)
             ret_bear = ret_c.close <= ret_c.open
             bos_retest = bool(bos_ok and ret_ok and ret_bear)
 
+            bos_body_low = min(bos_c.open, bos_c.close)
+            bos_body_high = max(bos_c.open, bos_c.close)
+            zone_hi = bos_body_high - 0.30 * (bos_body_high - bos_body_low)
+            zone_lo = bos_body_high - 0.70 * (bos_body_high - bos_body_low)
+            micro_ok = (ret_c.high >= zone_lo - micro_tol) and (ret_c.close <= zone_hi)
+            bos_micro_retest = bool(bos_ok and micro_ok and ret_bear)
+
         cpat = _candle_patterns(m15c)
-        engulf = (cpat.get("engulf") == "bull" and bias_side == "BUY") or (cpat.get("engulf") == "bear" and bias_side == "SELL")
+        engulf_aligned = (cpat.get("engulf") == "bull" and bias_side == "BUY") or (cpat.get("engulf") == "bear" and bias_side == "SELL")
 
-        # XAU: strictly require BOS+retest
+        # NORMAL:
+        # - XAU: ưu tiên BOS+retest, cho BOS+micro-retest (để không đói kèo), engulf chỉ là "bonus" không đủ 1 mình
+        # - BTC: BOS+retest / BOS+micro-retest, engulf là fallback
         if xau_priority:
-            momentum_ok = int(bos_retest)
+            momentum_ok = int(bool(bos_retest or bos_micro_retest))
         else:
-            # BTC/others: BOS+retest is best, but allow engulf as fallback to keep opportunities
-            momentum_ok = int(bool(bos_retest or engulf))
+            momentum_ok = int(bool(bos_retest or bos_micro_retest or engulf_aligned))
 
+    base.setdefault("meta", {}).setdefault("score_detail", {})["bos_retest"] = int(bool(bos_retest))
+    base.setdefault("meta", {}).setdefault("score_detail", {})["bos_micro_retest"] = int(bool(bos_micro_retest))
+    base.setdefault("meta", {}).setdefault("score_detail", {})["engulf_aligned"] = int(bool(engulf_aligned))
+score3 = int(bias_ok + pullback_ok + momentum_ok)
 
-    score3 = int(bias_ok + pullback_ok + momentum_ok)
-
-    # 2/3 rule: NEVER allow missing Bias
+    # 2/3 rule: NEVER allow missing Bias (bias_ok là điều kiện nền)
     if score3 == 2 and bias_ok != 1:
-        score3 = 1  # force WAIT
+        score3 = 1  # WAIT
 
-    # XAU ưu tiên độ chuẩn xác: nếu 2/3 mà thiếu Momentum thì bỏ (tránh vào khi chưa có lực)
-    if xau_priority and score3 == 2 and momentum_ok == 0:
-        score3 = 1
-
-    # Liquidity warning filter: if warning exists, require 3/3 for FULL; 2/3 becomes HALF only if momentum_ok==1
+    # Liquidity warning filter (soft):
+    # nếu đang sát vùng sweep và thiếu momentum -> bỏ
     liq_warn = any(("WARNING" in str(x).upper()) or ("NGUY" in str(x).upper()) for x in (liquidity_lines or []))
     if liq_warn and score3 == 2 and momentum_ok == 0:
-        score3 = 1  # too risky without momentum
+        score3 = 1
 
-    
-    # ---- Spread filter (né lúc spread nở) ----
-    # MT5 bars thường có field 'spread' (points). Nếu không có, spread=0 và filter sẽ bỏ qua.
+    # ---- Spread filter (NORMAL: không bóp nghẹt cơ hội) ----
+    # MT5 bars có thể có field 'spread' (points). Nếu không có, bỏ qua.
     spread_now = getattr(m15c[-2], "spread", 0.0) if len(m15c) >= 3 else 0.0
-    spread_list = [float(getattr(c, "spread", 0.0) or 0.0) for c in m15c[-90:-2]]
+    spread_list = [float(getattr(c, "spread", 0.0) or 0.0) for c in m15c[-(60+2):-2]]
     spread_list = [s for s in spread_list if s and s > 0]
 
     spread_ratio = None
@@ -1613,9 +1654,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         med = float(sorted(spread_list)[len(spread_list)//2])
         if med > 0:
             spread_ratio = float(spread_now) / med
-            # Warn when spread > 1.6x median; Block when > 2.0x median (stricter for XAU)
-            warn_k = 1.6
-            block_k = 2.0 if xau_priority else 2.2
+
+            # NORMAL thresholds:
+            # - HIGH: downgrade FULL -> HALF
+            # - BLOCK: WAIT (chỉ khi "bất thường" thật sự)
+            warn_k = 1.8 if xau_priority else 1.7
+            block_k = 2.6 if xau_priority else 2.9
+
             if spread_ratio >= warn_k:
                 spread_warn = True
             if spread_ratio >= block_k:
@@ -1625,25 +1670,25 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         base.setdefault("meta", {}).setdefault("spread", {})["ratio"] = spread_ratio
         base.setdefault("meta", {}).setdefault("spread", {})["now"] = spread_now
 
-    # XAU: nếu spread nở mạnh thì bỏ kèo luôn (đỡ tín hiệu sai vì phí/spread)
-    if xau_priority and spread_block:
-        score3 = 1  # force WAIT
+    if spread_block:
+        score3 = 1  # WAIT
         base.setdefault("meta", {}).setdefault("spread", {})["state"] = "BLOCK"
     elif spread_warn:
         base.setdefault("meta", {}).setdefault("spread", {})["state"] = "HIGH"
+        # nếu vẫn đủ 3/3 thì downgrade FULL -> HALF
+        if score3 == 3:
+            score3 = 2
 
-# ---- Reversal warning layer (cảnh báo đảo chiều) ----
+    # ---- Reversal warning layer (cảnh báo đảo chiều) ----
     reversal_flags: list[str] = []
     severe_reversal = False
 
-    # 1) Divergence against bias (existing meta div)
     div = base.get("meta", {}).get("div", {}) or {}
     if bias_side == "BUY" and div.get("bear"):
         reversal_flags.append("Bearish divergence (M15) chống BUY")
     if bias_side == "SELL" and div.get("bull"):
         reversal_flags.append("Bullish divergence (M15) chống SELL")
 
-    # 2) Opposite engulf / rejection on H1/H4 (báo sớm đảo chiều)
     h1_pat = _candle_patterns(h1c) if h1c else {}
     h4_pat = _candle_patterns(h4c) if h4c else {}
 
@@ -1661,7 +1706,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         reversal_flags.append("H4 có nến phản công (bull engulf / lower rejection)")
         severe_reversal = True
 
-    # 3) Minor CHoCH on H1: phá swing gần nhất ngược bias
     if len(h1c) >= 30:
         look = 10
         prev_h1 = h1c[-(look+3):-3]
@@ -1678,18 +1722,23 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     if reversal_flags:
         base.setdefault("meta", {})["reversal_warnings"] = reversal_flags
 
-    # Nếu đảo chiều mạnh: FULL -> HALF, HALF -> WAIT (an toàn cho XAU/BTC)
+    # Nếu đảo chiều mạnh: FULL -> HALF, HALF -> WAIT
     if severe_reversal:
         if score3 == 3:
             score3 = 2
         elif score3 == 2:
             score3 = 1
 
+    # Confluence rule: nếu H1/H4 lệch nhau => tối đa HALF (không FULL)
+    if base.get("meta", {}).get("score_detail", {}).get("confluence_ok", 0) != 1 and score3 == 3:
+        score3 = 2
+
     trade_mode = "WAIT"
     if score3 == 3:
         trade_mode = "FULL"
     elif score3 == 2:
         trade_mode = "HALF"
+
 
     # Bonus stars from vol + candle pattern, and penalty from liquidity warning
     bonus = 0
