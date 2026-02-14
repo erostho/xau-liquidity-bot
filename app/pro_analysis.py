@@ -1010,6 +1010,40 @@ def _m15_key_levels(m15c: Sequence[Any], bias_side: str, lookback: int = 80) -> 
 # =========================
 # PRO Analyzer (MUST be named analyze_pro for main.py import)
 # =========================
+
+def _range_levels(candles: Sequence[Any], n: int = 20) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Return (range_low, range_high, last_close) for last n candles."""
+    if not candles or len(candles) < max(10, n):
+        return None, None, None
+    c = list(candles)[-n:]
+    hi = max(float(_c_val(x, "high", 0.0) or 0.0) for x in c)
+    lo = min(float(_c_val(x, "low", 0.0) or 0.0) for x in c)
+    last = float(_c_val(c[-1], "close", 0.0) or 0.0)
+    return lo, hi, last
+
+def _where_wait_text(m15c: Sequence[Any], bias_side: str) -> Tuple[str, str]:
+    lo, hi, last = _range_levels(m15c, n=20)
+    if lo is None or hi is None:
+        return ("Không đủ nến M15 để định vị.", "Chờ có thêm dữ liệu.")
+    span = max(hi - lo, 1e-9)
+    pos = (last - lo) / span  # 0..1
+
+    if pos <= 0.25:
+        where = f"Đang gần hỗ trợ (range low) {last:.2f} ~ {lo:.2f}"
+    elif pos >= 0.75:
+        where = f"Đang gần kháng cự (range high) {last:.2f} ~ {hi:.2f}"
+    else:
+        where = f"Đang ở giữa range {lo:.2f}–{hi:.2f} (nhiễu)"
+
+    if bias_side == "BUY":
+        wait = f"Chờ BOS↑: M15 đóng trên {hi:.2f} (tốt nhất retest giữ được)."
+    elif bias_side == "SELL":
+        wait = f"Chờ BOS↓: M15 đóng dưới {lo:.2f} (tốt nhất retest giữ được)."
+    else:
+        wait = f"Chờ break range: trên {hi:.2f} hoặc dưới {lo:.2f}."
+    return where, wait
+
+
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -1622,6 +1656,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         levels_info.append((kh["M15_PB_EXT"], f"M15 Pullback {'Low' if bias_side=='BUY' else ('High' if bias_side=='SELL' else 'extreme')} (mốc giữ HL/LH)"))
     base["levels_info"] = levels_info
 
+    where, wait_for = _where_wait_text(m15c, bias_side=bias_side)
+    base.setdefault("meta", {})["where"] = where
+    base["meta"]["wait_for"] = wait_for
+
+
 
     # Bias base: chỉ cần H1 có trend rõ (bull/bear)
     bias_ok = int(bias_side in ("BUY", "SELL"))
@@ -2026,6 +2065,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # Structures
     lines.append(f"Structure: H4 {h4_tag} | H1 {h1_tag} | M15 {m15_tag}")
+
+    where = meta.get("where")
+    wait_for = meta.get("wait_for")
+    if where:
+        lines.append(f"Now: {where}")
+    if wait_for:
+        lines.append(f"Wait: {wait_for}")
+
 
     # Key levels (prices)
     lines.append("Key levels:")
