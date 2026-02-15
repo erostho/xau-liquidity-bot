@@ -1811,19 +1811,35 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base.setdefault("meta", {}).setdefault("score_detail", {})["bos_retest"] = int(bool(bos_retest))
     base.setdefault("meta", {}).setdefault("score_detail", {})["bos_micro_retest"] = int(bool(bos_micro_retest))
     base.setdefault("meta", {}).setdefault("score_detail", {})["engulf_aligned"] = int(bool(engulf_aligned))
-    score3 = int(bias_ok + pullback_ok + momentum_ok)
 
-    # 2/3 rule: NEVER allow missing Bias (bias_ok là điều kiện nền)
-    if score3 == 2 and bias_ok != 1:
-        score3 = 1  # WAIT
+# =========================
+# SCORING (v8): Bias + Pullback(PB) + Momentum(MOM)
+#
+# - HALF: mặc định cần >=2/3 điều kiện (Bias + PB + MOM), và *bắt buộc có Bias* (tránh trade ngược xu hướng lớn).
+# - FULL: bắt buộc đủ 3/3 + Confluence(H4)=1 (tức H4/H1 đồng hướng/ủng hộ).
+# =========================
 
-    # Liquidity warning filter (soft):
-    # nếu đang sát vùng sweep và thiếu momentum -> bỏ
-    liq_warn = any(("WARNING" in str(x).upper()) or ("NGUY" in str(x).upper()) for x in (liquidity_lines or []))
-    if liq_warn and score3 == 2 and momentum_ok == 0:
-        score3 = 1
+score3 = int(bias_ok) + int(pullback_ok) + int(momentum_ok)
 
-    # ---- Spread filter (NORMAL: không bóp nghẹt cơ hội) ----
+half_ok = (bias_ok == 1) and (score3 >= 2)
+full_ok = (score3 == 3) and (confluence_ok == 1)
+
+if full_ok:
+    trade_mode = "FULL"
+    stars = 4
+elif half_ok:
+    trade_mode = "HALF"
+    stars = 3
+else:
+    trade_mode = "WAIT"
+    stars = 1
+
+# if liquidity warning, cap to HALF at most (still allow observation)
+if liq_warn and trade_mode == "FULL":
+    trade_mode = "HALF"
+    stars = min(stars, 3)
+
+# ---- Spread filter (NORMAL: không bóp nghẹt cơ hội) ----
     # MT5 bars có thể có field 'spread' (points). Nếu không có, bỏ qua.
     spread_now = getattr(m15c[-2], "spread", 0.0) if len(m15c) >= 3 else 0.0
     spread_list = [float(getattr(c, "spread", 0.0) or 0.0) for c in m15c[-(60+2):-2]]
@@ -2068,7 +2084,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append(f"{stars_txt}  <b>{rec}</b>{mode_txt}{score_txt}")
 
     # Structures
-    lines.append(f"Structure: H4 {h4_tag} | H1 {h1_tag} | M15 {m15_tag}")
+    lines.append(f"Structure (Major): H4 {h4_tag} | H1 {h1_tag}")
+    lines.append(f"Structure (Minor): M15 {m15_tag}")
 
     where = meta.get("where")
     wait_for = meta.get("wait_for")
@@ -2080,12 +2097,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # Key levels (prices)
     lines.append("Key levels:")
-    # Print only the most useful ones (avoid spam)
-    # Always show M15 range context (helps when structure is n/a)
-    if kl.get("M15_RANGE_LOW") is not None and kl.get("M15_RANGE_HIGH") is not None:
-        lines.append(f"- M15 Range: {nf2(kl.get('M15_RANGE_LOW'))} – {nf2(kl.get('M15_RANGE_HIGH'))}")
-    if kl.get("M15_LAST") is not None:
-        lines.append(f"- M15 Last close: {nf2(kl.get('M15_LAST'))}")
+    lines.append("Major (H4/H1):")
     if kl.get("H1_HH") is not None:
         lines.append(f"- H1 HH: {nf2(kl.get('H1_HH'))}")
     if kl.get("H1_HL") is not None:
@@ -2094,13 +2106,17 @@ def format_signal(sig: Dict[str, Any]) -> str:
         lines.append(f"- H1 LH: {nf2(kl.get('H1_LH'))}")
     if kl.get("H1_LL") is not None:
         lines.append(f"- H1 LL: {nf2(kl.get('H1_LL'))}")
+
+    lines.append("Minor (M15):")
+    if kl.get("M15_RANGE_LOW") is not None and kl.get("M15_RANGE_HIGH") is not None:
+        lines.append(f"- M15 Range: {nf2(kl.get('M15_RANGE_LOW'))} – {nf2(kl.get('M15_RANGE_HIGH'))}")
+    if kl.get("M15_LAST") is not None:
+        lines.append(f"- M15 Last close: {nf2(kl.get('M15_LAST'))}")
     if kl.get("M15_BOS") is not None:
         lines.append(f"- M15 BOS level: {nf2(kl.get('M15_BOS'))}")
     if kl.get("M15_PB_EXT") is not None:
         lines.append(f"- M15 pullback extreme: {nf2(kl.get('M15_PB_EXT'))}")
 
-    # Entry block
-    lines.append("")
     lines.append(f"Entry: {nf2(entry)}")
     lines.append(f"SL: {nf2(sl)} | TP1: {nf2(tp1)} | TP2: {nf2(tp2)}")
 
