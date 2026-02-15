@@ -584,6 +584,36 @@ async def data_mt5(token: str = "", request: Request = None):
         logger.exception("[MT5] ingest failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     return "OK"
+def _strip_trade_levels_for_manual(sig: dict) -> dict:
+    """
+    Dùng cho BTC NOW / XAU NOW.
+    Nếu < MIN_STARS thì không hiển thị entry / SL / TP.
+    """
+    stars = int(sig.get("stars", 0) or 0)
+
+    if stars >= MIN_STARS:
+        return sig  # đủ sao thì giữ nguyên
+
+    # Xóa trade suggestion
+    sig["entry"] = None
+    sig["sl"] = None
+    sig["tp1"] = None
+    sig["tp2"] = None
+
+    # Nếu có major/minor riêng
+    if "major" in sig:
+        sig["major"]["entry"] = None
+        sig["major"]["sl"] = None
+        sig["major"]["tp1"] = None
+        sig["major"]["tp2"] = None
+
+    if "minor" in sig:
+        sig["minor"]["entry"] = None
+        sig["minor"]["sl"] = None
+        sig["minor"]["tp1"] = None
+        sig["minor"]["tp2"] = None
+
+    return sig
 
 
 # Telegram webhook handler
@@ -624,15 +654,27 @@ async def telegram_webhook(request: Request):
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
                 stars = int(sig.get("stars", 0) or 0)
                 force_send = _force_send(sig)
-
+                is_manual = "NOW" in text.upper()
                 if force_send:
                     prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\n\n"
-                    _send_telegram(prefix + _safe_format_signal(sig, include_plan=(stars >= 3)), chat_id=chat_id)
-                elif stars < MIN_STARS:
-                    prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\n\n"
-                    _send_telegram(prefix + _safe_format_signal(sig, include_plan=(stars >= 3)), chat_id=chat_id)
+                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                
+                elif is_manual:
+                    # Manual luôn gửi
+                    sig = _strip_trade_levels_for_manual(sig)
+                
+                    prefix = ""
+                    if stars < MIN_STARS:
+                        prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ - tham khảo thôi.\n\n"
+                
+                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                
                 else:
-                    _send_telegram(_safe_format_signal(sig, include_plan=(stars >= 3)), chat_id=chat_id)
+                    # Auto cron
+                    if stars >= MIN_STARS:
+                        _send_telegram(format_signal(sig), chat_id=chat_id)
+                    # nếu < MIN_STARS thì KHÔNG gửi gì cả
+
 
             except Exception as e:
                 logger.exception("analysis failed: %s", e)
