@@ -1422,6 +1422,61 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             bias = "BUY"
 
     if bias is None:
+        # --------------------
+        # Mode-based plan selection:
+        # - FULL  => MAJOR plan (H1 + H4 confluence): wider levels, wait for MAJOR BOS then retest
+        # - HALF  => MINOR plan (M15): shorter TP/SL, only if H1 HL/LH (major trend guard) is not broken
+        # --------------------
+        entry_frame = "M15"
+        plan_tag = "MINOR"
+        # defaults (HALF / WAIT): use minor plan
+        entry, sl, tp1, tp2 = entry_minor, sl_minor, tp1_minor, tp2_minor
+
+        if trade_mode == "FULL":
+            entry_frame = "H1"
+            plan_tag = "MAJOR"
+
+            # Override "wait_for" for MAJOR: wait M15 close to break H1 HH/LL (and ideally retest).
+            major_level = h1_struct.get("hh") if bias_side == "BUY" else h1_struct.get("ll")
+            if major_level is not None:
+                base.setdefault("meta", {})["wait_for"] = (
+                    "Chờ BOS MAJOR: M15 đóng "
+                    + ("trên " if bias_side == "BUY" else "dưới ")
+                    + f"{float(major_level):.2f}"
+                    + " (tốt nhất retest giữ được)."
+                )
+
+            atr_h1 = _atr(h1c, 14) or (atr15 * 4.0)  # fallback: ~4x M15 ATR
+            major_bos = h1_struct.get("hh") if bias_side == "BUY" else h1_struct.get("ll")
+            major_sl_level = h1_struct.get("hl") if bias_side == "BUY" else h1_struct.get("lh")
+
+            # If structure fields are missing, fall back to recent H1 extremes
+            if major_bos is None:
+                major_bos = (max(c.high for c in h1c[-50:]) if (bias_side == "BUY" and len(h1c) >= 10) else
+                             min(c.low for c in h1c[-50:]) if (bias_side == "SELL" and len(h1c) >= 10) else last_close)
+            if major_sl_level is None:
+                major_sl_level = (min(c.low for c in h1c[-50:]) if bias_side == "BUY" else
+                                  max(c.high for c in h1c[-50:]) if bias_side == "SELL" else last_close)
+
+            # Entry for MAJOR = retest around MAJOR BOS (safer than chasing)
+            entry_major = float(major_bos)
+            buf = float(atr_h1 * 0.35)
+            if bias_side == "BUY":
+                sl_major = float(major_sl_level) - buf
+                risk = max(atr_h1 * 0.8, entry_major - sl_major)
+                tp1_major = entry_major + risk * 1.0
+                tp2_major = entry_major + risk * 1.6
+            else:
+                sl_major = float(major_sl_level) + buf
+                risk = max(atr_h1 * 0.8, sl_major - entry_major)
+                tp1_major = entry_major - risk * 1.0
+                tp2_major = entry_major - risk * 1.6
+
+            entry, sl, tp1, tp2 = entry_major, sl_major, tp1_major, tp2_major
+
+        base["meta"]["plan_tag"] = plan_tag
+        base["meta"]["entry_frame"] = entry_frame
+
         base.update({
             "context_lines": context_lines,
             "position_lines": position_lines,
@@ -1667,6 +1722,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 
 
     # Bias base: chỉ cần H1 có trend rõ (bull/bear)
+    # Keep a MINOR plan (M15 execution) as default suggestion
+    entry_minor, sl_minor, tp1_minor, tp2_minor = entry, sl, tp1, tp2
+
     bias_ok = int(bias_side in ("BUY", "SELL"))
 
     # EMA200 slope/distance (để né đoạn "lẹt đẹt quanh EMA200")
@@ -1836,7 +1894,17 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         hl_hold_ok = True
 
     half_ok = (bias_ok == 1) and (score3 >= 2) and hl_hold_ok and (not major_bearish)
-    full_ok = (score3 == 3) and (confluence_ok == 1)
+
+    # FULL must be a MAJOR signal: confirm M15 close breaks the MAJOR level (H1 HH/LL), not just a minor swing.
+    major_bos_level = h1_struct.get("hh") if bias_side == "BUY" else h1_struct.get("ll")
+    try:
+        major_bos_confirmed = (major_bos_level is not None) and (
+            (m15_last_close > float(major_bos_level)) if bias_side == "BUY" else (m15_last_close < float(major_bos_level))
+        )
+    except Exception:
+        major_bos_confirmed = False
+
+    full_ok = (score3 == 3) and (confluence_ok == 1) and major_bos_confirmed
 
     if full_ok:
         trade_mode = "FULL"
