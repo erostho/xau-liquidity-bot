@@ -31,6 +31,47 @@ CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 # Send both symbols always by default (you can override)
 MIN_STARS = int(os.getenv("MIN_STARS", "1"))
+def _strip_trade_plan(sig: dict) -> dict:
+    """Return a copy of signal dict with trade plan fields removed (Entry/SL/TP)."""
+    if not isinstance(sig, dict):
+        return sig
+    s = dict(sig)  # shallow copy
+    # remove common plan keys (support both old + major/minor variants)
+    plan_keys = ["entry", "sl", "tp1", "tp2", "tp3", "tp4", "rr", "risk", "size"]
+    for k in plan_keys:
+        s.pop(k, None)
+    for suffix in ["_major", "_minor"]:
+        for k in plan_keys:
+            s.pop(f"{k}{suffix}", None)
+    return s
+
+
+def _safe_format_signal(sig: dict, include_plan: bool = True) -> str:
+    """Format signal safely. If include_plan=False, Entry/SL/TP are omitted."""
+    s = sig if include_plan else _strip_trade_plan(sig)
+    try:
+        return format_signal(s)
+    except Exception as e:
+        # Never crash manual NOW calls; provide a minimal, still-useful message.
+        try:
+            sym = s.get("symbol") or s.get("sym") or "?"
+            tf = s.get("tf") or s.get("timeframe") or "?"
+            stars = s.get("stars", "n/a")
+            rec = s.get("recommendation") or s.get("rec") or "n/a"
+            struct = s.get("structure") or ""
+            now = s.get("now") or ""
+            wait = s.get("wait") or ""
+            msg = f"❌ Format error nhưng vẫn trả phân tích\n\n{sym} | {tf}\nStars: {stars} | Rec: {rec}\n"
+            if struct:
+                msg += f"Structure: {struct}\n"
+            if now:
+                msg += f"Now: {now}\n"
+            if wait:
+                msg += f"Wait: {wait}\n"
+            return msg
+        except Exception:
+            return f"❌ Format error: {e}"
+
 
 # Telegram hard limit is 4096; keep safe chunk size
 TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
@@ -586,12 +627,12 @@ async def telegram_webhook(request: Request):
 
                 if force_send:
                     prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\n\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                    _send_telegram(prefix + _safe_format_signal(sig, include_plan=(stars >= 3)), chat_id=chat_id)
                 elif stars < MIN_STARS:
                     prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\n\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                    _send_telegram(prefix + _safe_format_signal(sig, include_plan=(stars >= 3)), chat_id=chat_id)
                 else:
-                    _send_telegram(format_signal(sig), chat_id=chat_id)
+                    _send_telegram(_safe_format_signal(sig, include_plan=(stars >= 3)), chat_id=chat_id)
 
             except Exception as e:
                 logger.exception("analysis failed: %s", e)
@@ -639,7 +680,7 @@ async def cron_run(token: str = "", request: Request = None):
                 
                 # ----- LUỒNG A: KÈO CHÍNH -----
                 if stars >= MIN_STARS and rec != "CHỜ":
-                    _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
+                    _send_telegram(_safe_format_signal(sig, include_plan=(stars >= 3)), chat_id=ADMIN_CHAT_ID)
                 # ----- LUỒNG B (DISABLED): KÈO NGẮN HẠN / SCALE / SCALP -----
                 # Đã tắt theo cấu hình chiến lược: chỉ gửi kèo theo scoring engine FULL/HALF.
 
