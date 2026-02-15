@@ -895,6 +895,88 @@ def _build_short_hint(
 def _fmt(x: float) -> str:
     return f"{x:.3f}".rstrip("0").rstrip(".")
 
+
+def _sma(vals, n: int):
+    if not vals or n <= 0 or len(vals) < n:
+        return None
+    return sum(vals[-n:]) / float(n)
+
+def _trend_tag(candles, n_fast=20, n_slow=50):
+    """Return a simple structure tag: HH-HL (bull), LL-LH (bear), or TRANSITION.
+    Uses SMA fast/slow + fast slope as a lightweight proxy (robust when swing logic is missing)."""
+    try:
+        if not candles or len(candles) < n_fast + 2:
+            return "n/a"
+        closes = [float(c.close) for c in candles if c is not None]
+        if len(closes) < n_fast + 2:
+            return "n/a"
+        sma_f = _sma(closes, n_fast)
+        sma_s = _sma(closes, n_slow) if len(closes) >= n_slow else None
+        # slope of fast SMA (last 3 points approx)
+        sma_f_prev = sum(closes[-(n_fast+3):-(3)]) / float(n_fast) if len(closes) >= n_fast + 3 else None
+        slope_up = (sma_f is not None and sma_f_prev is not None and sma_f > sma_f_prev)
+        slope_dn = (sma_f is not None and sma_f_prev is not None and sma_f < sma_f_prev)
+        last = closes[-1]
+        if sma_f is None:
+            return "n/a"
+        bull = last >= sma_f and (sma_s is None or sma_f >= sma_s) and slope_up
+        bear = last <= sma_f and (sma_s is None or sma_f <= sma_s) and slope_dn
+        if bull:
+            return "HH-HL"
+        if bear:
+            return "LL-LH"
+        return "TRANSITION"
+    except Exception:
+        return "n/a"
+
+def _range_high_low(candles, n: int):
+    if not candles:
+        return (None, None)
+    cc = candles[-n:] if len(candles) > n else candles
+    try:
+        hi = max(float(c.high) for c in cc)
+        lo = min(float(c.low) for c in cc)
+        return (lo, hi)
+    except Exception:
+        return (None, None)
+
+def _inject_meta_structure_and_levels(base: dict, m15, m30, h1, h4):
+    """Ensure base['meta']['structure'] + base['meta']['key_levels'] exist for Telegram template,
+    even when stars are low / trade plan is suppressed."""
+    meta = base.get("meta") or {}
+    base["meta"] = meta
+
+    # Structure tags
+    struct = meta.get("structure") or {}
+    struct.setdefault("H4", _trend_tag(h4))
+    struct.setdefault("H1", _trend_tag(h1))
+    struct.setdefault("M15", _trend_tag(m15))
+    meta["structure"] = struct
+
+    # Key levels (flattened keys expected by format_signal)
+    kl = meta.get("key_levels") or {}
+
+    lo_h1, hi_h1 = _range_high_low(h1, 48)
+    lo_h4, hi_h4 = _range_high_low(h4, 60)
+    if hi_h1 is not None:
+        kl.setdefault("H1_HH", hi_h1)
+    elif hi_h4 is not None:
+        kl.setdefault("H1_HH", hi_h4)
+
+    if lo_h1 is not None:
+        kl.setdefault("H1_HL", lo_h1)
+    elif lo_h4 is not None:
+        kl.setdefault("H1_HL", lo_h4)
+
+    lo_m15, hi_m15 = _range_high_low(m15, 32)
+    if lo_m15 is not None and hi_m15 is not None:
+        kl.setdefault("M15_RANGE_LOW", lo_m15)
+        kl.setdefault("M15_RANGE_HIGH", hi_m15)
+        kl.setdefault("M15_BOS_LEVEL", hi_m15)
+        kl.setdefault("M15_PB_EXTREME", lo_m15)
+
+    meta["key_levels"] = kl
+
 def _safe_float(x: Any) -> Optional[float]:
     try:
         if x is None:
@@ -1089,6 +1171,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         base["short_hint"] = ["- Chưa đủ dữ liệu → CHỜ KÈO"]
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
+        _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         return base
 
     m15c = _safe_candles(m15)
@@ -1377,6 +1460,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     "stars": 2,
                     "notes": notes + ["➡️ Khi HL + BOS xuất hiện (trạng thái OK/OK) → mới canh BUY theo H1 + chờ M30 confirm."],
                 })
+                _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
                 return base
 
         if post_sweep_sell:
@@ -1392,6 +1476,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     "stars": 2,
                     "notes": notes + ["➡️ Khi LH + BOS xuất hiện (trạng thái OK/OK) → mới canh SELL theo H1 + chờ M30 confirm."],
                 })
+                _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
                 return base
 
     # ===== Quality =====
@@ -1496,6 +1581,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "stars": 1,
             "notes": ["Chưa đủ điều kiện vào kèo. Chờ thêm nến xác nhận/retest."],
         })
+        _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         return base
 
     # ---- H1 confirm (hard filter)
@@ -1511,6 +1597,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 "stars": 1,
                 "notes": ["H1 chưa bullish → không BUY. Chờ H1 confirm hoặc kèo rõ hơn."],
             })
+            _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
             return base
         if bias == "SELL" and h1_trend != "bearish":
             base.update({
@@ -1522,6 +1609,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 "stars": 1,
                 "notes": ["H1 chưa bearish → không SELL. Chờ H1 confirm hoặc kèo rõ hơn."],
             })
+            _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
             return base
 
     recommendation = "🔴 SELL" if bias == "SELL" else "🟢 BUY"
@@ -1578,6 +1666,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "lot": None,
             "notes": notes + ["Chờ nến M30 đóng xác nhận rồi mới vào lệnh."],
         })
+        _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         return base
     # ===== PRO adjustments: divergence/candle/volume affect confidence & management =====
     # 1) Divergence: nếu đánh ngược divergence → warn mạnh
@@ -2114,6 +2203,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "lot": float(lot) if lot is not None else None,
             "notes": notes,
         })
+        _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         return base
 
     # =========================
