@@ -1,5 +1,6 @@
 # app/main.py
 from __future__ import annotations
+import json
 import os
 import time
 import asyncio
@@ -26,6 +27,11 @@ DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD").sp
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # default chat for cron
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", TELEGRAM_CHAT_ID)
+
+REGIME_ALERT_ENABLED=1
+REGIME_CHOP_THRESHOLD=6.8
+REGIME_ALERT_COOLDOWN_MIN=120
+REGIME_ALERT_STATE_PATH=regime_alert_state.json
 
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
@@ -498,6 +504,194 @@ def _force_send(sig: dict) -> bool:
         return True
 
     return False
+# =========================
+# REGIME ALERT (CHOP / STOP-HUNT) - independent of stars
+# =========================
+
+REGIME_ALERT_STATE_PATH = os.getenv("REGIME_ALERT_STATE_PATH", "regime_alert_state.json")
+REGIME_ALERT_COOLDOWN_MIN = int(os.getenv("REGIME_ALERT_COOLDOWN_MIN", "120"))  # 2h
+REGIME_CHOP_THRESHOLD = float(os.getenv("REGIME_CHOP_THRESHOLD", "6.8"))        # 0..10
+REGIME_ALERT_ENABLED = os.getenv("REGIME_ALERT_ENABLED", "1").strip() != "0"
+
+
+def _load_json(path: str, default: dict):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _save_json_atomic(path: str, data: dict):
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _wick_stats(o: float, h: float, l: float, c: float):
+    body = abs(c - o)
+    upper = h - max(o, c)
+    lower = min(o, c) - l
+    rng = max(h - l, 1e-9)
+    wick_total = max(upper + lower, 0.0)
+    wick_body = wick_total / max(body, 1e-9)   # wick/body (rất lớn => nhiễu)
+    wick_rng = wick_total / rng                # wick/range (0.6+ => wick chiếm ưu thế)
+    return wick_body, wick_rng
+
+
+def _avg_wickiness(candles, bars: int):
+    cs = _m15_closed(candles)  # bỏ nến đang chạy (nếu có)
+    if not cs or len(cs) < bars:
+        return None
+    w = cs[-bars:]
+    wb, wr = [], []
+    for x in w:
+        o = _cget(x, "open"); h = _cget(x, "high"); l = _cget(x, "low"); c = _cget(x, "close")
+        a, b = _wick_stats(o, h, l, c)
+        wb.append(a); wr.append(b)
+    return (sum(wb) / len(wb), sum(wr) / len(wr))
+
+
+def _netmove_pct(candles, bars: int):
+    cs = _m15_closed(candles)
+    if not cs or len(cs) < bars:
+        return None
+    w = cs[-bars:]
+    net = abs(_cget(w[-1], "close") - _cget(w[0], "open"))
+    hi = max(_cget(x, "high") for x in w)
+    lo = min(_cget(x, "low") for x in w)
+    rng = max(hi - lo, 1e-9)
+    return net / rng  # càng nhỏ => đi nhiều nhưng không tiến => chop
+
+
+def _count_false_breaks(candles, lookback: int, level_lookback: int, eps: float = 0.0):
+    cs = _m15_closed(candles)
+    if not cs or len(cs) < level_lookback + 2:
+        return 0
+
+    n = len(cs)
+    start = max(1, n - lookback)
+    fb = 0
+
+    for i in range(start, n):
+        window = cs[max(0, i - level_lookback):i]
+        hi_lvl = max(_cget(x, "high") for x in window)
+        lo_lvl = min(_cget(x, "low") for x in window)
+
+        o = _cget(cs[i], "open")
+        h = _cget(cs[i], "high")
+        l = _cget(cs[i], "low")
+        c = _cget(cs[i], "close")
+
+        # break high rồi đóng lại dưới level => false break up
+        if h > hi_lvl + eps and c < hi_lvl:
+            fb += 1
+        # break low rồi đóng lại trên level => false break down
+        if l < lo_lvl - eps and c > lo_lvl:
+            fb += 1
+
+    return fb
+
+
+def score_chop_regime(m15, h1, h2=None):
+    """
+    Score 0..10: càng cao => càng giống chop/stop-hunt.
+    Dùng dữ liệu ~2-3h đầu phiên cũng bắt được.
+    """
+    details = {}
+
+    fb15 = _count_false_breaks(m15, lookback=24, level_lookback=48)
+    fb1h = _count_false_breaks(h1,  lookback=12, level_lookback=36)
+    details["false_breaks_15m"] = fb15
+    details["false_breaks_1h"] = fb1h
+
+    w15 = _avg_wickiness(m15, bars=12)  # ~3h
+    if w15:
+        wick_body, wick_rng = w15
+    else:
+        wick_body, wick_rng = None, None
+    details["wick_body_avg_15m"] = wick_body
+    details["wick_range_avg_15m"] = wick_rng
+
+    nm15 = _netmove_pct(m15, bars=12)
+    nm1h = _netmove_pct(h1,  bars=6)
+    details["netmove_pct_15m"] = nm15
+    details["netmove_pct_1h"] = nm1h
+
+    nm2h = None
+    wr2h = None
+    if h2:
+        w2 = _avg_wickiness(h2, bars=6)
+        wr2h = w2[1] if w2 else None
+        nm2h = _netmove_pct(h2, bars=4)
+    details["wick_range_avg_2h"] = wr2h
+    details["netmove_pct_2h"] = nm2h
+
+    score = 0.0
+
+    # False breaks là dấu hiệu “quét 2 đầu”
+    score += min(fb15, 6) * 0.8   # max ~4.8
+    score += min(fb1h, 4) * 0.7   # max ~2.8
+
+    # Wick dominance
+    if wick_rng is not None:
+        if wick_rng >= 0.75: score += 2.2
+        elif wick_rng >= 0.65: score += 1.6
+        elif wick_rng >= 0.55: score += 1.0
+
+    # Net move nhỏ => chop
+    if nm15 is not None:
+        if nm15 <= 0.22: score += 1.8
+        elif nm15 <= 0.30: score += 1.2
+    if nm1h is not None:
+        if nm1h <= 0.25: score += 1.2
+        elif nm1h <= 0.35: score += 0.8
+
+    # 2H (nếu có) tăng độ chắc
+    if nm2h is not None and wr2h is not None:
+        if nm2h <= 0.30 and wr2h >= 0.60:
+            score += 0.8
+
+    score = max(0.0, min(10.0, score))
+    return score, details
+
+
+def maybe_send_regime_alert(symbol: str, m15, h1, h2=None, chat_id: Optional[str] = None):
+    """
+    Gửi cảnh báo nếu score >= threshold.
+    Không phụ thuộc MIN_STARS.
+    Có cooldown để không spam.
+    """
+    if not REGIME_ALERT_ENABLED:
+        return False, 0.0, {}
+
+    score, details = score_chop_regime(m15, h1, h2)
+
+    st = _load_json(REGIME_ALERT_STATE_PATH, default={})
+    now = int(time.time())
+    key = f"{symbol}_CHOP"
+    last_ts = int(st.get(key, 0))
+
+    should_send = (score >= REGIME_CHOP_THRESHOLD) and (now - last_ts >= REGIME_ALERT_COOLDOWN_MIN * 60)
+    if not should_send:
+        return False, score, details
+
+    msg = (
+        f"⚠️ REGIME ALERT: CHOP / STOP-HUNT ({symbol})\n"
+        f"Score: {score:.1f}/10 (>= {REGIME_CHOP_THRESHOLD})\n"
+        f"- FalseBreak 15m: {details.get('false_breaks_15m')}\n"
+        f"- FalseBreak 1h : {details.get('false_breaks_1h')}\n"
+        f"- Wick(range)15m: {details.get('wick_range_avg_15m')}\n"
+        f"- NetMove% 15m  : {details.get('netmove_pct_15m')}\n"
+        f"⛔ Gợi ý: NO TRADE / đợi displacement thật + follow-through / tránh đặt SL ngay sau swing gần."
+    )
+
+    _send_telegram(msg, chat_id=chat_id or ADMIN_CHAT_ID)
+    st[key] = now
+    _save_json_atomic(REGIME_ALERT_STATE_PATH, st)
+
+    return True, score, details
 
 def _ingest_mt5_payload(payload: Dict[str, Any]) -> None:
     """
@@ -580,7 +774,17 @@ async def telegram_webhook(request: Request):
         for sym in symbols:
             try:
                 data = _fetch_triplet(sym, limit=260)
+                # (optional) lấy thêm 2H cho regime radar (nếu get_candles hỗ trợ)
+                try:
+                    h2 = _as_list_from_get_candles(get_candles(sym, "2h", limit=220))
+                except Exception:
+                    h2 = []
+                
+                # ✅ Regime alert: independent of stars
+                maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
+                
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+
                 stars = int(sig.get("stars", 0) or 0)
                 force_send = _force_send(sig)
 
