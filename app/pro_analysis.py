@@ -1071,6 +1071,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "meta": {},
     }
 
+    # IMPORTANT: define these early so any early-return or exception path won't crash the caller
+    # (Python 3.11+ can raise UnboundLocalError if referenced before assignment).
+    entry_major = sl_major = tp1_major = tp2_major = None
+    entry_minor = sl_minor = tp1_minor = tp2_minor = None
+
     context_lines = base["context_lines"]
     position_lines = base.get("position_lines", [])
     liquidity_lines = base["liquidity_lines"]
@@ -1420,6 +1425,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             bias = "SELL"
         elif buy_ok:
             bias = "BUY"
+
+    # ---- defaults (avoid UnboundLocalError when structure/bias is n/a) ----
+    entry_major = sl_major = tp1_major = tp2_major = None
+    entry_minor = sl_minor = tp1_minor = tp2_minor = None
 
     if bias is None:
         # --------------------
