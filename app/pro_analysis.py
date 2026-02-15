@@ -1427,6 +1427,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             bias = "BUY"
 
     # ---- defaults (avoid UnboundLocalError when structure/bias is n/a) ----
+    trade_mode = "HALF"  # default; will be overwritten once scoring is computed
     entry_major = sl_major = tp1_major = tp2_major = None
     entry_minor = sl_minor = tp1_minor = tp2_minor = None
 
@@ -2208,8 +2209,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if kl.get("M15_PB_EXT") is not None:
         lines.append(f"- M15 pullback extreme: {nf2(kl.get('M15_PB_EXT'))}")
 
-    lines.append(f"Entry: {nf2(entry)}")
-    lines.append(f"SL: {nf2(sl)} | TP1: {nf2(tp1)} | TP2: {nf2(tp2)}")
+    show_plan = bool(sig.get("show_trade_plan", True))
+    if show_plan:
+        lines.append(f"Entry: {nf2(entry)}")
+        lines.append(f"SL: {nf2(sl)} | TP1: {nf2(tp1)} | TP2: {nf2(tp2)}")
 
     # SL focus: watch the level that matches the structure you're trading.
     # - FULL  => major (H1) invalidation
