@@ -1815,6 +1815,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["levels_info"] = levels_info
 
     where, wait_for = _where_wait_text(m15c, bias_side=bias_side)
+    base["where"] = where
+    base["wait_for"] = wait_for
     base.setdefault("meta", {})["where"] = where
     base["meta"]["wait_for"] = wait_for
 
