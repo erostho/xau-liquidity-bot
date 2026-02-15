@@ -2120,6 +2120,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append(f"Entry: {nf2(entry)}")
     lines.append(f"SL: {nf2(sl)} | TP1: {nf2(tp1)} | TP2: {nf2(tp2)}")
 
+    # SL focus: watch the level that matches the structure you're trading.
+    # - FULL  => major (H1) invalidation
+    # - HALF  => minor (M15) invalidation
+    sl_focus_level = None
+    sl_focus_label = None
+    if trade_mode == "FULL":
+        if action == "BUY":
+            sl_focus_level = kl.get("H1_HL") or kl.get("H1_LL")
+            sl_focus_label = "H1 HL (major)"
+        elif action == "SELL":
+            sl_focus_level = kl.get("H1_LH") or kl.get("H1_HH")
+            sl_focus_label = "H1 LH (major)"
+    elif trade_mode == "HALF":
+        if action in ("BUY", "SELL"):
+            sl_focus_level = kl.get("M15_PB_EXT") or kl.get("M15_RANGE_LOW") or kl.get("M15_RANGE_HIGH")
+            sl_focus_label = "M15 pullback extreme (minor)"
+
+    if sl_focus_level is not None and sl_focus_label:
+        lines.append(f"SL focus ({trade_mode}): {sl_focus_label} @ {nf2(sl_focus_level)}")
+
     # Quick reasons (score detail)
     if trade_mode in ("FULL", "HALF") and sd:
         lines.append("")
