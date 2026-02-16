@@ -70,7 +70,12 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
             chunks.append(buf)
 
         for part in chunks:
-            requests.post(url, json={"chat_id": cid, "text": part}, timeout=15)
+            requests.post(
+                url,
+                json={"chat_id": cid, "text": part, "parse_mode": "HTML", "disable_web_page_preview": True},
+                timeout=15
+            )
+
 
     except Exception as e:
         logger.exception("[TG] send failed: %s", e)
@@ -794,7 +799,7 @@ async def telegram_webhook(request: Request):
                     _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
                 elif stars < MIN_STARS:
                     # Manual 'NOW/SCAN': always send full analysis, but hide trade plan when under the star gate
-                    sig["show_trade_plan"] = False
+                    #sig["show_trade_plan"] = False
                     prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\\n\\n"
                     _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
                 else:
