@@ -11,69 +11,6 @@ from fastapi.responses import PlainTextResponse
 from app.data_source import get_candles, ingest_mt5_candles
 from app.pro_analysis import analyze_pro, format_signal
 
-
-# ---- MT5 spread helper (optional) ----
-def _mt5_symbol(sym: str) -> str:
-    """
-    Map our symbol format (e.g., 'BTC/USD', 'XAU/USD') to MT5 symbol.
-    You can override via env, e.g. MT5_SYMBOL_BTC_USD='BTCUSD', MT5_SYMBOL_XAU_USD='XAUUSD'.
-    """
-    key = f"MT5_SYMBOL_{sym.replace('/', '_')}"
-    return os.getenv(key, sym.replace("/", ""))
-
-def _try_get_spread_meta(sym: str, m15: Optional[List[dict]] = None) -> dict:
-    """
-    Return meta['spread'] = {state, ratio, points} using MT5 bid/ask if available.
-    - ratio is spread / (last M15 candle range) as a quick liquidity proxy.
-    """
-    try:
-        import MetaTrader5 as mt5  # type: ignore
-    except Exception:
-        return {"state": None, "ratio": None, "points": None, "reason": "no_mt5_lib"}
-
-    symbol_mt5 = _mt5_symbol(sym)
-    try:
-        if not mt5.initialize():
-            # if already initialized elsewhere, initialize() can still return False; try anyway to read tick
-            pass
-        tick = mt5.symbol_info_tick(symbol_mt5)
-        if tick is None:
-            return {"state": None, "ratio": None, "points": None, "reason": "no_tick"}
-        bid = float(getattr(tick, "bid", 0.0) or 0.0)
-        ask = float(getattr(tick, "ask", 0.0) or 0.0)
-        if bid <= 0 or ask <= 0 or ask < bid:
-            return {"state": None, "ratio": None, "points": None, "reason": "bad_bid_ask"}
-        sp_points = ask - bid
-
-        # denom: last M15 candle range (fallback to tiny value)
-        denom = None
-        if m15 and len(m15) > 0:
-            try:
-                hi = float(m15[-1].get("high"))
-                lo = float(m15[-1].get("low"))
-                rng = max(hi - lo, 0.0)
-                if rng > 0:
-                    denom = rng
-            except Exception:
-                denom = None
-        if denom is None:
-            denom = max(ask * 0.0005, 1e-9)  # fallback: 5 bps
-
-        ratio = sp_points / denom
-
-        # classify (tunable via env)
-        high_th = float(os.getenv("SPREAD_RATIO_HIGH", "0.20"))
-        block_th = float(os.getenv("SPREAD_RATIO_BLOCK", "0.35"))
-        state = "OK"
-        if ratio >= block_th:
-            state = "BLOCK"
-        elif ratio >= high_th:
-            state = "HIGH"
-
-        return {"state": state, "ratio": ratio, "points": sp_points, "symbol_mt5": symbol_mt5}
-    except Exception as e:
-        return {"state": None, "ratio": None, "points": None, "reason": f"err:{e.__class__.__name__}"}
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
@@ -231,6 +168,22 @@ def _as_list_from_get_candles(res):
         return res[0] or []
     return res or []
 
+
+def _as_list_and_source(res):
+    """Normalize get_candles() return to (list, source_name).
+    - Expected: (candles, source_name) OR (candles, meta_dict) OR candles_list
+    """
+    if isinstance(res, tuple):
+        candles = res[0] or []
+        src = None
+        if len(res) >= 2:
+            # data_source.get_candles returns (candles, source_name)
+            if isinstance(res[1], str):
+                src = res[1]
+            elif isinstance(res[1], dict):
+                src = res[1].get('source') or res[1].get('source_name')
+        return candles, (src or 'UNKNOWN')
+    return (res or []), 'UNKNOWN'
 def _cget(c, k, default=0.0):
     if isinstance(c, dict):
         v = c.get(k, default)
@@ -326,16 +279,14 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     entry = (float(entry_lo) + float(entry_hi)) / 2.0
 
     # 1) lấy candles (NHỚ unwrap tuple nếu get_candles trả (list, meta))
-    m15 = _as_list_from_get_candles(get_candles(symbol, "15min", limit=220))
-    m30 = _as_list_from_get_candles(get_candles(symbol, "30min", limit=220))
+    m15, src_m15 = _as_list_and_source(get_candles(symbol, "15min", limit=220)); m15 = _as_list_from_get_candles(m15)
+    m30, src_m30 = _as_list_and_source(get_candles(symbol, "30min", limit=220)); m30 = _as_list_from_get_candles(m30)
     h1  = _as_list_from_get_candles(get_candles(symbol, "1h",    limit=220))
     h4  = _as_list_from_get_candles(get_candles(symbol, "4h",    limit=220))
 
     sig = analyze_pro(symbol, m15, m30, h1, h4)
-    try:
-        sig.setdefault("meta", {})["spread"] = _try_get_spread_meta(symbol, m15)
-    except Exception:
-        pass
+    # attach candles data source
+    sig.setdefault('meta', {})['data_source'] = {'15m': src_m15, '30m': src_m30, '1h': src_h1, '4h': src_h4}
     meta = sig.get("meta", {}) or {}
     volq = meta.get("volq", {}) or {}
     cpat = meta.get("candle", {}) or {}
@@ -556,13 +507,38 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     #m30, _ = get_candles(symbol, "30min", limit)
     #h1, _ = get_candles(symbol, "1h", limit)
     #return {"m15": m15, "m30": m30, "h1": h1}
-def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
-    # M15, M30, H1, H4 (H1+H4 confluence for Bias)
-    m15 = _as_list_from_get_candles(get_candles(symbol, "15min", limit=limit))
-    m30 = _as_list_from_get_candles(get_candles(symbol, "30min", limit=limit))
-    h1  = _as_list_from_get_candles(get_candles(symbol, "1h",    limit=limit))
-    h4  = _as_list_from_get_candles(get_candles(symbol, "4h",    limit=limit))
-    return {"m15": m15, "m30": m30, "h1": h1, "h4": h4}
+def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, Any]:
+    """Fetch candles for analysis and keep per-timeframe source info.
+
+    Returns:
+      {
+        "m15": [...], "m30": [...], "h1": [...], "h4": [...],
+        "_source": {"15m": "MT5", "30m": "TWELVEDATA_FALLBACK", ...}
+      }
+    """
+    res15 = get_candles(symbol, "15min", limit=limit)
+    m15_raw, src15 = _as_list_and_source(res15)
+    m15 = _as_list_from_get_candles(m15_raw)
+
+    res30 = get_candles(symbol, "30min", limit=limit)
+    m30_raw, src30 = _as_list_and_source(res30)
+    m30 = _as_list_from_get_candles(m30_raw)
+
+    res1h = get_candles(symbol, "1h", limit=limit)
+    h1_raw, src1h = _as_list_and_source(res1h)
+    h1 = _as_list_from_get_candles(h1_raw)
+
+    res4h = get_candles(symbol, "4h", limit=limit)
+    h4_raw, src4h = _as_list_and_source(res4h)
+    h4 = _as_list_from_get_candles(h4_raw)
+
+    return {
+        "m15": m15,
+        "m30": m30,
+        "h1": h1,
+        "h4": h4,
+        "_source": {"15m": src15, "30m": src30, "1h": src1h, "4h": src4h},
+    }
 
 def _force_send(sig: dict) -> bool:
     ctx = " | ".join(sig.get("context_lines", []) or [])
@@ -857,10 +833,6 @@ async def telegram_webhook(request: Request):
                 maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
                 
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
-                try:
-                    sig.setdefault("meta", {})["spread"] = _try_get_spread_meta(sym, data.get("m15"))
-                except Exception:
-                    pass
 
                 stars = int(sig.get("stars", 0) or 0)
                 force_send = _force_send(sig)
@@ -913,10 +885,6 @@ async def cron_run(token: str = "", request: Request = None):
             try:
                 data = _fetch_triplet(sym, limit=260)
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
-                try:
-                    sig.setdefault("meta", {})["spread"] = _try_get_spread_meta(sym, data.get("m15"))
-                except Exception:
-                    pass
                 stars = int(sig.get("stars", 0) or 0)
                 short_hint = sig.get("short_hint") or []
                 entry = sig.get("entry")
