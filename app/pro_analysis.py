@@ -2439,11 +2439,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
     exp_ok = None
     exp_txt = "n/a"
     try:
-        if pos_pct_val is not None and range_width and range_width > 1e-9 and m15_last is not None:
+        if pos_pct_val is not None and m15_last is not None:
             last = float(m15_last)
             lo = float(m15_lo) if m15_lo is not None else None
             hi = float(m15_hi) if m15_hi is not None else None
             if lo is not None and hi is not None:
+                width = hi - lo
                 # hướng ưu tiên theo recommendation, nếu CHỜ thì theo bias_final (bull/bear)
                 side = rec if rec in ("BUY", "SELL") else None
                 if side is None:
@@ -2455,12 +2456,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
                         side = "SELL"
                 if side == "BUY":
                     room = hi - last
-                    room_pct = max(0.0, room / (hi - lo)) * 100.0
+                    room_pct = max(0.0, room / (width if width>1e-9 else 1e-9)) * 100.0
                     exp_ok = room_pct >= 30.0
                     exp_txt = f"Room lên biên trên ~{room_pct:.0f}% range"
                 elif side == "SELL":
                     room = last - lo
-                    room_pct = max(0.0, room / (hi - lo)) * 100.0
+                    room_pct = max(0.0, room / (width if width>1e-9 else 1e-9)) * 100.0
                     exp_ok = room_pct >= 30.0
                     exp_txt = f"Room xuống biên dưới ~{room_pct:.0f}% range"
                 else:
