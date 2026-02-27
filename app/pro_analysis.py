@@ -2365,30 +2365,57 @@ def format_signal(sig: Dict[str, Any]) -> str:
     liq_warn = ("Liquidity WARNING" in " | ".join(sig.get("context_lines", []) or [])) or _bool(sd.get("liq_warn"))
     liquidity_ok = not liq_warn
 
-    spread_ok = (spread_state not in ("HIGH", "BLOCK"))
+    # Spread: nếu không có dữ liệu bid/ask hoặc ratio -> để None (hiển thị …)
+    if spread_state is None and spread_ratio is None:
+        spread_ok = None
+    else:
+        spread_ok = (spread_state not in ("HIGH", "BLOCK"))
     tradable = (rec in ("BUY", "SELL")) and (trade_mode in ("FULL", "HALF"))
 
-    # Location (within M15 range)
+    # Location (within M15 range) -> compute position % and zone
     m15_lo = kl.get("M15_RANGE_LOW")
     m15_hi = kl.get("M15_RANGE_HIGH")
     m15_last = kl.get("M15_LAST") or entry
     loc_ok = None
-    loc_txt = "n/a"
+    loc_txt = "thiếu dữ liệu range"
     try:
         if m15_lo is not None and m15_hi is not None and m15_last is not None:
-            rng = float(m15_hi) - float(m15_lo)
-            pos = (float(m15_last) - float(m15_lo)) / max(rng, 1e-9)  # 0..1
-            if action == "BUY":
-                loc_ok = pos <= 0.40
-                loc_txt = f"pos={pos:.2f} (ưu tiên thấp/range)"
-            elif action == "SELL":
-                loc_ok = pos >= 0.60
-                loc_txt = f"pos={pos:.2f} (ưu tiên cao/range)"
-            else:
+            lo = float(m15_lo); hi = float(m15_hi); last = float(m15_last)
+            rng = hi - lo
+            if abs(rng) < 1e-9:
                 loc_ok = None
-                loc_txt = f"pos={pos:.2f}"
+                loc_txt = "range quá hẹp"
+            else:
+                pos = (last - lo) / rng  # 0..1 (có thể vượt nếu phá range)
+                pos_clamped = max(0.0, min(1.0, pos))
+                pos_pct = pos_clamped * 100.0
+
+                # Zone classification
+                if pos < 0.0:
+                    zone = "Dưới range (breakdown)"
+                elif pos > 1.0:
+                    zone = "Trên range (breakout)"
+                elif 0.20 <= pos_clamped <= 0.80:
+                    zone = "Giữa range – No trade zone"
+                elif pos_clamped < 0.20:
+                    zone = "Gần đáy range"
+                else:
+                    zone = "Gần đỉnh range"
+
+                # For checklist pass/fail:
+                # - BUY tốt nhất khi gần đáy
+                # - SELL tốt nhất khi gần đỉnh
+                if action == "BUY":
+                    loc_ok = pos_clamped <= 0.20
+                elif action == "SELL":
+                    loc_ok = pos_clamped >= 0.80
+                else:
+                    # Nếu đang CHỜ: coi location OK nếu ở sát biên (có edge), còn giữa range là không OK
+                    loc_ok = not (0.20 <= pos_clamped <= 0.80)
+
+                loc_txt = f"{zone} (pos={pos_pct:.0f}%)"
     except Exception:
-        loc_ok, loc_txt = None, "n/a"
+        loc_ok, loc_txt = None, "lỗi tính location"
 
     # Grade logic
     score_val = sd.get("score")
@@ -2415,10 +2442,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
     missing = []
     if not bias_ok: missing.append("Bias (H4/H1)")
     if tradable and not pullback_ok: missing.append("Pullback/Location")
+    if tradable and (loc_ok is False): missing.append("Location (đúng biên range)")
     if tradable and not momentum_ok: missing.append("Trigger/Momentum")
     if tradable and not confluence_ok: missing.append("Confluence (H1/H4)")
     if tradable and not liquidity_ok: missing.append("Liquidity sạch (no WARNING)")
-    if tradable and not spread_ok: missing.append("Spread ổn")
+    if tradable and (spread_ok is False): missing.append("Spread ổn")
 
     lines.append("")
     lines.append("📌 TÍN HIỆU (chuẩn hoá):")
@@ -2436,7 +2464,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append(f"2) Location: {okno(loc_ok)}  ({loc_txt})")
     lines.append(f"3) Liquidity: {okno(liquidity_ok)}  ({'WARN' if liq_warn else 'OK'})")
     lines.append(f"4) Trigger/Momentum: {okno(momentum_ok)}")
-    lines.append(f"5) Spread/Confluence: {okno(spread_ok and confluence_ok)}  (Spread={spread_state or 'n/a'})")
+        sc_ok = None if spread_ok is None else bool(spread_ok and confluence_ok)
+    spread_label = spread_state if spread_state is not None else "n/a (thiếu bid/ask)"
+    if spread_ratio is not None:
+        try:
+            spread_label = f"{spread_label} (ratio={float(spread_ratio):.2f})"
+        except Exception:
+            pass
+    lines.append(f"5) Spread/Confluence: {okno(sc_ok)}  (Spread={spread_label})")
 
     if missing:
         lines.append("Thiếu / chờ thêm:")
