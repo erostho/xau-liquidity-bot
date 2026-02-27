@@ -1,15 +1,10 @@
-# app/main.py
+# app/pro_analysis.py
 from __future__ import annotations
-import json
+from typing import List, Dict, Any, Optional, Tuple, Sequence
+import math
 import os
-import time
-import asyncio
-import logging
-from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import PlainTextResponse
-#from app.data_source import get_candles, ingest_mt5_candles
-#from app.pro_analysis import analyze_pro, format_signal
+from app.risk import calc_smart_sl_tp
+from dataclasses import dataclass
 
 
 # ---- MT5 spread helper (optional) ----
