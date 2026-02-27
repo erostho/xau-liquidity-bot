@@ -1979,7 +1979,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # =========================
 
     score3 = int(bias_ok) + int(pullback_ok) + int(momentum_ok)
-
+    major_bearish = False
 
     # HL/LH hold filter (trend must not be broken for HALF):
     # - If bias is BUY: require last M15 close >= H1_HL (close-based, ignore wicks).
