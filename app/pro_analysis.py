@@ -2018,6 +2018,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         stars = 1
 
     # if liquidity warning, cap to HALF at most (still allow observation)
+    liq_warn = ("Liquidity WARNING" in " | ".join(context_lines or []))
     if liq_warn and trade_mode == "FULL":
         trade_mode = "HALF"
         stars = min(stars, 3)
@@ -2392,7 +2393,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     pullback_ok = _bool(sd.get("pullback_ok"))
     momentum_ok = _bool(sd.get("momentum_ok"))
     confluence_ok = _bool(sd.get("confluence_ok"))
-    liq_warn = meta.get("liq_warn")
+    #liq_warn = meta.get("liq_warn")
     liq_warn = ("Liquidity WARNING" in " | ".join(sig.get("context_lines", []) or [])) or _bool(sd.get("liq_warn"))
     liquidity_ok = not liq_warn
 
