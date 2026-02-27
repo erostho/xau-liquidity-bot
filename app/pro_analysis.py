@@ -1345,7 +1345,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         return out
 
     lw = _liquidity_warning_lines(cur)
-    liq_warn = bool(lw)
     if lw:
         context_lines.extend(lw)
 
@@ -1379,12 +1378,12 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 
     if spring_buy.get("ok"):
         vtxt = " +VOL" if spring_buy.get("vol_ok") else ""
-        liquidity_lines.append(f"🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through.")
+        liquidity_lines.append("🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through.")
         score += 1
 
     if spring_sell.get("ok"):
         vtxt = " +VOL" if spring_sell.get("vol_ok") else ""
-        liquidity_lines.append(f"🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through.")
+        liquidity_lines.append("🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through.")
         score += 1
 
     if not liquidity_lines:
@@ -2001,7 +2000,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     major_bos_level = h1_struct.get("hh") if bias_side == "BUY" else h1_struct.get("ll")
     try:
         major_bos_confirmed = (major_bos_level is not None) and (
-            (last_close > float(major_bos_level)) if bias_side == "BUY" else (last_close < float(major_bos_level))
+            (m15_last_close > float(major_bos_level)) if bias_side == "BUY" else (m15_last_close < float(major_bos_level))
         )
     except Exception:
         major_bos_confirmed = False
@@ -2429,41 +2428,98 @@ def format_signal(sig: Dict[str, Any]) -> str:
     except Exception:
         loc_ok, loc_txt = None, "lỗi tính location"
 
-    # Grade logic
-    score_val = sd.get("score")
-    score_val = int(score_val) if score_val is not None else None
+    # ---- 5 Pillars (Pro discretionary) ----
+    # Bias: ưu tiên dùng confluence_ok (H4/H1 đồng pha) nếu có, fallback bias_ok
+    bias_final = bool(bias_ok) if confluence_ok is None else bool(bias_ok and bool(confluence_ok))
 
-    grade = "B"
-    if not tradable:
-        grade = "B"
-    else:
-        if trade_mode == "FULL" and score_val == 3 and liquidity_ok and spread_state != "BLOCK":
-            grade = "A+"
-        elif score_val is not None and score_val >= 2 and liquidity_ok and spread_state != "BLOCK":
-            grade = "A"
-        else:
-            grade = "B"
+    # Confirmation: dùng trigger/momentum hiện có (BOS/impulse proxy)
+    confirmation_ok = bool(momentum_ok)
 
-    # Priority hint (based on bias)
-    if bias_ok:
+    # Expansion potential: có "room" để chạy về phía mục tiêu gần nhất (biên range đối diện)
+    exp_ok = None
+    exp_txt = "n/a"
+    try:
+        if pos_pct_val is not None and range_width and range_width > 1e-9 and m15_last is not None:
+            last = float(m15_last)
+            lo = float(m15_lo) if m15_lo is not None else None
+            hi = float(m15_hi) if m15_hi is not None else None
+            if lo is not None and hi is not None:
+                # hướng ưu tiên theo recommendation, nếu CHỜ thì theo bias_final (bull/bear)
+                side = rec if rec in ("BUY", "SELL") else None
+                if side is None:
+                    # suy ra từ tag/structure: bullish -> BUY, bearish -> SELL
+                    tag_join = f"{h4_tag} {h1_tag} {m15_tag}".upper()
+                    if "BULL" in tag_join or "HH" in tag_join or "HL" in tag_join:
+                        side = "BUY"
+                    elif "BEAR" in tag_join or "LL" in tag_join or "LH" in tag_join:
+                        side = "SELL"
+                if side == "BUY":
+                    room = hi - last
+                    room_pct = max(0.0, room / (hi - lo)) * 100.0
+                    exp_ok = room_pct >= 30.0
+                    exp_txt = f"Room lên biên trên ~{room_pct:.0f}% range"
+                elif side == "SELL":
+                    room = last - lo
+                    room_pct = max(0.0, room / (hi - lo)) * 100.0
+                    exp_ok = room_pct >= 30.0
+                    exp_txt = f"Room xuống biên dưới ~{room_pct:.0f}% range"
+                else:
+                    exp_ok = None
+                    exp_txt = "Chưa có hướng ưu tiên"
+    except Exception:
+        exp_ok, exp_txt = None, "lỗi tính expansion"
+
+    # ---- Grade (B / A / A+) ----
+    # Chấm theo 5 yếu tố: Bias, Location, Liquidity, Confirmation, Expansion
+    pillars = [
+        ("Bias (H4/H1)", bias_final),
+        ("Location", loc_ok),
+        ("Liquidity", liquidity_ok),
+        ("Confirmation", confirmation_ok),
+        ("Expansion", exp_ok),
+    ]
+    passed = sum(1 for _, ok in pillars if ok is True)
+
+    # A+ = 5/5, A = 4/5, còn lại B
+    grade = "A+" if passed >= 5 else ("A" if passed >= 4 else "B")
+    tradable = (grade in ("A", "A+")) and (rec in ("BUY", "SELL"))
+
+    # Priority hint
+    if bias_final:
         priority = f"Ưu tiên chờ {rec}" if rec in ("BUY", "SELL") else "Ưu tiên CHỜ theo bias"
     else:
         priority = "Ưu tiên CHỜ (bias chưa rõ)"
 
-    # What is missing?
-    missing = []
-    if not bias_ok: missing.append("Bias (H4/H1)")
-    if tradable and not pullback_ok: missing.append("Pullback/Location")
-    if tradable and (loc_ok is False): missing.append("Location (đúng biên range)")
-    if tradable and not momentum_ok: missing.append("Trigger/Momentum")
-    if tradable and not confluence_ok: missing.append("Confluence (H1/H4)")
-    if tradable and not liquidity_ok: missing.append("Liquidity sạch (no WARNING)")
-    if tradable and (spread_ok is False): missing.append("Spread ổn")
+    # Context (không chấm điểm) -> cảnh báo ngắn gọn
+    ctx_warn = []
+    tag_up = f"{h4_tag} {h1_tag} {m15_tag}".upper()
+    if "TRANSITION" in tag_up:
+        ctx_warn.append("Context: TRANSITION (dễ chop/false break)")
+    if liq_warn:
+        ctx_warn.append("Context: Liquidity WARNING / post-sweep")
+    if rec == "CHỜ":
+        ctx_warn.append("Context: Range/transition – ưu tiên quan sát")
+
+    # Missing items (chỉ dựa trên 5 pillars)
+    missing: List[str] = []
+    for name, ok in pillars:
+        if ok is False:
+            if name == "Confirmation":
+                missing.append("Confirmation (BOS/CHOCH/impulse rõ)")
+            elif name == "Expansion":
+                missing.append("Expansion (còn room chạy/clear target)")
+            else:
+                missing.append(name)
 
     lines.append("")
     lines.append("📌 TÍN HIỆU (chuẩn hoá):")
     lines.append(f"- {priority}")
     lines.append(f"- Grade: <b>{grade}</b>  | Trade: {('YES' if tradable else 'NO')}")
+
+    if ctx_warn:
+        lines.append("Context:")
+        for w in ctx_warn[:3]:
+            lines.append(f"- {w}")
 
     # 5-checklist
     def okno(x):
@@ -2472,18 +2528,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
         return "✅" if x else "❌"
 
     lines.append("Checklist (5):")
-    lines.append(f"1) Bias (H4/H1): {okno(bias_ok)}  ({h4_tag} / {h1_tag})")
+    lines.append(f"1) Bias (H4/H1): {okno(bias_final)}  ({h4_tag} / {h1_tag})")
     lines.append(f"2) Location: {okno(loc_ok)}  ({loc_txt})")
     lines.append(f"3) Liquidity: {okno(liquidity_ok)}  ({'WARN' if liq_warn else 'OK'})")
-    lines.append(f"4) Trigger/Momentum: {okno(momentum_ok)}")
-    sc_ok = None if spread_ok is None else bool(spread_ok and confluence_ok)
-    spread_label = spread_state if spread_state is not None else "n/a (thiếu bid/ask)"
-    if spread_ratio is not None:
-        try:
-            spread_label = f"{spread_label} (ratio={float(spread_ratio):.2f})"
-        except Exception:
-            pass
-    lines.append(f"5) Spread/Confluence: {okno(sc_ok)}  (Spread={spread_label})")
+    lines.append(f"4) Confirmation: {okno(confirmation_ok)}")
+    lines.append(f"5) Expansion Potential: {okno(exp_ok)}  ({exp_txt})")
 
     if missing:
         lines.append("Thiếu / chờ thêm:")
@@ -2491,5 +2540,4 @@ def format_signal(sig: Dict[str, Any]) -> str:
             lines.append(f"- {x}")
     else:
         lines.append("✅ Đủ điều kiện theo grade hiện tại.")
-
     return "\n".join(lines)
