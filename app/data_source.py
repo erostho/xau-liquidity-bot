@@ -4,10 +4,20 @@ import time
 import logging
 import requests
 from typing import Dict, Any, List, Tuple, Optional
-from app.pro_analysis import Candle
+from dataclasses import dataclass   # <-- thêm dòng này
 
 logger = logging.getLogger("uvicorn.error")
 
+# --- Candle model local to avoid circular import ---
+@dataclass
+class Candle:
+    ts: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+    spread: float = 0.0
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 
 # MT5 cache in-memory (Render process memory)
