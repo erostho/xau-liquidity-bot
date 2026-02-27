@@ -2464,7 +2464,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append(f"2) Location: {okno(loc_ok)}  ({loc_txt})")
     lines.append(f"3) Liquidity: {okno(liquidity_ok)}  ({'WARN' if liq_warn else 'OK'})")
     lines.append(f"4) Trigger/Momentum: {okno(momentum_ok)}")
-        sc_ok = None if spread_ok is None else bool(spread_ok and confluence_ok)
+    sc_ok = None if spread_ok is None else bool(spread_ok and confluence_ok)
     spread_label = spread_state if spread_state is not None else "n/a (thiếu bid/ask)"
     if spread_ratio is not None:
         try:
