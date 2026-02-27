@@ -2241,159 +2241,295 @@ def _safe_float(x):
 
 
 def format_signal(sig: Dict[str, Any]) -> str:
-    """
-    Render Telegram message from `sig` (dict returned by analyze_pro).
-    Notes:
-      - tolerant to missing keys
-      - shows candle data source (MT5 vs TWELVEDATA) if provided in sig["meta"]["data_source"]
-    """
     symbol = sig.get("symbol", "XAUUSD")
     tf = sig.get("tf", "M15")
-    session = sig.get("session", "") or ""
-    rec = sig.get("recommendation", "CHỜ") or "CHỜ"
-    stars = int(sig.get("stars", 1) or 1)
+    session = sig.get("session", "")
+    rec = sig.get("recommendation", "CHỜ")
+    action = "BUY" if rec=="BUY" else "SELL" if rec=="SELL" else "CHỜ"
+    stars = int(sig.get("stars", 1))
     stars_txt = "⭐️" * max(1, min(5, stars))
 
     meta = sig.get("meta", {}) or {}
-    st = meta.get("structure", {}) or {}
-    kl = meta.get("key_levels", {}) or {}
-    sd = meta.get("score_detail", {}) or {}
+    sd = (meta.get("score_detail", {}) or {})
+    trade_mode = (sig.get("trade_mode") or "").upper()
 
-    # helpers
     def nf2(x):
+        if x is None:
+            return "..."
         try:
             return f"{float(x):.2f}"
         except Exception:
             return "..."
 
-    def ds_text():
-        ds = meta.get("data_source")
-        if not ds:
-            return None
-        if isinstance(ds, str):
-            return ds
-        if isinstance(ds, dict):
-            # normalize keys order
-            keys = ["15m", "30m", "1h", "4h", "M15", "M30", "H1", "H4"]
-            items = []
-            for k in keys:
-                if k in ds and ds[k]:
-                    items.append(f"{k}={ds[k]}")
-            # include any extra keys
-            for k,v in ds.items():
-                if k not in keys and v:
-                    items.append(f"{k}={v}")
-            if not items:
-                return None
-            # if all equal -> compress
-            vals = [x.split("=",1)[1] for x in items if "=" in x]
-            if vals and all(v == vals[0] for v in vals):
-                return vals[0]
-            return ", ".join(items)
-        return None
+    # Structure + key levels
+    st = meta.get("structure", {}) or {}
+    kl = meta.get("key_levels", {}) or {}
+
+    h4_tag = st.get("H4", "n/a")
+    h1_tag = st.get("H1", "n/a")
+    m15_tag = st.get("M15", "n/a")
+
+    # Spread
+    sp = meta.get("spread", {}) or {}
+    spread_state = sp.get("state")
+    spread_ratio = sp.get("ratio")
+
+    # Reversal warnings
+    revs = meta.get("reversal_warnings", []) or []
+    liq_lines = sig.get("liquidity_lines", []) or []
+    qual_lines = sig.get("quality_lines", []) or []
+
+    entry = sig.get("entry")
+    sl = sig.get("sl")
+    tp1 = sig.get("tp1")
+    tp2 = sig.get("tp2")
 
     lines: List[str] = []
     head = f"📊 {symbol} | {tf}"
     if session:
         head += f" | {session}"
     lines.append(head)
-    ds = ds_text()
-    if ds:
-        lines.append(f"Source: {ds}")
 
-    # Recommendation headline
-    trade_mode = (sig.get("trade_mode") or "").upper()
+    # Recommendation line
     mode_txt = f" | Mode: {trade_mode}" if trade_mode in ("FULL", "HALF") else ""
     score_txt = ""
-    if sd.get("score") is not None:
-        score_txt = f" ({sd.get('score')}/{sd.get('max', 4) or 4})"
+    if trade_mode in ("FULL", "HALF") and sd.get("score") is not None:
+        score_txt = f" ({sd.get('score')}/3)"
     lines.append(f"{stars_txt}  <b>{rec}</b>{mode_txt}{score_txt}")
 
-    # Structure
-    h4_tag = st.get("H4", "n/a")
-    h1_tag = st.get("H1", "n/a")
-    m15_tag = st.get("M15", "n/a")
+    # Structures
     lines.append(f"Structure (Major): H4 {h4_tag} | H1 {h1_tag}")
     lines.append(f"Structure (Minor): M15 {m15_tag}")
 
-    # Key levels
+    where = meta.get("where")
+    wait_for = meta.get("wait_for")
+    if where:
+        lines.append(f"Now: {where}")
+    if wait_for:
+        lines.append(f"Wait: {wait_for}")
+
+
+    # Key levels (prices)
     lines.append("Key levels:")
     lines.append("Major (H4/H1):")
-    for k, label in [("H1_HH","H1 HH"), ("H1_HL","H1 HL (trend giữ)"), ("H1_LH","H1 LH"), ("H1_LL","H1 LL")]:
-        if kl.get(k) is not None:
-            lines.append(f"- {label}: {nf2(kl.get(k))}")
+    if kl.get("H1_HH") is not None:
+        lines.append(f"- H1 HH: {nf2(kl.get('H1_HH'))}")
+    if kl.get("H1_HL") is not None:
+        lines.append(f"- H1 HL (trend giữ): {nf2(kl.get('H1_HL'))}")
+    if kl.get("H1_LH") is not None:
+        lines.append(f"- H1 LH: {nf2(kl.get('H1_LH'))}")
+    if kl.get("H1_LL") is not None:
+        lines.append(f"- H1 LL: {nf2(kl.get('H1_LL'))}")
 
-    lo = kl.get("M15_RANGE_LO")
-    hi = kl.get("M15_RANGE_HI")
-    if lo is not None and hi is not None:
-        lines.append("Minor (M15):")
-        lines.append(f"- M15 Range: {nf2(lo)} – {nf2(hi)}")
+    lines.append("Minor (M15):")
+    if kl.get("M15_RANGE_LOW") is not None and kl.get("M15_RANGE_HIGH") is not None:
+        lines.append(f"- M15 Range: {nf2(kl.get('M15_RANGE_LOW'))} – {nf2(kl.get('M15_RANGE_HIGH'))}")
+    if kl.get("M15_LAST") is not None:
+        lines.append(f"- M15 Last close: {nf2(kl.get('M15_LAST'))}")
+    if kl.get("M15_BOS") is not None:
+        lines.append(f"- M15 BOS level: {nf2(kl.get('M15_BOS'))}")
+    if kl.get("M15_PB_EXT") is not None:
+        lines.append(f"- M15 pullback extreme: {nf2(kl.get('M15_PB_EXT'))}")
 
-    # Plan (if any)
-    entry = sig.get("entry")
-    sl = sig.get("sl")
-    tp1 = sig.get("tp1")
-    tp2 = sig.get("tp2")
-    if entry is not None:
+    show_plan = bool(sig.get("show_trade_plan", True))
+    if show_plan:
         lines.append(f"Entry: {nf2(entry)}")
-    else:
-        lines.append("Entry: ...")
-    lines.append(f"SL: {nf2(sl)} | TP1: {nf2(tp1)} | TP2: {nf2(tp2)}")
+        lines.append(f"SL: {nf2(sl)} | TP1: {nf2(tp1)} | TP2: {nf2(tp2)}")
 
-    # Liquidity note (human-readable, not scored)
-    liq_lines = sig.get("liquidity_lines", []) or []
+    # SL focus: watch the level that matches the structure you're trading.
+    # - FULL  => major (H1) invalidation
+    # - HALF  => minor (M15) invalidation
+    sl_focus_level = None
+    sl_focus_label = None
+    if trade_mode == "FULL":
+        if action == "BUY":
+            sl_focus_level = kl.get("H1_HL") or kl.get("H1_LL")
+            sl_focus_label = "H1 HL (major)"
+        elif action == "SELL":
+            sl_focus_level = kl.get("H1_LH") or kl.get("H1_HH")
+            sl_focus_label = "H1 LH (major)"
+    elif trade_mode == "HALF":
+        if action in ("BUY", "SELL"):
+            sl_focus_level = kl.get("M15_PB_EXT") or kl.get("M15_RANGE_LOW") or kl.get("M15_RANGE_HIGH")
+            sl_focus_label = "M15 pullback extreme (minor)"
+
+    if sl_focus_level is not None and sl_focus_label:
+        lines.append(f"SL focus ({trade_mode}): {sl_focus_label} @ {nf2(sl_focus_level)}")
+
+    # Quick reasons (score detail)
+    if trade_mode in ("FULL", "HALF") and sd:
+        lines.append("")
+        lines.append(f"Score detail: Bias:{sd.get('bias_ok')} PB:{sd.get('pullback_ok')} MOM:{sd.get('momentum_ok')} | Confluence:{sd.get('confluence_ok')}")
+
+    # Spread info
+    if spread_state in ("HIGH", "BLOCK"):
+        rr = f"x{float(spread_ratio):.2f}" if spread_ratio is not None else ""
+        lines.append(f"⚠️ Spread: <b>{spread_state}</b> {rr}".strip())
+
+    # Liquidity warnings (keep short)
     if liq_lines:
+        # keep only top 2 lines
         lines.append("")
         lines.append("Liquidity:")
-        for x in liq_lines[:3]:
-            lines.append(f"- {x}")
+        for s in liq_lines[:2]:
+            lines.append(f"- {s}")
 
-    # Normalized signal block
-    checklist = (meta.get("checklist") or meta.get("pillars") or {}) or {}
-    missing = meta.get("missing", []) or []
+    # Reversal warnings (short)
+    if revs:
+        lines.append("⚠️ Reversal watch:")
+        for r in revs[:2]:
+            lines.append(f"- {r}")
+
+    # =========================
+    # Signal block (B / A / A+)
+    # =========================
+    def _bool(v):
+        return bool(v) if v is not None else False
+
+    # derive core checks
+    bias_ok = _bool(sd.get("bias_ok"))
+    pullback_ok = _bool(sd.get("pullback_ok"))
+    momentum_ok = _bool(sd.get("momentum_ok"))
+    confluence_ok = _bool(sd.get("confluence_ok"))
+    liq_warn = ("Liquidity WARNING" in " | ".join(sig.get("context_lines", []) or [])) or _bool(sd.get("liq_warn"))
+    liquidity_ok = not liq_warn
+
+    # Spread: nếu không có dữ liệu bid/ask hoặc ratio -> để None (hiển thị …)
+    if spread_state is None and spread_ratio is None:
+        spread_ok = None
+    else:
+        spread_ok = (spread_state not in ("HIGH", "BLOCK"))
+    tradable = (rec in ("BUY", "SELL")) and (trade_mode in ("FULL", "HALF"))
+
+    
+    # Location (within M15 range) -> compute position % and zone
+    m15_lo = kl.get("M15_RANGE_LOW")
+    m15_hi = kl.get("M15_RANGE_HIGH")
+
+    # Prefer current mid price from MT5 (if available), fallback to last close
+    sp = meta.get("spread", {}) or {}
+    m15_last = kl.get("M15_LAST") or entry or sp.get("mid")
+
+    loc_ok = None
+    loc_txt = "thiếu dữ liệu range"
+    try:
+        if m15_lo is not None and m15_hi is not None:
+            lo = float(m15_lo); hi = float(m15_hi)
+            rng = hi - lo
+            if abs(rng) < 1e-9:
+                loc_ok = None
+                loc_txt = "range quá hẹp"
+            else:
+                # If price is missing, use range-mid but mark it as approximate
+                approx = False
+                if m15_last is None:
+                    last = (hi + lo) / 2.0
+                    approx = True
+                else:
+                    last = _safe_float(m15_last)
+
+                pos = (last - lo) / rng  # 0..1 (có thể vượt nếu phá range)
+                pos_clamped = max(0.0, min(1.0, pos))
+                pos_pct = pos_clamped * 100.0
+
+                # Zone classification
+                if pos < 0.0:
+                    zone = "Dưới range (breakdown)"
+                elif pos > 1.0:
+                    zone = "Trên range (breakout)"
+                elif 0.20 <= pos_clamped <= 0.80:
+                    zone = "Giữa range – No trade zone"
+                elif pos_clamped < 0.20:
+                    zone = "Gần đáy range"
+                else:
+                    zone = "Gần đỉnh range"
+
+                # For checklist pass/fail:
+                if action == "BUY":
+                    loc_ok = pos_clamped <= 0.20
+                elif action == "SELL":
+                    loc_ok = pos_clamped >= 0.80
+                else:
+                    loc_ok = not (0.20 <= pos_clamped <= 0.80)
+
+                suffix = " (ước lượng)" if approx else ""
+                loc_txt = f"{zone} (pos={pos_pct:.0f}%)" + suffix
+    except Exception:
+        loc_ok, loc_txt = None, "lỗi tính location"
+
+    # ---- 5 Pillars (Pro discretionary) ----
+    # Bias: ưu tiên dùng confluence_ok (H4/H1 đồng pha) nếu có, fallback bias_ok
+    bias_final = bool(bias_ok) if confluence_ok is None else bool(bias_ok and bool(confluence_ok))
+
+    # Confirmation: dùng trigger/momentum hiện có (BOS/impulse proxy)
+    confirmation_ok = bool(momentum_ok)
+
+
+    # ---- Grade (B / A / A+) ----
+    # Chấm theo 4 yếu tố: Bias, Location, Liquidity, Confirmation
+    pillars = [
+        ("Bias (H4/H1)", bias_final),
+        ("Location", loc_ok),
+        ("Liquidity", liquidity_ok),
+        ("Confirmation", confirmation_ok),
+    ]
+    passed = sum(1 for _, ok in pillars if ok is True)
+
+    # A+ = 4/4, A = 3/4, còn lại B
+    grade = "A+" if passed >= 4 else ("A" if passed >= 3 else "B")
+    tradable = (grade in ("A", "A+")) and (rec in ("BUY", "SELL"))
+
+    # Priority hint
+    if bias_final:
+        priority = f"Ưu tiên chờ {rec}" if rec in ("BUY", "SELL") else "Ưu tiên CHỜ theo bias"
+    else:
+        priority = "Ưu tiên CHỜ (bias chưa rõ)"
+
+    # Context (không chấm điểm) -> cảnh báo ngắn gọn
+    ctx_warn = []
+    tag_up = f"{h4_tag} {h1_tag} {m15_tag}".upper()
+    if "TRANSITION" in tag_up:
+        ctx_warn.append("Context: TRANSITION (dễ chop/false break)")
+    if liq_warn:
+        ctx_warn.append("Context: Liquidity WARNING / post-sweep")
+    if rec == "CHỜ":
+        ctx_warn.append("Context: Range/transition – ưu tiên quan sát")
+
+    # Missing items (chỉ dựa trên 4 pillars)
+    missing: List[str] = []
+    for name, ok in pillars:
+        if ok is False:
+            if name == "Confirmation":
+                missing.append("Confirmation (BOS/CHOCH/impulse rõ)")
+            else:
+                missing.append(name)
 
     lines.append("")
-    lines.append("📌 <b>TÍN HIỆU (chuẩn hoá)</b>:")
-    pref = meta.get("preference") or meta.get("bias_preference")
-    if pref:
-        lines.append(f"- Ưu tiên {pref}")
-    grade = sig.get("grade") or meta.get("grade") or "B"
-    trade_ok = sig.get("trade_ok")
-    if trade_ok is None:
-        trade_ok = meta.get("trade_ok")
-    trade_txt = "YES" if trade_ok else "NO"
-    lines.append(f"- Grade: {grade} | Trade: {trade_txt}")
+    lines.append("📌 TÍN HIỆU (chuẩn hoá):")
+    lines.append(f"- {priority}")
+    lines.append(f"- Grade: <b>{grade}</b>  | Trade: {('YES' if tradable else 'NO')}")
 
-    # Context (not scored)
-    ctx_lines = meta.get("context_lines", []) or []
-    if ctx_lines:
+    if ctx_warn:
         lines.append("Context:")
-        for x in ctx_lines[:3]:
-            lines.append(f"- {x}")
+        for w in ctx_warn[:3]:
+            lines.append(f"- {w}")
 
-    # Checklist
+    # 5-checklist
+    def okno(x):
+        if x is None:
+            return "…"
+        return "✅" if x else "❌"
+
     lines.append("Checklist (4):")
-    order = [
-        ("bias","Bias (H4/H1)"),
-        ("location","Location"),
-        ("liquidity","Liquidity"),
-        ("confirmation","Confirmation"),
-    ]
-    idx = 1
-    for key, label in order:
-        item = checklist.get(key) or {}
-        ok = item.get("ok")
-        note = item.get("note") or item.get("detail") or ""
-        mark = "✅" if ok else "❌"
-        if ok is None:
-            mark = "…"
-        lines.append(f"{idx}) {label}: {mark}" + (f" ({note})" if note else ""))
-        idx += 1
+    lines.append(f"1) Bias (H4/H1): {okno(bias_final)}  ({h4_tag} / {h1_tag})")
+    lines.append(f"2) Location: {okno(loc_ok)}  ({loc_txt})")
+    lines.append(f"3) Liquidity: {okno(liquidity_ok)}  ({'WARN' if liq_warn else 'OK'})")
+    lines.append(f"4) Confirmation: {okno(confirmation_ok)}")
 
-    # Missing / wait-for
     if missing:
         lines.append("Thiếu / chờ thêm:")
         for x in missing[:6]:
             lines.append(f"- {x}")
-
+    else:
+        lines.append("✅ Đủ điều kiện theo grade hiện tại.")
     return "\n".join(lines)
