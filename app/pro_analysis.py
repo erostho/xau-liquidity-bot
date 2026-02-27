@@ -2252,7 +2252,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     meta = sig.get("meta", {}) or {}
     sd = (meta.get("score_detail", {}) or {})
     trade_mode = (sig.get("trade_mode") or "").upper()
-
+    data_source = meta.get("data_source") or sig.get("data_source")
     def nf2(x):
         if x is None:
             return "..."
@@ -2289,7 +2289,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if session:
         head += f" | {session}"
     lines.append(head)
-
+    if data_source:
+        lines.append(f"📡 Data: {data_source}")
     # Recommendation line
     mode_txt = f" | Mode: {trade_mode}" if trade_mode in ("FULL", "HALF") else ""
     score_txt = ""
