@@ -6,6 +6,7 @@ import os
 from app.risk import calc_smart_sl_tp
 from dataclasses import dataclass
 import logging
+from fastapi import FastAPI
 # ---- MT5 spread helper (optional) ----
 def _mt5_symbol(sym: str) -> str:
     """
