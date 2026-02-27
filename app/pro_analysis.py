@@ -2211,6 +2211,35 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # =========================
     # Formatter (MUST be named format_signal for main.py import)
     # =========================
+
+def _safe_float(x):
+    """Convert various numeric formats to float safely.
+    Supports strings like '67,123.45' or '67.123,45'. Returns None if cannot parse.
+    """
+    if x is None:
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    try:
+        s = str(x).strip()
+        if not s:
+            return None
+        # handle formats with both '.' and ','
+        if '.' in s and ',' in s:
+            # if comma appears after dot => likely decimal comma, dot thousands
+            if s.rfind(',') > s.rfind('.'):
+                s = s.replace('.', '').replace(',', '.')
+            else:
+                s = s.replace(',', '')
+        else:
+            # only comma: could be decimal comma
+            if ',' in s and '.' not in s:
+                s = s.replace(',', '.')
+        return float(s)
+    except Exception:
+        return None
+
+
 def format_signal(sig: Dict[str, Any]) -> str:
     symbol = sig.get("symbol", "XAUUSD")
     tf = sig.get("tf", "M15")
@@ -2397,7 +2426,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
                     last = (hi + lo) / 2.0
                     approx = True
                 else:
-                    last = float(m15_last)
+                    last = _safe_float(m15_last)
 
                 pos = (last - lo) / rng  # 0..1 (có thể vượt nếu phá range)
                 pos_clamped = max(0.0, min(1.0, pos))
@@ -2440,9 +2469,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
     exp_txt = "n/a"
     try:
         if pos_pct_val is not None and m15_last is not None:
-            last = float(m15_last)
-            lo = float(m15_lo) if m15_lo is not None else None
-            hi = float(m15_hi) if m15_hi is not None else None
+            last = _safe_float(m15_last)
+            if last is None:
+                raise ValueError('m15_last not numeric')
+            lo = _safe_float(m15_lo)
+            hi = _safe_float(m15_hi)
             if lo is not None and hi is not None:
                 width = hi - lo
                 # hướng ưu tiên theo recommendation, nếu CHỜ thì theo bias_final (bull/bear)
