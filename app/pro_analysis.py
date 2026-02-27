@@ -2464,56 +2464,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # Confirmation: dùng trigger/momentum hiện có (BOS/impulse proxy)
     confirmation_ok = bool(momentum_ok)
 
-    # Expansion potential: có "room" để chạy về phía mục tiêu gần nhất (biên range đối diện)
-    exp_ok = None
-    exp_txt = "n/a"
-    try:
-        if pos_pct_val is not None and m15_last is not None:
-            last = _safe_float(m15_last)
-            if last is None:
-                raise ValueError('m15_last not numeric')
-            lo = _safe_float(m15_lo)
-            hi = _safe_float(m15_hi)
-            if lo is not None and hi is not None:
-                width = hi - lo
-                # hướng ưu tiên theo recommendation, nếu CHỜ thì theo bias_final (bull/bear)
-                side = rec if rec in ("BUY", "SELL") else None
-                if side is None:
-                    # suy ra từ tag/structure: bullish -> BUY, bearish -> SELL
-                    tag_join = f"{h4_tag} {h1_tag} {m15_tag}".upper()
-                    if "BULL" in tag_join or "HH" in tag_join or "HL" in tag_join:
-                        side = "BUY"
-                    elif "BEAR" in tag_join or "LL" in tag_join or "LH" in tag_join:
-                        side = "SELL"
-                if side == "BUY":
-                    room = hi - last
-                    room_pct = max(0.0, room / (width if width>1e-9 else 1e-9)) * 100.0
-                    exp_ok = room_pct >= 30.0
-                    exp_txt = f"Room lên biên trên ~{room_pct:.0f}% range"
-                elif side == "SELL":
-                    room = last - lo
-                    room_pct = max(0.0, room / (width if width>1e-9 else 1e-9)) * 100.0
-                    exp_ok = room_pct >= 30.0
-                    exp_txt = f"Room xuống biên dưới ~{room_pct:.0f}% range"
-                else:
-                    exp_ok = None
-                    exp_txt = "Chưa có hướng ưu tiên"
-    except Exception:
-        exp_ok, exp_txt = None, "lỗi tính expansion"
 
     # ---- Grade (B / A / A+) ----
-    # Chấm theo 5 yếu tố: Bias, Location, Liquidity, Confirmation, Expansion
+    # Chấm theo 4 yếu tố: Bias, Location, Liquidity, Confirmation
     pillars = [
         ("Bias (H4/H1)", bias_final),
         ("Location", loc_ok),
         ("Liquidity", liquidity_ok),
         ("Confirmation", confirmation_ok),
-        ("Expansion", exp_ok),
     ]
     passed = sum(1 for _, ok in pillars if ok is True)
 
-    # A+ = 5/5, A = 4/5, còn lại B
-    grade = "A+" if passed >= 5 else ("A" if passed >= 4 else "B")
+    # A+ = 4/4, A = 3/4, còn lại B
+    grade = "A+" if passed >= 4 else ("A" if passed >= 3 else "B")
     tradable = (grade in ("A", "A+")) and (rec in ("BUY", "SELL"))
 
     # Priority hint
@@ -2532,14 +2495,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if rec == "CHỜ":
         ctx_warn.append("Context: Range/transition – ưu tiên quan sát")
 
-    # Missing items (chỉ dựa trên 5 pillars)
+    # Missing items (chỉ dựa trên 4 pillars)
     missing: List[str] = []
     for name, ok in pillars:
         if ok is False:
             if name == "Confirmation":
                 missing.append("Confirmation (BOS/CHOCH/impulse rõ)")
-            elif name == "Expansion":
-                missing.append("Expansion (còn room chạy/clear target)")
             else:
                 missing.append(name)
 
@@ -2559,12 +2520,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
             return "…"
         return "✅" if x else "❌"
 
-    lines.append("Checklist (5):")
+    lines.append("Checklist (4):")
     lines.append(f"1) Bias (H4/H1): {okno(bias_final)}  ({h4_tag} / {h1_tag})")
     lines.append(f"2) Location: {okno(loc_ok)}  ({loc_txt})")
     lines.append(f"3) Liquidity: {okno(liquidity_ok)}  ({'WARN' if liq_warn else 'OK'})")
     lines.append(f"4) Confirmation: {okno(confirmation_ok)}")
-    lines.append(f"5) Expansion Potential: {okno(exp_ok)}  ({exp_txt})")
 
     if missing:
         lines.append("Thiếu / chờ thêm:")
