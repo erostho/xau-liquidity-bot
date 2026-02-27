@@ -2216,6 +2216,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     tf = sig.get("tf", "M15")
     session = sig.get("session", "")
     rec = sig.get("recommendation", "CHỜ")
+    action = "BUY" if rec=="BUY" else "SELL" if rec=="SELL" else "CHỜ"
     stars = int(sig.get("stars", 1))
     stars_txt = "⭐️" * max(1, min(5, stars))
 
@@ -2350,11 +2351,98 @@ def format_signal(sig: Dict[str, Any]) -> str:
         for r in revs[:2]:
             lines.append(f"- {r}")
 
-    # Quality (short)
-    if qual_lines:
-        lines.append("")
-        lines.append("Setup quality:")
-        for s in qual_lines[:2]:
-            lines.append(f"- {s}")
+    # =========================
+    # Signal block (B / A / A+)
+    # =========================
+    def _bool(v):
+        return bool(v) if v is not None else False
+
+    # derive core checks
+    bias_ok = _bool(sd.get("bias_ok"))
+    pullback_ok = _bool(sd.get("pullback_ok"))
+    momentum_ok = _bool(sd.get("momentum_ok"))
+    confluence_ok = _bool(sd.get("confluence_ok"))
+    liq_warn = ("Liquidity WARNING" in " | ".join(sig.get("context_lines", []) or [])) or _bool(sd.get("liq_warn"))
+    liquidity_ok = not liq_warn
+
+    spread_ok = (spread_state not in ("HIGH", "BLOCK"))
+    tradable = (rec in ("BUY", "SELL")) and (trade_mode in ("FULL", "HALF"))
+
+    # Location (within M15 range)
+    m15_lo = kl.get("M15_RANGE_LOW")
+    m15_hi = kl.get("M15_RANGE_HIGH")
+    m15_last = kl.get("M15_LAST") or entry
+    loc_ok = None
+    loc_txt = "n/a"
+    try:
+        if m15_lo is not None and m15_hi is not None and m15_last is not None:
+            rng = float(m15_hi) - float(m15_lo)
+            pos = (float(m15_last) - float(m15_lo)) / max(rng, 1e-9)  # 0..1
+            if action == "BUY":
+                loc_ok = pos <= 0.40
+                loc_txt = f"pos={pos:.2f} (ưu tiên thấp/range)"
+            elif action == "SELL":
+                loc_ok = pos >= 0.60
+                loc_txt = f"pos={pos:.2f} (ưu tiên cao/range)"
+            else:
+                loc_ok = None
+                loc_txt = f"pos={pos:.2f}"
+    except Exception:
+        loc_ok, loc_txt = None, "n/a"
+
+    # Grade logic
+    score_val = sd.get("score")
+    score_val = int(score_val) if score_val is not None else None
+
+    grade = "B"
+    if not tradable:
+        grade = "B"
+    else:
+        if trade_mode == "FULL" and score_val == 3 and liquidity_ok and spread_state != "BLOCK":
+            grade = "A+"
+        elif score_val is not None and score_val >= 2 and liquidity_ok and spread_state != "BLOCK":
+            grade = "A"
+        else:
+            grade = "B"
+
+    # Priority hint (based on bias)
+    if bias_ok:
+        priority = f"Ưu tiên chờ {rec}" if rec in ("BUY", "SELL") else "Ưu tiên CHỜ theo bias"
+    else:
+        priority = "Ưu tiên CHỜ (bias chưa rõ)"
+
+    # What is missing?
+    missing = []
+    if not bias_ok: missing.append("Bias (H4/H1)")
+    if tradable and not pullback_ok: missing.append("Pullback/Location")
+    if tradable and not momentum_ok: missing.append("Trigger/Momentum")
+    if tradable and not confluence_ok: missing.append("Confluence (H1/H4)")
+    if tradable and not liquidity_ok: missing.append("Liquidity sạch (no WARNING)")
+    if tradable and not spread_ok: missing.append("Spread ổn")
+
+    lines.append("")
+    lines.append("📌 TÍN HIỆU (chuẩn hoá):")
+    lines.append(f"- {priority}")
+    lines.append(f"- Grade: <b>{grade}</b>  | Trade: {('YES' if tradable else 'NO')}")
+
+    # 5-checklist
+    def okno(x):
+        if x is None:
+            return "…"
+        return "✅" if x else "❌"
+
+    lines.append("Checklist (5):")
+    lines.append(f"1) Bias (H4/H1): {okno(bias_ok)}  ({h4_tag} / {h1_tag})")
+    lines.append(f"2) Location: {okno(loc_ok)}  ({loc_txt})")
+    lines.append(f"3) Liquidity: {okno(liquidity_ok)}  ({'WARN' if liq_warn else 'OK'})")
+    lines.append(f"4) Trigger/Momentum: {okno(momentum_ok)}")
+    lines.append(f"5) Spread/Confluence: {okno(spread_ok and confluence_ok)}  (Spread={spread_state or 'n/a'})")
+
+    if missing:
+        lines.append("Thiếu / chờ thêm:")
+        for x in missing[:6]:
+            lines.append(f"- {x}")
+    else:
+        lines.append("✅ Đủ điều kiện theo grade hiện tại.")
 
     return "\n".join(lines)
