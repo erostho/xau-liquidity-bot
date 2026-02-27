@@ -4,6 +4,7 @@ import time
 import logging
 import requests
 from typing import Dict, Any, List, Tuple, Optional
+from app.pro_analysis import Candle
 from dataclasses import dataclass   # <-- thêm dòng này
 
 logger = logging.getLogger("uvicorn.error")
