@@ -2372,20 +2372,33 @@ def format_signal(sig: Dict[str, Any]) -> str:
         spread_ok = (spread_state not in ("HIGH", "BLOCK"))
     tradable = (rec in ("BUY", "SELL")) and (trade_mode in ("FULL", "HALF"))
 
+    
     # Location (within M15 range) -> compute position % and zone
     m15_lo = kl.get("M15_RANGE_LOW")
     m15_hi = kl.get("M15_RANGE_HIGH")
-    m15_last = kl.get("M15_LAST") or entry
+
+    # Prefer current mid price from MT5 (if available), fallback to last close
+    sp = meta.get("spread", {}) or {}
+    m15_last = kl.get("M15_LAST") or entry or sp.get("mid")
+
     loc_ok = None
     loc_txt = "thiếu dữ liệu range"
     try:
-        if m15_lo is not None and m15_hi is not None and m15_last is not None:
-            lo = float(m15_lo); hi = float(m15_hi); last = float(m15_last)
+        if m15_lo is not None and m15_hi is not None:
+            lo = float(m15_lo); hi = float(m15_hi)
             rng = hi - lo
             if abs(rng) < 1e-9:
                 loc_ok = None
                 loc_txt = "range quá hẹp"
             else:
+                # If price is missing, use range-mid but mark it as approximate
+                approx = False
+                if m15_last is None:
+                    last = (hi + lo) / 2.0
+                    approx = True
+                else:
+                    last = float(m15_last)
+
                 pos = (last - lo) / rng  # 0..1 (có thể vượt nếu phá range)
                 pos_clamped = max(0.0, min(1.0, pos))
                 pos_pct = pos_clamped * 100.0
@@ -2403,17 +2416,15 @@ def format_signal(sig: Dict[str, Any]) -> str:
                     zone = "Gần đỉnh range"
 
                 # For checklist pass/fail:
-                # - BUY tốt nhất khi gần đáy
-                # - SELL tốt nhất khi gần đỉnh
                 if action == "BUY":
                     loc_ok = pos_clamped <= 0.20
                 elif action == "SELL":
                     loc_ok = pos_clamped >= 0.80
                 else:
-                    # Nếu đang CHỜ: coi location OK nếu ở sát biên (có edge), còn giữa range là không OK
                     loc_ok = not (0.20 <= pos_clamped <= 0.80)
 
-                loc_txt = f"{zone} (pos={pos_pct:.0f}%)"
+                suffix = " (ước lượng)" if approx else ""
+                loc_txt = f"{zone} (pos={pos_pct:.0f}%)" + suffix
     except Exception:
         loc_ok, loc_txt = None, "lỗi tính location"
 
