@@ -24,10 +24,10 @@ TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 # key: (symbol, tf) -> {"candles": [..], "ts": unix_time}
 _MT5_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _TD_CACHE = {}  # key -> (ts_minute, candles)
-# MT5 symbol mapping (so XAU/USD can find XAUUSDm, etc.)
-MT5_SYMBOL_XAU = os.getenv("MT5_SYMBOL_XAU", "XAUUSDm", "XAUUSDc")
-MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDm", "BTCUSDc")
-MT5_SYMBOL_XAG = os.getenv("MT5_SYMBOL_XAG", "XAGUSDm", "XAGUSDc")
+# MT5 symbol mapping (so XAU/USD can find XAUUSDc, etc.)
+MT5_SYMBOL_XAU = os.getenv("MT5_SYMBOL_XAU", "XAUUSDc")
+MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDc")
+MT5_SYMBOL_XAG = os.getenv("MT5_SYMBOL_XAG", "XAGUSDc")
 # How "fresh" MT5 data must be to be trusted (seconds)
 MT5_MAX_AGE_SEC = int(os.getenv("MT5_MAX_AGE_SEC", "1200"))  # 20 minutes default
 DATA_DIR = os.getenv("DATA_DIR", "./data")
