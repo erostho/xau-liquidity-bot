@@ -813,28 +813,28 @@ async def telegram_webhook(request: Request):
                 maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
                 
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
-            # attach data source for Telegram
-            try:
-                ds = data.get("data_source")
-                if ds:
-                    sig["data_source"] = ds
-                    sig.setdefault("meta", {})["data_source"] = ds
-            except Exception:
-                pass
+                # attach data source for Telegram
+                try:
+                    ds = data.get("data_source")
+                    if ds:
+                        sig["data_source"] = ds
+                        sig.setdefault("meta", {})["data_source"] = ds
+                except Exception:
+                    pass
 
-                stars = int(sig.get("stars", 0) or 0)
-                force_send = _force_send(sig)
+                    stars = int(sig.get("stars", 0) or 0)
+                    force_send = _force_send(sig)
 
-                if force_send:
-                    prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\\n\\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
-                elif stars < MIN_STARS:
-                    # Manual 'NOW/SCAN': always send full analysis, but hide trade plan when under the star gate
-                    #sig["show_trade_plan"] = False
-                    prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\\n\\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
-                else:
-                    _send_telegram(format_signal(sig), chat_id=chat_id)
+                    if force_send:
+                        prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\\n\\n"
+                        _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                    elif stars < MIN_STARS:
+                        # Manual 'NOW/SCAN': always send full analysis, but hide trade plan when under the star gate
+                        #sig["show_trade_plan"] = False
+                        prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\\n\\n"
+                        _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                    else:
+                        _send_telegram(format_signal(sig), chat_id=chat_id)
 
             except Exception as e:
                 logger.exception("analysis failed: %s", e)
