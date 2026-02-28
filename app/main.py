@@ -169,36 +169,19 @@ def _as_list_from_get_candles(res):
     return res or []
 
 
-def _unwrap_candles_with_source(res):
-    """Return (candles_list, source_name).
-    get_candles() may return List[Candle] or (List[Candle], source_name)."""
-    if isinstance(res, tuple) and len(res) >= 2:
-        candles, src = res[0], res[1]
-        return (candles or []), (src or None)
-    return (res or []), None
+def _as_list_and_source_from_get_candles(res):
+    """Unwrap return of get_candles(): (candles, source) or candles."""
+    source = None
+    candles = res
+    if isinstance(res, tuple) and len(res) == 2:
+        candles, source = res
+    if candles is None:
+        return [], source
+    try:
+        return list(candles), source
+    except Exception:
+        return [], source
 
-def _data_source_summary(src_map: dict) -> str:
-    """Compact summary for telegram."""
-    if not src_map:
-        return ""
-    # normalize
-    clean = {k: (v or "").strip() for k, v in src_map.items() if v}
-    if not clean:
-        return ""
-    uniq = sorted(set(clean.values()))
-    if len(uniq) == 1:
-        return uniq[0]
-    # show per-tf when mixed sources
-    order = ["m15", "m30", "h1", "h4"]
-    parts = []
-    for k in order:
-        if k in clean:
-            parts.append(f"{k.upper()}={clean[k]}")
-    # add any extra keys
-    for k in clean:
-        if k not in order:
-            parts.append(f"{k.upper()}={clean[k]}")
-    return " | ".join(parts)
 def _cget(c, k, default=0.0):
     if isinstance(c, dict):
         v = c.get(k, default)
@@ -294,12 +277,20 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     entry = (float(entry_lo) + float(entry_hi)) / 2.0
 
     # 1) lấy candles (NHỚ unwrap tuple nếu get_candles trả (list, meta))
-    m15 = _as_list_from_get_candles(get_candles(symbol, "15min", limit=220))
-    m30 = _as_list_from_get_candles(get_candles(symbol, "30min", limit=220))
-    h1  = _as_list_from_get_candles(get_candles(symbol, "1h",    limit=220))
-    h4  = _as_list_from_get_candles(get_candles(symbol, "4h",    limit=220))
+    m15, src15 = _as_list_and_source_from_get_candles(get_candles(symbol, "15min", limit=220))
+    m30, src30 = _as_list_and_source_from_get_candles(get_candles(symbol, "30min", limit=220))
+    h1, src1h = _as_list_and_source_from_get_candles(get_candles(symbol, "1h", limit=220))
+    h4, src4h = _as_list_and_source_from_get_candles(get_candles(symbol, "4h", limit=220))
 
     sig = analyze_pro(symbol, m15, m30, h1, h4)
+    # attach data source for Telegram (prefer M30, else M15)
+    try:
+        ds = src30 or src15 or src1h or src4h
+        if ds:
+            sig["data_source"] = ds
+            sig.setdefault("meta", {})["data_source"] = ds
+    except Exception:
+        pass
     meta = sig.get("meta", {}) or {}
     volq = meta.get("volq", {}) or {}
     cpat = meta.get("candle", {}) or {}
@@ -514,33 +505,20 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
 
 
+#def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
+    # M15, M30, H1
+    #m15, _ = get_candles(symbol, "15min", limit)
+    #m30, _ = get_candles(symbol, "30min", limit)
+    #h1, _ = get_candles(symbol, "1h", limit)
+    #return {"m15": m15, "m30": m30, "h1": h1}
 def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, Any]:
     # M15, M30, H1, H4 (H1+H4 confluence for Bias)
-    m15_raw = get_candles(symbol, "15min", limit=limit)
-    m30_raw = get_candles(symbol, "30min", limit=limit)
-    h1_raw  = get_candles(symbol, "1h",    limit=limit)
-    h4_raw  = get_candles(symbol, "4h",    limit=limit)
-
-    m15, s15 = _unwrap_candles_with_source(m15_raw)
-    m30, s30 = _unwrap_candles_with_source(m30_raw)
-    h1,  s1  = _unwrap_candles_with_source(h1_raw)
-    h4,  s4  = _unwrap_candles_with_source(h4_raw)
-
-    return {
-        "m15": m15,
-        "m30": m30,
-        "h1": h1,
-        "h4": h4,
-        "_src": {"m15": s15, "m30": s30, "h1": s1, "h4": s4},
-    }
-
-def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
-    # M15, M30, H1, H4 (H1+H4 confluence for Bias)
-    m15 = _as_list_from_get_candles(get_candles(symbol, "15min", limit=limit))
-    m30 = _as_list_from_get_candles(get_candles(symbol, "30min", limit=limit))
-    h1  = _as_list_from_get_candles(get_candles(symbol, "1h",    limit=limit))
-    h4  = _as_list_from_get_candles(get_candles(symbol, "4h",    limit=limit))
-    return {"m15": m15, "m30": m30, "h1": h1, "h4": h4}
+    sym = normalize_symbol(symbol)
+    m15, src15 = _as_list_and_source_from_get_candles(get_candles(sym, "15min", limit=220))
+    m30, src30 = _as_list_and_source_from_get_candles(get_candles(sym, "30min", limit=220))
+    h1, src1h = _as_list_and_source_from_get_candles(get_candles(sym, "1h", limit=220))
+    h4, src4h = _as_list_and_source_from_get_candles(get_candles(sym, "4h", limit=220))
+    return {"m15": m15, "m30": m30, "h1": h1, "h4": h4, "data_source": (src30 or src15 or src1h or src4h)}
 
 def _force_send(sig: dict) -> bool:
     ctx = " | ".join(sig.get("context_lines", []) or [])
@@ -835,16 +813,14 @@ async def telegram_webhook(request: Request):
                 maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
                 
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
-                # Attach data source (MT5 vs TWELVEDATA) for telegram display
-                try:
-                    src_map = (data or {}).get("_src") or {}
-                    ds_sum = _data_source_summary(src_map)
-                    meta = sig.setdefault("meta", {})
-                    if ds_sum:
-                        meta["data_source"] = ds_sum
-                        meta["data_source_map"] = src_map
-                except Exception:
-                    pass
+            # attach data source for Telegram
+            try:
+                ds = data.get("data_source")
+                if ds:
+                    sig["data_source"] = ds
+                    sig.setdefault("meta", {})["data_source"] = ds
+            except Exception:
+                pass
 
                 stars = int(sig.get("stars", 0) or 0)
                 force_send = _force_send(sig)
@@ -897,6 +873,14 @@ async def cron_run(token: str = "", request: Request = None):
             try:
                 data = _fetch_triplet(sym, limit=260)
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+            # attach data source for Telegram
+            try:
+                ds = data.get("data_source")
+                if ds:
+                    sig["data_source"] = ds
+                    sig.setdefault("meta", {})["data_source"] = ds
+            except Exception:
+                pass
                 stars = int(sig.get("stars", 0) or 0)
                 short_hint = sig.get("short_hint") or []
                 entry = sig.get("entry")
