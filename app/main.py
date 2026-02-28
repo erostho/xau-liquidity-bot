@@ -822,19 +822,19 @@ async def telegram_webhook(request: Request):
                 except Exception:
                     pass
 
-                    stars = int(sig.get("stars", 0) or 0)
-                    force_send = _force_send(sig)
+                stars = int(sig.get("stars", 0) or 0)
+                force_send = _force_send(sig)
 
-                    if force_send:
-                        prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\\n\\n"
-                        _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
-                    elif stars < MIN_STARS:
-                        # Manual 'NOW/SCAN': always send full analysis, but hide trade plan when under the star gate
-                        #sig["show_trade_plan"] = False
-                        prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\\n\\n"
-                        _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
-                    else:
-                        _send_telegram(format_signal(sig), chat_id=chat_id)
+                if force_send:
+                    prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\\n\\n"
+                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                elif stars < MIN_STARS:
+                    # Manual 'NOW/SCAN': always send full analysis, but hide trade plan when under the star gate
+                    #sig["show_trade_plan"] = False
+                    prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\\n\\n"
+                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                else:
+                    _send_telegram(format_signal(sig), chat_id=chat_id)
 
             except Exception as e:
                 logger.exception("analysis failed: %s", e)
@@ -880,7 +880,7 @@ async def cron_run(token: str = "", request: Request = None):
                         sig["data_source"] = ds
                         sig.setdefault("meta", {})["data_source"] = ds
                 except Exception:
-                pass
+                    pass
                 stars = int(sig.get("stars", 0) or 0)
                 short_hint = sig.get("short_hint") or []
                 entry = sig.get("entry")
