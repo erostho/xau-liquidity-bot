@@ -2339,7 +2339,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
         head += f" | {session}"
     lines.append(head)
     # Data source (MT5 vs TWELVEDATA fallback)
-    data_source = (sig.get("data_source") or (meta.get("data_source") if isinstance(meta, dict) else None))
+    data_source = None
+    try:
+        data_source = sig.get("data_source")
+    except Exception:
+        data_source = None
+    if not data_source:
+        try:
+            data_source = meta.get("data_source") if isinstance(meta, dict) else None
+        except Exception:
+            data_source = None
     if data_source:
         lines.append(f"📡 Data: {data_source}")
     # Recommendation line
@@ -2359,7 +2368,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
         lines.append(f"Now: {where}")
     if wait_for:
         lines.append(f"Wait: {wait_for}")
-
 
     # Key levels (prices)
     lines.append("Key levels:")
