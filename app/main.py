@@ -873,13 +873,13 @@ async def cron_run(token: str = "", request: Request = None):
             try:
                 data = _fetch_triplet(sym, limit=260)
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
-            # attach data source for Telegram
-            try:
-                ds = data.get("data_source")
-                if ds:
-                    sig["data_source"] = ds
-                    sig.setdefault("meta", {})["data_source"] = ds
-            except Exception:
+                # attach data source for Telegram
+                try:
+                    ds = data.get("data_source")
+                    if ds:
+                        sig["data_source"] = ds
+                        sig.setdefault("meta", {})["data_source"] = ds
+                except Exception:
                 pass
                 stars = int(sig.get("stars", 0) or 0)
                 short_hint = sig.get("short_hint") or []
