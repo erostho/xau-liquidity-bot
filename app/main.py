@@ -282,7 +282,13 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     h1, src1h = _as_list_and_source_from_get_candles(get_candles(symbol, "1h", limit=220))
     h4, src4h = _as_list_and_source_from_get_candles(get_candles(symbol, "4h", limit=220))
 
-    sig = analyze_pro(symbol, m15, m30, h1, h4)
+    #sig = analyze_pro(symbol, m15, m30, h1, h4)
+    try:
+        sig = analyze_pro(symbol, m15, m30, h1, h4)
+    except RecursionError as e:
+        logger.exception("RecursionError while analyzing %s", sym)
+        _send_telegram(f"❌ Analysis failed ({sym}): RecursionError (check logs)", chat_id=chat_id)
+        return "ok"
     # attach data source for Telegram (prefer M30, else M15)
     try:
         ds = src30 or src15 or src1h or src4h
