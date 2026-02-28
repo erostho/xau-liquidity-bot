@@ -1,7 +1,6 @@
 # app/pro_analysis.py
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple, Sequence
-from datetime import datetime, timedelta
 import math
 import os
 from app.risk import calc_smart_sl_tp
@@ -897,30 +896,6 @@ def _fmt(x: float) -> str:
     return f"{x:.3f}".rstrip("0").rstrip(".")
 
 
-
-def _vn_session_label(now_utc: datetime | None = None) -> str:
-    """Rough FX-style session label in Vietnam time (UTC+7).
-    This is only for display, not scoring."""
-    try:
-        now_utc = now_utc or datetime.utcnow()
-        vn = now_utc + timedelta(hours=7)
-        h = vn.hour
-        # Vietnam time blocks
-        # Asia ~07-14, EU ~14-20, US ~20-03 (approx, overlaps included)
-        if 14 <= h < 15:
-            return "Giao phiên Á-Âu"
-        if 20 <= h < 22:
-            return "Giao phiên Âu-Mỹ"
-        if 7 <= h < 14:
-            return "Phiên Á"
-        if 15 <= h < 20:
-            return "Phiên Âu"
-        if h >= 22 or h < 3:
-            return "Phiên Mỹ"
-        return "Phiên Á"  # 03-07
-    except Exception:
-        return ""
-
 def _sma(vals, n: int):
     if not vals or n <= 0 or len(vals) < n:
         return None
@@ -965,24 +940,22 @@ def _range_high_low(candles, n: int):
     except Exception:
         return (None, None)
 
-def _inject_meta_structure_and_levels(base: dict, m15, m30, h1, h4):
+def _inject_meta_structure_and_levels(base, m15, m30, h1, h4):
+    """
+    Wrapper: normalize None -> [] and prevent accidental self-recursion.
+    """
+    try:
+        return _inject_meta_structure_and_levels_impl(base, m15 or [], m30 or [], h1 or [], h4 or [])
+    except RecursionError:
+        return
+    except Exception:
+        return
+
+
+def _inject_meta_structure_and_levels_impl(base: dict, m15, m30, h1, h4):
     """Ensure base['meta']['structure'] + base['meta']['key_levels'] exist for Telegram template,
     even when stars are low / trade plan is suppressed."""
     meta = base.get("meta") or {}
-    base["meta"] = meta
-
-    # Guard: missing candle data (e.g., MT5 not pushed and TwelveData disabled/unavailable)
-    if not m15 or not m30 or not h1 or not h4:
-        sd = meta.get("score_detail") or {}
-        sd.setdefault("grade", "B")
-        sd.setdefault("trade", "NO")
-        sd.setdefault("checklist", [])
-        meta["score_detail"] = sd
-        meta["error"] = "MISSING_CANDLES"
-        base.setdefault("recommendation", "CHỜ")
-        base.setdefault("stars", 1)
-        _inject_meta_structure_and_levels(base, m15 or [], m30 or [], h1 or [], h4 or [])
-        return base
     base["meta"] = meta
 
     # Structure tags
@@ -1176,7 +1149,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base = {
         "symbol": symbol,
         "tf": "M30",
-        "session": _vn_session_label(),
+        "session": "Phiên Mỹ",
         "context_lines": [],
         "short_hint": [],
         "liquidity_lines": [],
@@ -1211,13 +1184,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
-
-    # derive major_bearish for gating logic
-    try:
-        h1_tag = ((base.get("meta") or {}).get("structure") or {}).get("H1")
-        major_bearish = str(h1_tag) in ("LL-LH", "LH–LL", "LH-LL")
-    except Exception:
-        major_bearish = False
         return base
 
     m15c = _safe_candles(m15)
@@ -2025,7 +1991,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # =========================
 
     score3 = int(bias_ok) + int(pullback_ok) + int(momentum_ok)
-    major_bearish = False
+
 
     # HL/LH hold filter (trend must not be broken for HALF):
     # - If bias is BUY: require last M15 close >= H1_HL (close-based, ignore wicks).
@@ -2064,7 +2030,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         stars = 1
 
     # if liquidity warning, cap to HALF at most (still allow observation)
-    liq_warn = ("Liquidity WARNING" in " | ".join(context_lines or []))
     if liq_warn and trade_mode == "FULL":
         trade_mode = "HALF"
         stars = min(stars, 3)
@@ -2258,50 +2223,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # =========================
     # Formatter (MUST be named format_signal for main.py import)
     # =========================
-
-def _safe_float(x):
-    """Convert various numeric formats to float safely.
-    Supports strings like '67,123.45' or '67.123,45'. Returns None if cannot parse.
-    """
-    if x is None:
-        return None
-    if isinstance(x, (int, float)):
-        return float(x)
-    try:
-        s = str(x).strip()
-        if not s:
-            return None
-        # handle formats with both '.' and ','
-        if '.' in s and ',' in s:
-            # if comma appears after dot => likely decimal comma, dot thousands
-            if s.rfind(',') > s.rfind('.'):
-                s = s.replace('.', '').replace(',', '.')
-            else:
-                s = s.replace(',', '')
-        else:
-            # only comma: could be decimal comma
-            if ',' in s and '.' not in s:
-                s = s.replace(',', '.')
-        return float(s)
-    except Exception:
-        return None
-
-
 def format_signal(sig: Dict[str, Any]) -> str:
-    if not isinstance(sig, dict):
-        return "❌ Signal is empty/invalid"
     symbol = sig.get("symbol", "XAUUSD")
     tf = sig.get("tf", "M15")
     session = sig.get("session", "")
     rec = sig.get("recommendation", "CHỜ")
-    action = "BUY" if rec=="BUY" else "SELL" if rec=="SELL" else "CHỜ"
     stars = int(sig.get("stars", 1))
     stars_txt = "⭐️" * max(1, min(5, stars))
 
     meta = sig.get("meta", {}) or {}
     sd = (meta.get("score_detail", {}) or {})
     trade_mode = (sig.get("trade_mode") or "").upper()
-    data_source = meta.get("data_source") or sig.get("data_source")
+
     def nf2(x):
         if x is None:
             return "..."
@@ -2338,19 +2271,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if session:
         head += f" | {session}"
     lines.append(head)
-    # Data source (MT5 vs TWELVEDATA fallback)
-    data_source = None
-    try:
-        data_source = sig.get("data_source")
-    except Exception:
-        data_source = None
-    if not data_source:
-        try:
-            data_source = meta.get("data_source") if isinstance(meta, dict) else None
-        except Exception:
-            data_source = None
-    if data_source:
-        lines.append(f"📡 Data: {data_source}")
+
     # Recommendation line
     mode_txt = f" | Mode: {trade_mode}" if trade_mode in ("FULL", "HALF") else ""
     score_txt = ""
@@ -2368,6 +2289,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         lines.append(f"Now: {where}")
     if wait_for:
         lines.append(f"Wait: {wait_for}")
+
 
     # Key levels (prices)
     lines.append("Key levels:")
@@ -2440,157 +2362,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
         for r in revs[:2]:
             lines.append(f"- {r}")
 
-    # =========================
-    # Signal block (B / A / A+)
-    # =========================
-    def _bool(v):
-        return bool(v) if v is not None else False
+    # Quality (short)
+    if qual_lines:
+        lines.append("")
+        lines.append("Setup quality:")
+        for s in qual_lines[:2]:
+            lines.append(f"- {s}")
 
-    # derive core checks
-    bias_ok = _bool(sd.get("bias_ok"))
-    pullback_ok = _bool(sd.get("pullback_ok"))
-    momentum_ok = _bool(sd.get("momentum_ok"))
-    confluence_ok = _bool(sd.get("confluence_ok"))
-    #liq_warn = meta.get("liq_warn")
-    liq_warn = ("Liquidity WARNING" in " | ".join(sig.get("context_lines", []) or [])) or _bool(sd.get("liq_warn"))
-    liquidity_ok = not liq_warn
-
-    # Spread: nếu không có dữ liệu bid/ask hoặc ratio -> để None (hiển thị …)
-    if spread_state is None and spread_ratio is None:
-        spread_ok = None
-    else:
-        spread_ok = (spread_state not in ("HIGH", "BLOCK"))
-    tradable = (rec in ("BUY", "SELL")) and (trade_mode in ("FULL", "HALF"))
-
-    
-    # Location (within M15 range) -> compute position % and zone
-    m15_lo = kl.get("M15_RANGE_LOW")
-    m15_hi = kl.get("M15_RANGE_HIGH")
-
-    # Prefer current mid price from MT5 (if available), fallback to last close
-    sp = meta.get("spread", {}) or {}
-    m15_last = kl.get("M15_LAST") or entry or sp.get("mid")
-
-    loc_ok = None
-    loc_txt = "thiếu dữ liệu range"
-    try:
-        if m15_lo is not None and m15_hi is not None:
-            lo = float(m15_lo); hi = float(m15_hi)
-            rng = hi - lo
-            if abs(rng) < 1e-9:
-                loc_ok = None
-                loc_txt = "range quá hẹp"
-            else:
-                # If price is missing, use range-mid but mark it as approximate
-                approx = False
-                if m15_last is None:
-                    last = (hi + lo) / 2.0
-                    approx = True
-                else:
-                    last = _safe_float(m15_last)
-
-                pos = (last - lo) / rng  # 0..1 (có thể vượt nếu phá range)
-                pos_clamped = max(0.0, min(1.0, pos))
-                pos_pct = pos_clamped * 100.0
-
-                # Zone classification
-                if pos < 0.0:
-                    zone = "Dưới range (breakdown)"
-                elif pos > 1.0:
-                    zone = "Trên range (breakout)"
-                elif 0.20 <= pos_clamped <= 0.80:
-                    zone = "Giữa range – No trade zone"
-                elif pos_clamped < 0.20:
-                    zone = "Gần đáy range"
-                else:
-                    zone = "Gần đỉnh range"
-
-                # For checklist pass/fail:
-                if action == "BUY":
-                    loc_ok = pos_clamped <= 0.20
-                elif action == "SELL":
-                    loc_ok = pos_clamped >= 0.80
-                else:
-                    loc_ok = not (0.20 <= pos_clamped <= 0.80)
-
-                suffix = " (ước lượng)" if approx else ""
-                loc_txt = f"{zone} (pos={pos_pct:.0f}%)" + suffix
-    except Exception:
-        loc_ok, loc_txt = None, "lỗi tính location"
-
-    # ---- 5 Pillars (Pro discretionary) ----
-    # Bias: ưu tiên dùng confluence_ok (H4/H1 đồng pha) nếu có, fallback bias_ok
-    bias_final = bool(bias_ok) if confluence_ok is None else bool(bias_ok and bool(confluence_ok))
-
-    # Confirmation: dùng trigger/momentum hiện có (BOS/impulse proxy)
-    confirmation_ok = bool(momentum_ok)
-
-
-    # ---- Grade (B / A / A+) ----
-    # Chấm theo 4 yếu tố: Bias, Location, Liquidity, Confirmation
-    pillars = [
-        ("Bias (H4/H1)", bias_final),
-        ("Location", loc_ok),
-        ("Liquidity", liquidity_ok),
-        ("Confirmation", confirmation_ok),
-    ]
-    passed = sum(1 for _, ok in pillars if ok is True)
-
-    # A+ = 4/4, A = 3/4, còn lại B
-    grade = "A+" if passed >= 4 else ("A" if passed >= 3 else "B")
-    tradable = (grade in ("A", "A+")) and (rec in ("BUY", "SELL"))
-
-    # Priority hint
-    if bias_final:
-        priority = f"Ưu tiên chờ {rec}" if rec in ("BUY", "SELL") else "Ưu tiên CHỜ theo bias"
-    else:
-        priority = "Ưu tiên CHỜ (bias chưa rõ)"
-
-    # Context (không chấm điểm) -> cảnh báo ngắn gọn
-    ctx_warn = []
-    tag_up = f"{h4_tag} {h1_tag} {m15_tag}".upper()
-    if "TRANSITION" in tag_up:
-        ctx_warn.append("Context: TRANSITION (dễ chop/false break)")
-    if liq_warn:
-        ctx_warn.append("Context: Liquidity WARNING / post-sweep")
-    if rec == "CHỜ":
-        ctx_warn.append("Context: Range/transition – ưu tiên quan sát")
-
-    # Missing items (chỉ dựa trên 4 pillars)
-    missing: List[str] = []
-    for name, ok in pillars:
-        if ok is False:
-            if name == "Confirmation":
-                missing.append("Confirmation (BOS/CHOCH/impulse rõ)")
-            else:
-                missing.append(name)
-
-    lines.append("")
-    lines.append("📌 TÍN HIỆU (chuẩn hoá):")
-    lines.append(f"- {priority}")
-    lines.append(f"- Grade: <b>{grade}</b>  | Trade: {('YES' if tradable else 'NO')}")
-
-    if ctx_warn:
-        lines.append("Context:")
-        for w in ctx_warn[:3]:
-            lines.append(f"- {w}")
-
-    # 5-checklist
-    def okno(x):
-        if x is None:
-            return "…"
-        return "✅" if x else "❌"
-
-    lines.append("Checklist (4):")
-    lines.append(f"1) Bias (H4/H1): {okno(bias_final)}  ({h4_tag} / {h1_tag})")
-    lines.append(f"2) Location: {okno(loc_ok)}  ({loc_txt})")
-    lines.append(f"3) Liquidity: {okno(liquidity_ok)}  ({'WARN' if liq_warn else 'OK'})")
-    lines.append(f"4) Confirmation: {okno(confirmation_ok)}")
-
-    if missing:
-        lines.append("Thiếu / chờ thêm:")
-        for x in missing[:6]:
-            lines.append(f"- {x}")
-    else:
-        lines.append("✅ Đủ điều kiện theo grade hiện tại.")
     return "\n".join(lines)
