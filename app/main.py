@@ -819,6 +819,23 @@ async def telegram_webhook(request: Request):
                 maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
                 
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+                # --- Guard: analyze_pro phải trả dict, nếu không thì fallback để khỏi crash
+                if not isinstance(sig, dict):
+                    sig = {
+                        "symbol": sym,
+                        "tf": "M30",
+                        "session": session,
+                        "recommendation": "CHỜ",
+                        "stars": 1,
+                        "trade_mode": "MANUAL",
+                        "meta": {
+                            "data_source": data.get("data_source") if isinstance(data, dict) else None
+                        },
+                        "context_lines": ["- Context: n/a"],
+                        "liquidity_lines": ["- n/a"],
+                        "quality_lines": ["- n/a"],
+                        "note_lines": ["⚠️ analyze_pro returned None → fallback signal"],
+                    }
                 # attach data source for Telegram
                 try:
                     ds = data.get("data_source")
@@ -879,6 +896,23 @@ async def cron_run(token: str = "", request: Request = None):
             try:
                 data = _fetch_triplet(sym, limit=260)
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+                # --- Guard: analyze_pro phải trả dict, nếu không thì fallback để khỏi crash
+                if not isinstance(sig, dict):
+                    sig = {
+                        "symbol": sym,
+                        "tf": "M30",
+                        "session": session,
+                        "recommendation": "CHỜ",
+                        "stars": 1,
+                        "trade_mode": "MANUAL",
+                        "meta": {
+                            "data_source": data.get("data_source") if isinstance(data, dict) else None
+                        },
+                        "context_lines": ["- Context: n/a"],
+                        "liquidity_lines": ["- n/a"],
+                        "quality_lines": ["- n/a"],
+                        "note_lines": ["⚠️ analyze_pro returned None → fallback signal"],
+                    }
                 # attach data source for Telegram
                 try:
                     ds = data.get("data_source")
