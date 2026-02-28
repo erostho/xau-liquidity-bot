@@ -833,6 +833,10 @@ async def telegram_webhook(request: Request):
                 maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
                 
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+                if not isinstance(sig, dict):
+                    sig = {"symbol": sym, "tf": "M30", "recommendation": "CHỜ", "stars": 1, "meta": {"error": "analyze_pro returned None"}}
+                sig["data_source"] = data.get("source_m30") or data.get("source_m15")
+                sig.setdefault("meta", {})["data_source"] = sig["data_source"]
 
                 stars = int(sig.get("stars", 0) or 0)
                 force_send = _force_send(sig)
@@ -885,6 +889,10 @@ async def cron_run(token: str = "", request: Request = None):
             try:
                 data = _fetch_triplet(sym, limit=260)
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+                if not isinstance(sig, dict):
+                    sig = {"symbol": sym, "tf": "M30", "recommendation": "CHỜ", "stars": 1, "meta": {"error": "analyze_pro returned None"}}
+                sig["data_source"] = data.get("source_m30") or data.get("source_m15")
+                sig.setdefault("meta", {})["data_source"] = sig["data_source"]
                 stars = int(sig.get("stars", 0) or 0)
                 short_hint = sig.get("short_hint") or []
                 entry = sig.get("entry")
