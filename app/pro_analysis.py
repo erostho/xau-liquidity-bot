@@ -1,6 +1,7 @@
 # app/pro_analysis.py
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple, Sequence
+from datetime import datetime, timedelta
 import math
 import os
 from app.risk import calc_smart_sl_tp
@@ -896,6 +897,30 @@ def _fmt(x: float) -> str:
     return f"{x:.3f}".rstrip("0").rstrip(".")
 
 
+
+def _vn_session_label(now_utc: datetime | None = None) -> str:
+    """Rough FX-style session label in Vietnam time (UTC+7).
+    This is only for display, not scoring."""
+    try:
+        now_utc = now_utc or datetime.utcnow()
+        vn = now_utc + timedelta(hours=7)
+        h = vn.hour
+        # Vietnam time blocks
+        # Asia ~07-14, EU ~14-20, US ~20-03 (approx, overlaps included)
+        if 14 <= h < 15:
+            return "Giao phiên Á-Âu"
+        if 20 <= h < 22:
+            return "Giao phiên Âu-Mỹ"
+        if 7 <= h < 14:
+            return "Phiên Á"
+        if 15 <= h < 20:
+            return "Phiên Âu"
+        if h >= 22 or h < 3:
+            return "Phiên Mỹ"
+        return "Phiên Á"  # 03-07
+    except Exception:
+        return ""
+
 def _sma(vals, n: int):
     if not vals or n <= 0 or len(vals) < n:
         return None
@@ -944,6 +969,20 @@ def _inject_meta_structure_and_levels(base: dict, m15, m30, h1, h4):
     """Ensure base['meta']['structure'] + base['meta']['key_levels'] exist for Telegram template,
     even when stars are low / trade plan is suppressed."""
     meta = base.get("meta") or {}
+    base["meta"] = meta
+
+    # Guard: missing candle data (e.g., MT5 not pushed and TwelveData disabled/unavailable)
+    if not m15 or not m30 or not h1 or not h4:
+        sd = meta.get("score_detail") or {}
+        sd.setdefault("grade", "B")
+        sd.setdefault("trade", "NO")
+        sd.setdefault("checklist", [])
+        meta["score_detail"] = sd
+        meta["error"] = "MISSING_CANDLES"
+        base.setdefault("recommendation", "CHỜ")
+        base.setdefault("stars", 1)
+        _inject_meta_structure_and_levels(base, m15 or [], m30 or [], h1 or [], h4 or [])
+        return base
     base["meta"] = meta
 
     # Structure tags
@@ -1137,7 +1176,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base = {
         "symbol": symbol,
         "tf": "M30",
-        "session": "Phiên Mỹ",
+        "session": _vn_session_label(),
         "context_lines": [],
         "short_hint": [],
         "liquidity_lines": [],
@@ -1172,6 +1211,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+
+    # derive major_bearish for gating logic
+    try:
+        h1_tag = ((base.get("meta") or {}).get("structure") or {}).get("H1")
+        major_bearish = str(h1_tag) in ("LL-LH", "LH–LL", "LH-LL")
+    except Exception:
+        major_bearish = False
         return base
 
     m15c = _safe_candles(m15)
@@ -2242,6 +2288,8 @@ def _safe_float(x):
 
 
 def format_signal(sig: Dict[str, Any]) -> str:
+    if not isinstance(sig, dict):
+        return "❌ Signal is empty/invalid"
     symbol = sig.get("symbol", "XAUUSD")
     tf = sig.get("tf", "M15")
     session = sig.get("session", "")
