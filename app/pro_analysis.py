@@ -2338,6 +2338,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if session:
         head += f" | {session}"
     lines.append(head)
+    # Data source (MT5 vs TWELVEDATA fallback)
+    data_source = (sig.get("data_source") or (meta.get("data_source") if isinstance(meta, dict) else None))
     if data_source:
         lines.append(f"📡 Data: {data_source}")
     # Recommendation line
