@@ -981,7 +981,11 @@ def _inject_meta_structure_and_levels(base: dict, m15, m30, h1, h4):
         meta["error"] = "MISSING_CANDLES"
         base.setdefault("recommendation", "CHỜ")
         base.setdefault("stars", 1)
-        _inject_meta_structure_and_levels(base, m15 or [], m30 or [], h1 or [], h4 or [])
+        #_inject_meta_structure_and_levels(base, m15 or [], m30 or [], h1 or [], h4 or [])
+        m15 = m15 or []
+        m30 = m30 or []
+        h1  = h1  or []
+        h4  = h4  or []
         return base
     base["meta"] = meta
 
