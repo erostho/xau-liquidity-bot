@@ -824,7 +824,7 @@ async def telegram_webhook(request: Request):
                     sig = {
                         "symbol": sym,
                         "tf": "M30",
-                        "session": session
+                        "session": session,
                         "recommendation": "CHỜ",
                         "stars": 1,
                         "trade_mode": "MANUAL",
