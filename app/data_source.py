@@ -4,30 +4,20 @@ import time
 import logging
 import requests
 from typing import Dict, Any, List, Tuple, Optional
-from dataclasses import dataclass   # <-- thêm dòng này
+from app.pro_analysis import Candle
 
 logger = logging.getLogger("uvicorn.error")
 
-# --- Candle model local to avoid circular import ---
-@dataclass
-class Candle:
-    ts: int
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float = 0.0
-    spread: float = 0.0
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 
 # MT5 cache in-memory (Render process memory)
 # key: (symbol, tf) -> {"candles": [..], "ts": unix_time}
 _MT5_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _TD_CACHE = {}  # key -> (ts_minute, candles)
-# MT5 symbol mapping (so XAU/USD can find XAUUSDc, etc.)
-MT5_SYMBOL_XAU = os.getenv("MT5_SYMBOL_XAU", "XAUUSDc")
-MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDc")
-MT5_SYMBOL_XAG = os.getenv("MT5_SYMBOL_XAG", "XAGUSDc")
+# MT5 symbol mapping (so XAU/USD can find XAUUSDm, etc.)
+MT5_SYMBOL_XAU = os.getenv("MT5_SYMBOL_XAU", "XAUUSDm")
+MT5_SYMBOL_BTC = os.getenv("MT5_SYMBOL_BTC", "BTCUSDm")
+MT5_SYMBOL_XAG = os.getenv("MT5_SYMBOL_XAG", "XAGUSDm")
 # How "fresh" MT5 data must be to be trusted (seconds)
 MT5_MAX_AGE_SEC = int(os.getenv("MT5_MAX_AGE_SEC", "1200"))  # 20 minutes default
 DATA_DIR = os.getenv("DATA_DIR", "./data")
@@ -120,46 +110,49 @@ def _norm_symbol(s: str) -> str:
 
 def _symbol_variants(symbol: str) -> List[str]:
     """
-    Try multiple forms so cache lookup works:
-    - XAU/USD, BTC/USD (telegram)
-    - XAUUSDm, BTCUSDm (MT5)
-    - XAUUSD, BTCUSD
-    - remove '/' etc.
+    Try multiple forms so cache lookup works across sources/brokers.
+
+    Examples:
+    - XAU/USD (telegram)
+    - XAUUSD, XAUUSDm, XAUUSDc (MT5 suffixes vary by broker)
+    - BTC/USD -> BTCUSD, BTCUSDm, BTCUSDc
+    - XAG/USD -> XAGUSD, XAGUSDm, XAGUSDc
     """
     s = _norm_symbol(symbol)
-    out = [s]
+    out: List[str] = []
+    def add(x: str) -> None:
+        x = _norm_symbol(x)
+        if x and x not in out:
+            out.append(x)
 
-    low = s.lower()
-    if "xau" in low:
-        out.append(MT5_SYMBOL_XAU)
-        out.append("XAUUSD")
-        out.append("XAUUSDm")
-        out.append("XAUUSDc")
-        out.append("XAU/USD")
-    if "btc" in low:
-        out.append(MT5_SYMBOL_BTC)
-        out.append("BTCUSD")
-        out.append("BTCUSDm")
-        out.append("BTCUSDc")
-        out.append("BTC/USD")
-    if "xag" in low:
-        out.append(MT5_SYMBOL_XAG)
-        out.append("XAGUSD")
-        out.append("XAGUSDm")
-        out.append("XAGUSDc")
-        out.append("XAG/USD")
+    add(s)
+
+    # Remove slash if present (XAU/USD -> XAUUSD)
     if "/" in s:
-        out.append(s.replace("/", ""))
-        out.append(s.replace("/", "") + "m")
+        add(s.replace("/", ""))
 
-    # unique keep order
-    seen = set()
-    uniq = []
-    for x in out:
-        if x and x not in seen:
-            seen.add(x)
-            uniq.append(x)
-    return uniq
+    base = s.replace("/", "")
+
+    # If base looks like a known metal/crypto symbol, add common MT5 suffix variants.
+    # Many brokers use suffixes like 'm' or 'c' (e.g., XAUUSDm / XAUUSDc).
+    known = {"XAUUSD", "XAGUSD", "BTCUSD"}
+    if base in known:
+        add(base)
+        add(base + "m")
+        add(base + "c")
+
+    # If user passed an MT5-style symbol with suffix, also add the plain/base + other suffix.
+    for suf in ("m", "c"):
+        if base.endswith(suf) and base[:-1] in known:
+            add(base[:-1])
+            add(base[:-1] + "m")
+            add(base[:-1] + "c")
+
+    # Convenience: if symbol already like XAUUSDm, add stripped + with slash form if possible
+    if base in known:
+        add(base[:3] + "/" + base[3:])
+
+    return out
 
 def _tf_alias(tf: str) -> str:
     t = (tf or "").strip().lower()
