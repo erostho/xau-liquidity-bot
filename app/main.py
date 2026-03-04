@@ -817,7 +817,7 @@ async def telegram_webhook(request: Request):
                 
                 # ✅ Regime alert: independent of stars
                 maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
-                
+                session = ""
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
                 # --- Guard: analyze_pro phải trả dict, nếu không thì fallback để khỏi crash
                 if not isinstance(sig, dict):
