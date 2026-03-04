@@ -895,6 +895,7 @@ async def cron_run(token: str = "", request: Request = None):
         for sym in symbols:
             try:
                 data = _fetch_triplet(sym, limit=260)
+                session = ""
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
                 # --- Guard: analyze_pro phải trả dict, nếu không thì fallback để khỏi crash
                 if not isinstance(sig, dict):
