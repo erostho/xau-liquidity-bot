@@ -1414,7 +1414,25 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 
     liq_sell = bool(sweep_sell.get("ok")) or bool(spring_sell.get("ok"))
     liq_buy  = bool(sweep_buy.get("ok"))  or bool(spring_buy.get("ok"))
+    # ===== Meta flags for "clean entry at circled candle" (reversal checklist) =====
+    try:
+        last_closed_15 = closed15[-1] if closed15 else last15
+        last_closed_rej = _is_rejection(last_closed_15)
+    except Exception:
+        last_closed_rej = {"upper_reject": False, "lower_reject": False, "doji_like": False}
 
+    base.setdefault("meta", {}).setdefault("liq_event", {})
+    base["meta"]["liq_event"].update({
+        "sweep_sell": bool(sweep_sell.get("ok")),
+        "sweep_buy": bool(sweep_buy.get("ok")),
+        "spring_sell": bool(spring_sell.get("ok")),
+        "spring_buy": bool(spring_buy.get("ok")),
+        "liq_sell": bool(liq_sell),
+        "liq_buy": bool(liq_buy),
+        "post_sweep_buy": bool(post_sweep_buy) if "post_sweep_buy" in locals() else False,
+        "post_sweep_sell": bool(post_sweep_sell) if "post_sweep_sell" in locals() else False,
+        "last_closed_rejection": last_closed_rej,   # quan trọng: nến ĐÃ ĐÓNG
+    })
     liquidity_lines = []
     if sweep_sell.get("ok"):
         vtxt = " +VOL" if sweep_sell.get("vol_ok") else ""
@@ -2298,7 +2316,15 @@ def format_signal(sig: Dict[str, Any]) -> str:
     tf = sig.get("tf", "M15")
     session = sig.get("session", "")
     rec = sig.get("recommendation", "CHỜ")
-    action = "BUY" if rec=="BUY" else "SELL" if rec=="SELL" else "CHỜ"
+    #action = "BUY" if rec=="BUY" else "SELL" if rec=="SELL" else "CHỜ"
+    # Normalize recommendation text (your rec includes emoji like "🔴 SELL", "🟢 BUY")
+    rec_txt = str(rec or "").upper()
+    if "BUY" in rec_txt:
+        action = "BUY"
+    elif "SELL" in rec_txt:
+        action = "SELL"
+    else:
+        action = "CHỜ"
     stars = int(sig.get("stars", 1))
     stars_txt = "⭐️" * max(1, min(5, stars))
 
@@ -2523,49 +2549,122 @@ def format_signal(sig: Dict[str, Any]) -> str:
         loc_ok, loc_txt = None, "lỗi tính location"
 
     # ---- 5 Pillars (Pro discretionary) ----
-    # Bias: ưu tiên dùng confluence_ok (H4/H1 đồng pha) nếu có, fallback bias_ok
-    bias_final = bool(bias_ok) if confluence_ok is None else bool(bias_ok and bool(confluence_ok))
+    # =========================
+    # CHECKLIST 4 (NEW): works for BOTH continuation + reversal-at-extremes
+    # - Continuation: Bias(H4/H1) + Location(in range edge) + Liquidity(no warn) + Confirmation(momentum)
+    # - Reversal (circled candle): Sweep/Rejection at extreme + CHOCH/BOS -> allow alert even when major bias is TRANSITION
+    # =========================
 
-    # Confirmation: dùng trigger/momentum hiện có (BOS/impulse proxy)
-    confirmation_ok = bool(momentum_ok)
+    liq_ev = (meta.get("liq_event") or {}) if isinstance(meta, dict) else {}
+    last_rej = (liq_ev.get("last_closed_rejection") or {}) if isinstance(liq_ev, dict) else {}
+    upper_rej = bool(last_rej.get("upper_reject"))
+    lower_rej = bool(last_rej.get("lower_reject"))
 
+    # 1) Bias (two modes)
+    # Continuation bias (old spirit): require bias_ok + confluence_ok when available
+    bias_cont = bool(bias_ok) if confluence_ok is None else bool(bias_ok and bool(confluence_ok))
 
-    # ---- Grade (B / A / A+) ----
-    # Chấm theo 4 yếu tố: Bias, Location, Liquidity, Confirmation
+    # Reversal bias: allow when sweep/spring + at key major level region (H1 HH/LL) or at M15 extreme
+    sweep_for_side = False
+    if action == "SELL":
+        sweep_for_side = bool(liq_ev.get("sweep_sell") or liq_ev.get("spring_sell") or upper_rej)
+    elif action == "BUY":
+        sweep_for_side = bool(liq_ev.get("sweep_buy") or liq_ev.get("spring_buy") or lower_rej)
+
+    # 2) Location: recompute pos in M15 range (already computed above), but add reversal edge rule
+    # Default continuation rule (as before): BUY near bottom <=20%, SELL near top >=80%
+    loc_cont = (loc_ok is True)
+
+    # Reversal location rule: allow a bit wider (>=70% for SELL, <=30% for BUY) IF sweep/rejection happened
+    loc_rev = False
+    try:
+        if m15_lo is not None and m15_hi is not None:
+            lo = float(m15_lo); hi = float(m15_hi)
+            rng = hi - lo
+            if rng > 1e-9:
+                last = _safe_float(m15_last) if m15_last is not None else ((hi + lo) / 2.0)
+                pos = (float(last) - lo) / rng  # can be <0 or >1
+                pos_clamped = max(0.0, min(1.0, pos))
+                if action == "SELL":
+                    loc_rev = (pos_clamped >= 0.70) and sweep_for_side
+                elif action == "BUY":
+                    loc_rev = (pos_clamped <= 0.30) and sweep_for_side
+    except Exception:
+        loc_rev = False
+
+    loc_final = bool(loc_cont or loc_rev)
+
+    # 3) Liquidity:
+    # Old: fail when Liquidity WARNING.
+    # New: if WARNING but we have a REAL sweep/spring/rejection for this side -> pass (because warning resolved by event)
+    liq_warn = ("Liquidity WARNING" in " | ".join(sig.get("context_lines", []) or [])) or _bool(sd.get("liq_warn"))
+    liquidity_final = (not liq_warn) or bool(sweep_for_side)
+
+    # 4) Confirmation:
+    # Continuation confirmation: momentum_ok (existing)
+    conf_cont = bool(momentum_ok)
+
+    # Reversal confirmation: CHOCH/BOS proxy:
+    # - SELL: last close <= BOS level (or <= range_low)
+    # - BUY : last close >= BOS level (or >= range_high)
+    conf_rev = False
+    try:
+        last_close = _safe_float(kl.get("M15_LAST")) or _safe_float(entry) or None
+        bos_lv = _safe_float(kl.get("M15_BOS"))  # for SELL this is swing-low; for BUY this is swing-high (your analyzer sets based on bias_side)
+        rng_lo = _safe_float(kl.get("M15_RANGE_LOW"))
+        rng_hi = _safe_float(kl.get("M15_RANGE_HIGH"))
+
+        if last_close is not None:
+            if action == "SELL":
+                lv = bos_lv if bos_lv is not None else rng_lo
+                if lv is not None:
+                    conf_rev = (float(last_close) <= float(lv))
+            elif action == "BUY":
+                lv = bos_lv if bos_lv is not None else rng_hi
+                if lv is not None:
+                    conf_rev = (float(last_close) >= float(lv))
+    except Exception:
+        conf_rev = False
+
+    confirmation_final = bool(conf_cont or (sweep_for_side and conf_rev))
+
+    # Bias final: pass if either continuation bias OR reversal bias (sweep/rej + location edge)
+    bias_final = bool(bias_cont or (sweep_for_side and loc_rev))
+
+    # ---- Grade (B / A / A+) by 4 pillars ----
     pillars = [
-        ("Bias (H4/H1)", bias_final),
-        ("Location", loc_ok),
-        ("Liquidity", liquidity_ok),
-        ("Confirmation", confirmation_ok),
+        ("Bias (H4/H1) hoặc Reversal", bias_final),
+        ("Location", loc_final),
+        ("Liquidity", liquidity_final),
+        ("Confirmation", confirmation_final),
     ]
     passed = sum(1 for _, ok in pillars if ok is True)
 
-    # A+ = 4/4, A = 3/4, còn lại B
     grade = "A+" if passed >= 4 else ("A" if passed >= 3 else "B")
-    tradable = (grade in ("A", "A+")) and (rec in ("BUY", "SELL"))
+    tradable = (grade in ("A", "A+")) and (action in ("BUY", "SELL"))
 
     # Priority hint
     if bias_final:
-        priority = f"Ưu tiên chờ {rec}" if rec in ("BUY", "SELL") else "Ưu tiên CHỜ theo bias"
+        priority = f"Ưu tiên canh {action}" if action in ("BUY", "SELL") else "Ưu tiên CHỜ theo bias"
     else:
         priority = "Ưu tiên CHỜ (bias chưa rõ)"
 
-    # Context (không chấm điểm) -> cảnh báo ngắn gọn
+    # Context warnings
     ctx_warn = []
     tag_up = f"{h4_tag} {h1_tag} {m15_tag}".upper()
     if "TRANSITION" in tag_up:
         ctx_warn.append("Context: TRANSITION (dễ chop/false break)")
-    if liq_warn:
-        ctx_warn.append("Context: Liquidity WARNING / post-sweep")
-    if rec == "CHỜ":
+    if liq_warn and not sweep_for_side:
+        ctx_warn.append("Context: Liquidity WARNING (chưa có sweep/reversal rõ)")
+    if action == "CHỜ":
         ctx_warn.append("Context: Range/transition – ưu tiên quan sát")
 
-    # Missing items (chỉ dựa trên 4 pillars)
+    # Missing items
     missing: List[str] = []
     for name, ok in pillars:
         if ok is False:
-            if name == "Confirmation":
-                missing.append("Confirmation (BOS/CHOCH/impulse rõ)")
+            if "Confirmation" in name:
+                missing.append("Confirmation (CHOCH/BOS/impulse rõ)")
             else:
                 missing.append(name)
 
@@ -2579,17 +2678,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
         for w in ctx_warn[:3]:
             lines.append(f"- {w}")
 
-    # 5-checklist
     def okno(x):
         if x is None:
             return "…"
         return "✅" if x else "❌"
 
+    # For printing bias mode
+    bias_mode_txt = "CONT" if bias_cont else ("REV" if sweep_for_side else "n/a")
+
     lines.append("Checklist (4):")
-    lines.append(f"1) Bias (H4/H1): {okno(bias_final)}  ({h4_tag} / {h1_tag})")
-    lines.append(f"2) Location: {okno(loc_ok)}  ({loc_txt})")
-    lines.append(f"3) Liquidity: {okno(liquidity_ok)}  ({'WARN' if liq_warn else 'OK'})")
-    lines.append(f"4) Confirmation: {okno(confirmation_ok)}")
+    lines.append(f"1) Bias: {okno(bias_final)}  ({bias_mode_txt} | {h4_tag} / {h1_tag})")
+    lines.append(f"2) Location: {okno(loc_final)}  ({loc_txt})")
+    lines.append(f"3) Liquidity: {okno(liquidity_final)}  ({'OK' if liquidity_final else 'WARN'})")
+    lines.append(f"4) Confirmation: {okno(confirmation_final)}")
 
     if missing:
         lines.append("Thiếu / chờ thêm:")
