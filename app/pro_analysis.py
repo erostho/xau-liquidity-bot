@@ -565,124 +565,187 @@ def analyze_pro(symbol: str, m15, m30, h1, h4) -> Optional[Dict[str, Any]]:
 # =========================================================
 
 def format_signal(sig: Dict[str, Any]) -> str:
-    """Format Telegram message (PRO++).
-    - Keep old readable layout (like previous versions)
-    - Always show Entry/SL/TP when stars>=3 and recommendation is BUY/SELL
-    - Never crash if any field is missing/None
     """
-
+    Telegram message formatter (old, verbose template).
+    Keep icons/colors familiar, but robust against missing fields.
+    """
     def nf2(x):
-        try:
-            return f"{float(x):.2f}"
-        except Exception:
+        if x is None:
             return "..."
+        try:
+            v = float(x)
+        except Exception:
+            return str(x)
+        # compact formatting
+        if abs(v) >= 1000:
+            return f"{v:,.2f}".replace(",", "")
+        if abs(v) >= 1:
+            return f"{v:.2f}"
+        return f"{v:.4f}"
 
-    symbol = sig.get("symbol", "?")
-    tf = sig.get("tf", "?")
-    meta = sig.get("meta") if isinstance(sig.get("meta"), dict) else {}
-    session = sig.get("session") or (meta.get("session") if isinstance(meta, dict) else None)
+    if not isinstance(sig, dict):
+        return "❌ format_signal: invalid signal"
 
-    rec = sig.get("recommendation", "CHỜ")
+    symbol = sig.get("symbol") or "?"
+    tf = sig.get("tf") or "M30"
+    session = sig.get("session") or ""
+    rec = (sig.get("recommendation") or "CHỜ").strip()
+    trade_mode = (sig.get("trade_mode") or "MANUAL").strip()
     stars = int(sig.get("stars") or 0)
-    trade_mode = sig.get("trade_mode") or "MANUAL"
 
-    sd = sig.get("score_detail") if isinstance(sig.get("score_detail"), dict) else {}
+    meta = sig.get("meta") if isinstance(sig.get("meta"), dict) else {}
+    data_source = sig.get("data_source") or meta.get("data_source")
 
+    # --- Header (old style)
     lines: List[str] = []
 
-    # Header
-    head = f"📊 {symbol} | {tf}"
+    if stars < 3:
+        lines.append("⚠️ (Manual) Kèo dưới 3⭐️ – tham khảo thôi.")
+        lines.append("")  # spacer
+
+    head = f"\\n\\n📊 {symbol} | {tf}"
     if session:
         head += f" | {session}"
     lines.append(head)
 
-    # Data source (MT5 / TWELVEDATA_FALLBACK / etc.)
-    data_source = sig.get("data_source") or meta.get("data_source")
     if data_source:
-        lines.append(f"🛰️ Data: {data_source}")
+        lines.append(f"🛰 Data: {data_source}")
 
-    # Stars + Recommendation
-    stars_txt = "⭐" * max(0, min(stars, 5))
-    mode_txt = f" | Mode: {trade_mode}" if trade_mode else ""
-    score_txt = ""
-    if isinstance(sd.get("score"), (int, float)):
-        score_txt = f" ({int(sd.get('score'))}/4)"
-    lines.append(f"{stars_txt} {rec}{mode_txt}{score_txt}")
+    # Stars + recommendation (old style: "⭐ CHỜ")
+    stars_txt = "⭐" * max(stars, 1) if stars > 0 else "⭐"
+    # Keep mode visible when not MANUAL (old messages often omit MANUAL)
+    if trade_mode and trade_mode.upper() != "MANUAL":
+        lines.append(f"{stars_txt} {rec} | Mode: {trade_mode}")
+    else:
+        lines.append(f"{stars_txt} {rec}")
 
-    # Structure tags
+    # --- Structures
     h4_tag = meta.get("h4_tag") or "n/a"
     h1_tag = meta.get("h1_tag") or "n/a"
     m15_tag = meta.get("m15_tag") or "n/a"
     lines.append(f"Structure (Major): H4 {h4_tag} | H1 {h1_tag}")
     lines.append(f"Structure (Minor): M15 {m15_tag}")
 
-    # Key levels
-    key_lines = sig.get("key_levels_lines")
-    if isinstance(key_lines, list) and key_lines:
-        lines.append("Key levels:")
-        lines.extend([str(x) for x in key_lines if x is not None])
+    # --- Position / wait hints (PRO)
+    where = meta.get("where")
+    wait_for = meta.get("wait_for")
+    if where:
+        lines.append(f"Now: {where}")
+    if wait_for:
+        lines.append(f"Wait: {wait_for}")
 
-    # Entry plan (3⭐+ BUY/SELL)
+    # --- Key levels
+    key_levels = sig.get("key_levels") if isinstance(sig.get("key_levels"), dict) else {}
+
+    # Major (H4/H1)
+    lines.append("Key levels:")
+    lines.append("Major (H4/H1):")
+    # Prefer meta-injected levels if exist
+    for k in ("H1_HH", "H1_HL", "H1_LH", "H1_LL"):
+        v = key_levels.get(k)
+        if v is not None:
+            label = k.replace("_", " ")
+            # annotate HL as "trend giữ" if present
+            if k == "H1_HL":
+                lines.append(f"- H1 HL (trend giữ): {nf2(v)}")
+            else:
+                lines.append(f"- {label}: {nf2(v)}")
+
+    # Minor (M15)
+    lines.append("Minor (M15):")
+    rlow = key_levels.get("M15_RANGE_LOW")
+    rhigh = key_levels.get("M15_RANGE_HIGH")
+    if rlow is not None and rhigh is not None:
+        lines.append(f"- M15 Range: {nf2(rlow)} – {nf2(rhigh)}")
+
+    # Extra helpful minor levels (if available)
+    m15_last = key_levels.get("M15_LAST_CLOSE")
+    if m15_last is not None:
+        lines.append(f"- M15 Last close: {nf2(m15_last)}")
+    m15_bos = key_levels.get("M15_BOS_LEVEL")
+    if m15_bos is not None:
+        lines.append(f"- M15 BOS level: {nf2(m15_bos)}")
+
+    # --- Trade plan (force show for 3-4⭐)
     entry = sig.get("entry")
     sl = sig.get("sl")
     tp1 = sig.get("tp1")
     tp2 = sig.get("tp2")
+    show_trade_plan = bool(sig.get("show_trade_plan")) or (stars >= 3)
 
-    want_plan = (stars >= 3) and (str(rec).upper() in ("BUY", "SELL"))
-    has_plan = (entry is not None) and (sl is not None) and (tp1 is not None)
-
-    if want_plan and has_plan:
+    if show_trade_plan:
         lines.append(f"Entry: {nf2(entry)}")
+        # old template: "SL: ... | TP1: ... | TP2: ..."
         lines.append(f"SL: {nf2(sl)} | TP1: {nf2(tp1)} | TP2: {nf2(tp2)}")
     else:
+        # keep placeholders consistent
         lines.append("Entry: ...")
         lines.append("SL: ... | TP1: ... | TP2: ...")
 
-    # Liquidity
-    liq_lines = sig.get("liquidity_lines") if isinstance(sig.get("liquidity_lines"), list) else []
-    if liq_lines:
-        lines.append("")
-        lines.append("Liquidity:")
-        lines.extend([str(x) for x in liq_lines if x is not None])
+    lines.append("")  # spacer
 
-    # Normalized signal + checklist
-    lines.append("")
+    # --- Liquidity
+    liq_lines = sig.get("liquidity_lines") if isinstance(sig.get("liquidity_lines"), list) else []
+    if not liq_lines:
+        liq_lines = meta.get("liquidity_lines") if isinstance(meta.get("liquidity_lines"), list) else []
+    lines.append("Liquidity:")
+    if liq_lines:
+        for ln in liq_lines[:6]:
+            lines.append(f"- {ln}")
+    else:
+        lines.append("- Chưa thấy sweep/spring rõ (liquidity proxy).")
+
+    lines.append("")  # spacer
+
+    # --- Standardized signal block (old)
     lines.append("📌 TÍN HIỆU (chuẩn hoá):")
 
-    # Keep existing "standard" lines if present
-    std_lines = sig.get("standard_lines") if isinstance(sig.get("standard_lines"), list) else None
-    if std_lines:
-        lines.extend([str(x) for x in std_lines if x is not None])
+    # Context lines (keep your existing ones)
+    context_lines = sig.get("context_lines") if isinstance(sig.get("context_lines"), list) else []
+    if context_lines:
+        for ln in context_lines[:6]:
+            # ensure bullet
+            if ln.strip().startswith("-"):
+                lines.append(ln)
+            else:
+                lines.append(f"- {ln}")
+    else:
+        # fallback
+        lines.append("- Ưu tiên CHỜ (bias chưa rõ)")
 
-    checklist = sd.get("checklist") if isinstance(sd.get("checklist"), dict) else {}
-    bias_ok = bool(checklist.get("bias"))
-    loc_ok = bool(checklist.get("location"))
-    liq_ok = bool(checklist.get("liquidity"))
-    conf_ok = bool(checklist.get("confirmation"))
+    grade = sig.get("grade") or meta.get("grade")
+    trade_allowed = sig.get("trade_allowed")
+    if trade_allowed is None:
+        trade_allowed = meta.get("trade_allowed")
+    # show Grade/Trade if available
+    if grade is not None or trade_allowed is not None:
+        trade_txt = "YES" if trade_allowed else "NO"
+        grade_txt = str(grade) if grade is not None else "n/a"
+        lines.append(f"- Grade: {grade_txt} | Trade: {trade_txt}")
 
-    def mark(ok: bool) -> str:
-        return "✅" if ok else "❌"
-
-    # Optional detail strings
-    bias_detail = sd.get("bias_detail") or ""
-    loc_detail = sd.get("location_detail") or ""
-    liq_detail = sd.get("liquidity_detail") or ""
-    conf_detail = sd.get("confirmation_detail") or ""
-
+    # --- Checklist (4)
     lines.append("Checklist (4):")
-    lines.append(f"1) Bias: {mark(bias_ok)} {bias_detail}".rstrip())
-    lines.append(f"2) Location: {mark(loc_ok)} {loc_detail}".rstrip())
-    lines.append(f"3) Liquidity: {mark(liq_ok)} {liq_detail}".rstrip())
-    lines.append(f"4) Confirmation: {mark(conf_ok)} {conf_detail}".rstrip())
+    bias_ok = bool(meta.get("bias_ok"))
+    loc_ok = bool(meta.get("loc_ok"))
+    liq_ok = bool(meta.get("liq_ok"))
+    conf_ok = bool(meta.get("conf_ok"))
 
-    # Missing / wait hints
-    where = meta.get("where") or sig.get("where")
-    wait_for = meta.get("wait_for") or sig.get("wait_for")
-    if where or wait_for:
+    bias_note = meta.get("bias_note") or "n/a"
+    loc_note = meta.get("loc_note") or "n/a"
+    liq_note = meta.get("liq_note") or "n/a"
+    conf_note = meta.get("conf_note") or "n/a"
+
+    lines.append(f"1) Bias (H4/H1): {'✅' if bias_ok else '❌'} ({bias_note})")
+    lines.append(f"2) Location: {'✅' if loc_ok else '❌'} ({loc_note})")
+    lines.append(f"3) Liquidity: {'✅' if liq_ok else '❌'} ({liq_note})")
+    lines.append(f"4) Confirmation: {'✅' if conf_ok else '❌'}" + (f" ({conf_note})" if conf_note and conf_note != "n/a" else ""))
+
+    # Missing / wait more
+    missing = meta.get("missing") if isinstance(meta.get("missing"), list) else []
+    if missing:
         lines.append("Thiếu / chờ thêm:")
-        if where:
-            lines.append(f"- {where}")
-        if wait_for:
-            lines.append(f"- {wait_for}")
+        for x in missing[:6]:
+            lines.append(f"- {x}")
 
     return "\n".join(lines)
+
