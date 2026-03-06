@@ -2383,6 +2383,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # ---------- preface (NO DUP) ----------
     # auto warning only if no custom preface provided
     preface = sig.get("preface") or meta.get("preface") or ""
+    preface = str(preface).replace("\\n", " ").strip()
+    
     if not preface and trade_mode == "MANUAL" and stars_i and stars_i < 3:
         preface = "⚠️ (Manual) Kèo dưới 3⭐ – tham khảo thôi."
 
