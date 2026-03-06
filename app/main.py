@@ -854,7 +854,7 @@ async def telegram_webhook(request: Request):
                 elif stars < MIN_STARS:
                     # Manual 'NOW/SCAN': always send full analysis, but hide trade plan when under the star gate
                     #sig["show_trade_plan"] = False
-                    prefix = False
+                    prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\n\n"
                     _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
                 else:
                     _send_telegram(format_signal(sig), chat_id=chat_id)
