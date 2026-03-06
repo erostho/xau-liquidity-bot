@@ -2382,7 +2382,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # ---------- preface (NO DUP) ----------
     # auto warning only if no custom preface provided
-    #preface = sig.get("preface") or meta.get("preface") or ""
+    preface = sig.get("preface") or meta.get("preface") or ""
     preface = str(preface).replace("\\n", "\n")
     preface = "\n".join(dict.fromkeys(preface.splitlines())).strip()
     
@@ -2628,15 +2628,29 @@ def format_signal(sig: Dict[str, Any]) -> str:
     note_lines = sig.get("note_lines") or meta.get("note_lines") or []
     if isinstance(note_lines, str):
         note_lines = [note_lines]
+    
+    preface_lines = set(_to_lines(preface)) if preface else set()
+    
     if note_lines:
         for s in note_lines:
             if not s:
                 continue
-            s2 = str(s).strip().replace("\\n", "\n")
-            # don't repeat the same warning/preface
-            if preface and s2 == str(preface).strip():
+    
+            s2 = str(s).replace("\\n", "\n").strip()
+            if not s2:
                 continue
-            add(s2)
+    
+            # tách note thành từng dòng để so với preface
+            sub_lines = _to_lines(s2)
+    
+            # nếu tất cả các dòng trong note đều đã nằm trong preface -> bỏ
+            if sub_lines and all(x in preface_lines for x in sub_lines):
+                continue
+    
+            for sub in sub_lines:
+                if sub in preface_lines:
+                    continue
+                add(sub)
 
     # final: remove duplicate consecutive lines already handled by add()
     return "\n".join(lines)
