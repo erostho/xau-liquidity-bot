@@ -1215,6 +1215,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        return base
 
     # derive major_bearish for gating logic
     try:
@@ -2074,190 +2075,190 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         stars = min(stars, 3)
 
     # ---- Spread filter (NORMAL: không bóp nghẹt cơ hội) ----
-        # MT5 bars có thể có field 'spread' (points). Nếu không có, bỏ qua.
-        spread_now = getattr(m15c[-2], "spread", 0.0) if len(m15c) >= 3 else 0.0
-        spread_list = [float(getattr(c, "spread", 0.0) or 0.0) for c in m15c[-(60+2):-2]]
-        spread_list = [s for s in spread_list if s and s > 0]
+    # MT5 bars có thể có field 'spread' (points). Nếu không có, bỏ qua.
+    spread_now = getattr(m15c[-2], "spread", 0.0) if len(m15c) >= 3 else 0.0
+    spread_list = [float(getattr(c, "spread", 0.0) or 0.0) for c in m15c[-(60+2):-2]]
+    spread_list = [s for s in spread_list if s and s > 0]
 
-        spread_ratio = None
-        spread_warn = False
-        spread_block = False
-        if spread_now and spread_now > 0 and spread_list:
-            med = float(sorted(spread_list)[len(spread_list)//2])
-            if med > 0:
-                spread_ratio = float(spread_now) / med
+    spread_ratio = None
+    spread_warn = False
+    spread_block = False
+    if spread_now and spread_now > 0 and spread_list:
+        med = float(sorted(spread_list)[len(spread_list)//2])
+        if med > 0:
+            spread_ratio = float(spread_now) / med
 
-                # NORMAL thresholds:
-                # - HIGH: downgrade FULL -> HALF
-                # - BLOCK: WAIT (chỉ khi "bất thường" thật sự)
-                warn_k = 1.8 if xau_priority else 1.7
-                block_k = 2.6 if xau_priority else 2.9
+            # NORMAL thresholds:
+            # - HIGH: downgrade FULL -> HALF
+            # - BLOCK: WAIT (chỉ khi "bất thường" thật sự)
+            warn_k = 1.8 if xau_priority else 1.7
+            block_k = 2.6 if xau_priority else 2.9
 
-                if spread_ratio >= warn_k:
-                    spread_warn = True
-                if spread_ratio >= block_k:
-                    spread_block = True
+            if spread_ratio >= warn_k:
+                spread_warn = True
+            if spread_ratio >= block_k:
+                spread_block = True
 
-        if spread_ratio is not None:
-            base.setdefault("meta", {}).setdefault("spread", {})["ratio"] = spread_ratio
-            base.setdefault("meta", {}).setdefault("spread", {})["now"] = spread_now
+    if spread_ratio is not None:
+        base.setdefault("meta", {}).setdefault("spread", {})["ratio"] = spread_ratio
+        base.setdefault("meta", {}).setdefault("spread", {})["now"] = spread_now
 
-        if spread_block:
-            score3 = 1  # WAIT
-            base.setdefault("meta", {}).setdefault("spread", {})["state"] = "BLOCK"
-        elif spread_warn:
-            base.setdefault("meta", {}).setdefault("spread", {})["state"] = "HIGH"
-            # nếu vẫn đủ 3/3 thì downgrade FULL -> HALF
-            if score3 == 3:
-                score3 = 2
-
-        # ---- Reversal warning layer (cảnh báo đảo chiều) ----
-        reversal_flags: list[str] = []
-        severe_reversal = False
-
-        div = base.get("meta", {}).get("div", {}) or {}
-        if bias_side == "BUY" and div.get("bear"):
-            reversal_flags.append("Bearish divergence (M15) chống BUY")
-        if bias_side == "SELL" and div.get("bull"):
-            reversal_flags.append("Bullish divergence (M15) chống SELL")
-
-        h1_pat = _candle_patterns(h1c) if h1c else {}
-        h4_pat = _candle_patterns(h4c) if h4c else {}
-
-        if bias_side == "BUY" and (h1_pat.get("engulf") == "bear" or h1_pat.get("rejection") == "upper"):
-            reversal_flags.append("H1 có nến phản công (bear engulf / upper rejection)")
-            severe_reversal = True
-        if bias_side == "SELL" and (h1_pat.get("engulf") == "bull" or h1_pat.get("rejection") == "lower"):
-            reversal_flags.append("H1 có nến phản công (bull engulf / lower rejection)")
-            severe_reversal = True
-
-        if bias_side == "BUY" and (h4_pat.get("engulf") == "bear" or h4_pat.get("rejection") == "upper"):
-            reversal_flags.append("H4 có nến phản công (bear engulf / upper rejection)")
-            severe_reversal = True
-        if bias_side == "SELL" and (h4_pat.get("engulf") == "bull" or h4_pat.get("rejection") == "lower"):
-            reversal_flags.append("H4 có nến phản công (bull engulf / lower rejection)")
-            severe_reversal = True
-
-        if len(h1c) >= 30:
-            look = 10
-            prev_h1 = h1c[-(look+3):-3]
-            last_h1 = h1c[-2]  # last closed
-            prev_high = max(c.high for c in prev_h1) if prev_h1 else None
-            prev_low = min(c.low for c in prev_h1) if prev_h1 else None
-            if bias_side == "BUY" and prev_low is not None and last_h1.close < prev_low:
-                reversal_flags.append("H1 CHoCH nhỏ: close phá đáy gần nhất (nguy cơ đảo chiều)")
-                severe_reversal = True
-            if bias_side == "SELL" and prev_high is not None and last_h1.close > prev_high:
-                reversal_flags.append("H1 CHoCH nhỏ: close phá đỉnh gần nhất (nguy cơ đảo chiều)")
-                severe_reversal = True
-
-        if reversal_flags:
-            base.setdefault("meta", {})["reversal_warnings"] = reversal_flags
-
-        # Nếu đảo chiều mạnh: FULL -> HALF, HALF -> WAIT
-        if severe_reversal:
-            if score3 == 3:
-                score3 = 2
-            elif score3 == 2:
-                score3 = 1
-
-        # Confluence rule: nếu H1/H4 lệch nhau => tối đa HALF (không FULL)
-        if base.get("meta", {}).get("score_detail", {}).get("confluence_ok", 0) != 1 and score3 == 3:
+    if spread_block:
+        score3 = 1  # WAIT
+        base.setdefault("meta", {}).setdefault("spread", {})["state"] = "BLOCK"
+    elif spread_warn:
+        base.setdefault("meta", {}).setdefault("spread", {})["state"] = "HIGH"
+        # nếu vẫn đủ 3/3 thì downgrade FULL -> HALF
+        if score3 == 3:
             score3 = 2
 
-        trade_mode = "WAIT"
+    # ---- Reversal warning layer (cảnh báo đảo chiều) ----
+    reversal_flags: list[str] = []
+    severe_reversal = False
+
+    div = base.get("meta", {}).get("div", {}) or {}
+    if bias_side == "BUY" and div.get("bear"):
+        reversal_flags.append("Bearish divergence (M15) chống BUY")
+    if bias_side == "SELL" and div.get("bull"):
+        reversal_flags.append("Bullish divergence (M15) chống SELL")
+
+    h1_pat = _candle_patterns(h1c) if h1c else {}
+    h4_pat = _candle_patterns(h4c) if h4c else {}
+
+    if bias_side == "BUY" and (h1_pat.get("engulf") == "bear" or h1_pat.get("rejection") == "upper"):
+        reversal_flags.append("H1 có nến phản công (bear engulf / upper rejection)")
+        severe_reversal = True
+    if bias_side == "SELL" and (h1_pat.get("engulf") == "bull" or h1_pat.get("rejection") == "lower"):
+        reversal_flags.append("H1 có nến phản công (bull engulf / lower rejection)")
+        severe_reversal = True
+
+    if bias_side == "BUY" and (h4_pat.get("engulf") == "bear" or h4_pat.get("rejection") == "upper"):
+        reversal_flags.append("H4 có nến phản công (bear engulf / upper rejection)")
+        severe_reversal = True
+    if bias_side == "SELL" and (h4_pat.get("engulf") == "bull" or h4_pat.get("rejection") == "lower"):
+        reversal_flags.append("H4 có nến phản công (bull engulf / lower rejection)")
+        severe_reversal = True
+
+    if len(h1c) >= 30:
+        look = 10
+        prev_h1 = h1c[-(look+3):-3]
+        last_h1 = h1c[-2]  # last closed
+        prev_high = max(c.high for c in prev_h1) if prev_h1 else None
+        prev_low = min(c.low for c in prev_h1) if prev_h1 else None
+        if bias_side == "BUY" and prev_low is not None and last_h1.close < prev_low:
+            reversal_flags.append("H1 CHoCH nhỏ: close phá đáy gần nhất (nguy cơ đảo chiều)")
+            severe_reversal = True
+        if bias_side == "SELL" and prev_high is not None and last_h1.close > prev_high:
+            reversal_flags.append("H1 CHoCH nhỏ: close phá đỉnh gần nhất (nguy cơ đảo chiều)")
+            severe_reversal = True
+
+    if reversal_flags:
+        base.setdefault("meta", {})["reversal_warnings"] = reversal_flags
+
+    # Nếu đảo chiều mạnh: FULL -> HALF, HALF -> WAIT
+    if severe_reversal:
         if score3 == 3:
-            trade_mode = "FULL"
+            score3 = 2
         elif score3 == 2:
-            trade_mode = "HALF"
+            score3 = 1
+
+    # Confluence rule: nếu H1/H4 lệch nhau => tối đa HALF (không FULL)
+    if base.get("meta", {}).get("score_detail", {}).get("confluence_ok", 0) != 1 and score3 == 3:
+        score3 = 2
+
+    trade_mode = "WAIT"
+    if score3 == 3:
+        trade_mode = "FULL"
+    elif score3 == 2:
+        trade_mode = "HALF"
 
 
-        # Bonus stars from vol + candle pattern, and penalty from liquidity warning
-        bonus = 0
-        volq = _vol_quality(m15c, 20)
-        if volq.get("state") == "HIGH":
-            bonus += 1
-        cpat2 = _candle_patterns(m15c)
-        if (cpat2.get("engulf") == "bull" and bias_side == "BUY") or (cpat2.get("engulf") == "bear" and bias_side == "SELL"):
-            bonus += 1
-        if liq_warn:
-            bonus -= 1
+    # Bonus stars from vol + candle pattern, and penalty from liquidity warning
+    bonus = 0
+    volq = _vol_quality(m15c, 20)
+    if volq.get("state") == "HIGH":
+        bonus += 1
+    cpat2 = _candle_patterns(m15c)
+    if (cpat2.get("engulf") == "bull" and bias_side == "BUY") or (cpat2.get("engulf") == "bear" and bias_side == "SELL"):
+        bonus += 1
+    if liq_warn:
+        bonus -= 1
 
-        base.setdefault("meta", {}).setdefault("score_detail", {}).update({
-            "bias_ok": int(bias_ok),
-            "pullback_ok": int(pullback_ok),
-            "momentum_ok": int(momentum_ok),
-            "bias_tf": "H1+H4",
-            "bias_side": bias_side,
-            "score": int(score3),
-            "liq_warn": bool(liq_warn),
-            "volq": volq,
-            "candle": cpat2,
-        })
-        base["trade_mode"] = trade_mode
+    base.setdefault("meta", {}).setdefault("score_detail", {}).update({
+        "bias_ok": int(bias_ok),
+        "pullback_ok": int(pullback_ok),
+        "momentum_ok": int(momentum_ok),
+        "bias_tf": "H1+H4",
+        "bias_side": bias_side,
+        "score": int(score3),
+        "liq_warn": bool(liq_warn),
+        "volq": volq,
+        "candle": cpat2,
+    })
+    base["trade_mode"] = trade_mode
 
-        stars = 1
-        if score >= 6:
-            stars = 5
-        elif score >= 5:
-            stars = 4
-        elif score >= 3:
-            stars = 3
-        elif score >= 2:
-            stars = 2
+    stars = 1
+    if score >= 6:
+        stars = 5
+    elif score >= 5:
+        stars = 4
+    elif score >= 3:
+        stars = 3
+    elif score >= 2:
+        stars = 2
 
 
-        # ---- Override recommendation/stars by scoring engine (FULL/HALF/WAIT) ----
-        try:
-            sm = base.get("trade_mode", "WAIT")
-            sd = (base.get("meta", {}) or {}).get("score_detail", {}) or {}
-            side2 = sd.get("bias_side", None)
+    # ---- Override recommendation/stars by scoring engine (FULL/HALF/WAIT) ----
+    try:
+        sm = base.get("trade_mode", "WAIT")
+        sd = (base.get("meta", {}) or {}).get("score_detail", {}) or {}
+        side2 = sd.get("bias_side", None)
 
-            if sm in ("FULL", "HALF") and side2 in ("BUY", "SELL") and entry is not None and sl is not None and tp1 is not None:
-                recommendation = "🟢 BUY" if side2 == "BUY" else "🔴 SELL"
+        if sm in ("FULL", "HALF") and side2 in ("BUY", "SELL") and entry is not None and sl is not None and tp1 is not None:
+            recommendation = "🟢 BUY" if side2 == "BUY" else "🔴 SELL"
 
-                # base stars by mode
-                stars_mode = 4 if sm == "FULL" else 3
-                b = 0
-                # bonus from meta (already computed)
-                if (sd.get("volq", {}) or {}).get("state") == "HIGH":
-                    b += 1
-                c = sd.get("candle", {}) or {}
-                if (c.get("engulf") == "bull" and side2 == "BUY") or (c.get("engulf") == "bear" and side2 == "SELL"):
-                    b += 1
-                if sd.get("liq_warn"):
-                    b -= (2 if str(symbol).upper().startswith("XAU") else 1)
+            # base stars by mode
+            stars_mode = 4 if sm == "FULL" else 3
+            b = 0
+            # bonus from meta (already computed)
+            if (sd.get("volq", {}) or {}).get("state") == "HIGH":
+                b += 1
+            c = sd.get("candle", {}) or {}
+            if (c.get("engulf") == "bull" and side2 == "BUY") or (c.get("engulf") == "bear" and side2 == "SELL"):
+                b += 1
+            if sd.get("liq_warn"):
+                b -= (2 if str(symbol).upper().startswith("XAU") else 1)
 
-                stars = max(stars, stars_mode + b)
-            else:
-                # WAIT or missing components -> no trade
-                base["trade_mode"] = "WAIT"
-                recommendation = "CHỜ"
-                stars = min(stars, 2)
-        except Exception:
-            pass
+            stars = max(stars, stars_mode + b)
+        else:
+            # WAIT or missing components -> no trade
+            base["trade_mode"] = "WAIT"
+            recommendation = "CHỜ"
+            stars = min(stars, 2)
+    except Exception:
+        pass
 
-        quality_lines.append("RR ~ 1:2")
-        if rdist is not None:
-            quality_lines.append(f"R~{rdist:.2f} | SL=MIN(Liq, ATR, Risk) (risk engine)")
+    quality_lines.append("RR ~ 1:2")
+    if rdist is not None:
+        quality_lines.append(f"R~{rdist:.2f} | SL=MIN(Liq, ATR, Risk) (risk engine)")
 
-        stars = max(1, min(5, int(stars)))
-        base.update({
-            "context_lines": context_lines,
-            "position_lines": position_lines,
-            "liquidity_lines": liquidity_lines,
-            "quality_lines": quality_lines,
-            "recommendation": recommendation,
-            "stars": stars,
-            "entry": float(entry),
-            "sl": float(sl),
-            "tp1": float(tp1),
-            "tp2": float(tp2),
-            "lot": float(lot) if lot is not None else None,
-            "notes": notes,
-        })
-        _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
-        return base
+    stars = max(1, min(5, int(stars)))
+    base.update({
+        "context_lines": context_lines,
+        "position_lines": position_lines,
+        "liquidity_lines": liquidity_lines,
+        "quality_lines": quality_lines,
+        "recommendation": recommendation,
+        "stars": stars,
+        "entry": float(entry),
+        "sl": float(sl),
+        "tp1": float(tp1),
+        "tp2": float(tp2),
+        "lot": float(lot) if lot is not None else None,
+        "notes": notes,
+    })
+    _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+    return base
 
     # =========================
     # Formatter (MUST be named format_signal for main.py import)
