@@ -2382,7 +2382,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # ---------- preface (NO DUP) ----------
     # auto warning only if no custom preface provided
-    preface = sig.get("preface") or meta.get("preface") or ""
+    #preface = sig.get("preface") or meta.get("preface") or ""
     preface = str(preface).replace("\\n", "\n")
     preface = "\n".join(dict.fromkeys(preface.splitlines())).strip()
     
