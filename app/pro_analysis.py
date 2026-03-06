@@ -2385,9 +2385,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     preface = sig.get("preface") or meta.get("preface") or ""
     preface = str(preface).replace("\\n", "\n")
     preface = "\n".join(dict.fromkeys(preface.splitlines())).strip()
-    
-    if not preface and trade_mode == "MANUAL" and stars_i and stars_i < 3:
-        preface = "⚠️ (Manual) Kèo dưới 3⭐ – tham khảo thôi."
+    #if not preface and trade_mode == "MANUAL" and stars_i and stars_i < 3:
+        #preface = "⚠️ (Manual) Kèo dưới 3⭐ – tham khảo thôi."
 
     lines: List[str] = []
     seen = set()
