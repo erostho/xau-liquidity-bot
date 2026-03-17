@@ -434,6 +434,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     # 4) Tách field an toàn
     try:
         meta = sig.get("meta", {}) or {}
+        
         if not isinstance(meta, dict):
             meta = {}
     except Exception:
@@ -712,19 +713,25 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     # 18) Build reply an toàn
     lines = []
-    # ===== 0. SCORING =====
+    # ===== PREP =====
+    phase369 = (meta.get("phase_369") or {}) if isinstance(meta, dict) else {}
+    if not isinstance(phase369, dict):
+        phase369 = {}
+    
+    ctx_txt = " ".join(str(x) for x in ctx).lower()
+    
+    # ===== SCORING =====
     score = 0
-    score_max = 100
     
     # Bias
-    if side == "BUY" and "bullish" in " ".join(ctx).lower():
+    if side == "BUY" and "bullish" in ctx_txt:
         score += 20
-    elif side == "SELL" and "bearish" in " ".join(ctx).lower():
+    elif side == "SELL" and "bearish" in ctx_txt:
         score += 20
     else:
         score += 10
     
-    # Location (range)
+    # Location
     if pos is not None:
         if 0.3 <= pos <= 0.7:
             score += 20
@@ -734,12 +741,12 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             score += 5
     
     # Liquidity
-    if liq and "chưa thấy" not in " ".join(liq).lower():
+    if liq and "chưa" not in " ".join(liq).lower():
         score += 15
     else:
         score += 8
     
-    # Confirmation (structure)
+    # Structure
     if gate.get("break_up") or gate.get("break_dn"):
         score += 20
     elif gate.get("hl") or gate.get("lh"):
@@ -765,39 +772,48 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     else:
         grade = "C"
     
-    # ===== DECISION TAG =====
-    decision_tag = "HOLD"
+    confidence = min(95, int(score * 0.95))
+    
+    # ===== TRAP DETECTION =====
+    trap = None
+    if "sideway" in ctx_txt and volq.get("state") == "LOW":
+        trap = "Fake breakout dễ xảy ra"
+    if div.get("bear") and side == "BUY":
+        trap = "BUY gặp bearish divergence"
+    if div.get("bull") and side == "SELL":
+        trap = "SELL gặp bullish divergence"
+    
+    # ===== DECISION =====
+    decision = "HOLD"
+    
     if grade in ["A", "A+"] and (gate.get("break_up") or gate.get("break_dn")):
-        decision_tag = "ADD OK"
+        decision = "ADD"
     elif grade in ["A", "A+"] and not (gate.get("break_up") or gate.get("break_dn")):
-        decision_tag = "HOLD SMALL"
+        decision = "HOLD SMALL"
     elif grade == "B":
-        decision_tag = "SCALP ONLY"
+        decision = "SCALP"
     else:
-        decision_tag = "AVOID"
+        decision = "AVOID"
     
     # ===== HEADER =====
-    lines.append("🧠 REVIEW LỆNH (Manual) V3")
+    lines.append("🧠 REVIEW LỆNH (Manual) V4")
     lines.append("")
+    lines.append(f"📌 {symbol} | {side} | {grade} | {decision} | Confidence: {confidence}%")
     
-    lines.append(f"📌 {symbol} | {side} | {grade} ({score}/100) | {decision_tag}")
-    
-    # ===== EXECUTIVE SUMMARY =====
+    # ===== SUMMARY =====
     summary = []
     
-    if "SIDEWAY" in " ".join(ctx):
-        summary.append("sideway → dễ fake breakout")
+    if "sideway" in ctx_txt:
+        summary.append("sideway → dễ quét 2 đầu")
     
     if volq.get("state") == "LOW":
-        summary.append("volume thấp → ưu tiên TP nhanh")
+        summary.append("volume thấp")
     
-    if not gate.get("break_up") and not gate.get("break_dn"):
-        summary.append("chưa có break xác nhận")
+    if not (gate.get("break_up") or gate.get("break_dn")):
+        summary.append("chưa có xác nhận")
     
-    if side == "BUY":
-        summary.append("ưu tiên chờ break đỉnh để giữ mạnh")
-    else:
-        summary.append("ưu tiên chờ break đáy để giữ mạnh")
+    if trap:
+        summary.append(f"⚠️ {trap}")
     
     lines.append("Tóm tắt: " + ", ".join(summary))
     lines.append("")
@@ -809,38 +825,27 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append(f"- 5-10-15: {mgmt.get('stage','n/a')} | {mgmt.get('label','n/a')}")
     
     # ===== DECISION NOW =====
-    decision_now = decision_tag
     if side == "BUY" and hi:
-        decision_now += f" → chờ M15 đóng > {hi:.2f}"
+        lines.append(f"- Decision: {decision} → chờ M15 đóng > {hi:.2f}")
     elif side == "SELL" and lo:
-        decision_now += f" → chờ M15 đóng < {lo:.2f}"
-    
-    lines.append(f"- Decision now: {decision_now}")
-    
-    if a:
-        lines.append(f"- ATR: {a:.2f}")
+        lines.append(f"- Decision: {decision} → chờ M15 đóng < {lo:.2f}")
+    else:
+        lines.append(f"- Decision: {decision}")
     
     # ===== RANGE =====
     if rinfo:
         pos_pct = int(max(0, min(1, pos)) * 100) if pos is not None else 0
         lines.append("")
-        lines.append("📏 Range M15:")
+        lines.append("📏 Range:")
         lines.append(f"- {lo:.2f} – {hi:.2f}")
         lines.append(f"- Current: {cur:.2f} (~{pos_pct}%)")
     
-    # ===== CONTEXT =====
-    lines.append("")
-    lines.append("Context:")
-    for s in ctx[:2]:
-        lines.append(f"- {s}")
-    
-    # ===== GATE =====
+    # ===== STRUCTURE =====
     lines.append("")
     lines.append("Structure:")
-    
     lines.append(
         f"- HL={gate.get('hl')} | LH={gate.get('lh')} | "
-        f"break_up={gate.get('break_up')} | break_dn={gate.get('break_dn')}"
+        f"BreakUp={gate.get('break_up')} | BreakDn={gate.get('break_dn')}"
     )
     
     # ===== ACTION =====
@@ -848,35 +853,35 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append("Action:")
     
     if volq.get("state"):
-        lines.append(f"- Volume {volq.get('state')} (x{volq.get('ratio',0):.2f})")
+        lines.append(f"- Volume: {volq.get('state')}")
     
     if cpat.get("txt"):
         lines.append(f"- Candle: {cpat.get('txt')}")
     
     # ===== INVALIDATION =====
     if side == "BUY":
-        lines.append(f"- Invalidation: thủng {sl} hoặc mất HL → thoát")
+        lines.append(f"- Invalidation: thủng {sl} → thoát")
     else:
-        lines.append(f"- Invalidation: vượt {sl} hoặc mất LH → thoát")
+        lines.append(f"- Invalidation: vượt {sl} → thoát")
     
     # ===== TIME RISK =====
     lines.append("")
     lines.append("⏱ Time risk:")
-    lines.append("- Nếu sau 3–5 nến M15 không break → edge giảm mạnh")
+    lines.append("- 3–5 nến không break → edge giảm")
     
     # ===== ATR PLAN =====
     if a > 0:
         if side == "BUY":
-            tp1_s = entry + 0.9 * a
-            tp2_s = entry + 1.8 * a
+            tp1 = entry + 0.9 * a
+            tp2 = entry + 1.8 * a
         else:
-            tp1_s = entry - 0.9 * a
-            tp2_s = entry - 1.8 * a
+            tp1 = entry - 0.9 * a
+            tp2 = entry - 1.8 * a
     
         lines.append("")
         lines.append("ATR Plan:")
-        lines.append(f"- TP1: {tp1_s:.2f}")
-        lines.append(f"- TP2: {tp2_s:.2f}")
+        lines.append(f"- TP1: {tp1:.2f}")
+        lines.append(f"- TP2: {tp2:.2f}")
         lines.append("- +0.8 ATR → BE")
         lines.append("- +1.2 ATR → trailing")
     
