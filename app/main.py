@@ -712,100 +712,175 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     # 18) Build reply an toàn
     lines = []
-    lines.append("🧠 REVIEW LỆNH (Manual)")
-    lines.append(f"📌 {symbol} | {side} | Kết luận: {verdict}")
-    lines.append(f"- Entry: {entry_lo:.2f} – {entry_hi:.2f}")
-    lines.append(f"- TP: {tp if tp is not None else '...'} | SL: {sl if sl is not None else '...'} | {rr_txt}")
-
-    try:
-        phase369 = (meta.get("phase_369") or {}) if isinstance(meta, dict) else {}
-        if isinstance(phase369, dict) and phase369:
-            phase_reason = phase369.get("reason") or phase369.get("note") or ""
-            phase_line = f"- Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')}"
-            if phase_reason:
-                phase_line += f" | {phase_reason}"
-            lines.append(phase_line)
-    except Exception as e:
-        logger.exception("phase369 build failed for %s: %s", symbol, e)
-
-    if a:
-        lines.append(f"- ATR(14) M15 ≈ {a:.2f}")
-
-    try:
-        if rinfo and pos is not None:
-            pos_pct = int(max(0, min(1, float(pos))) * 100)
-            lines.append("")
-            lines.append("📏 Ngắn hạn (range 30 nến M15 ~ 7.5h):")
-            if lo is not None and hi is not None:
-                lines.append(f"- Range: {float(lo):.2f} – {float(hi):.2f}")
-            if cur is not None:
-                lines.append(f"- Giá hiện tại: {float(cur):.2f} (~{pos_pct}% trong range)")
-        elif rinfo:
-            lines.append("")
-            lines.append("📏 Ngắn hạn (range 30 nến M15 ~ 7.5h):")
-            if lo is not None and hi is not None:
-                lines.append(f"- Range: {float(lo):.2f} – {float(hi):.2f}")
-            if cur is not None:
-                lines.append(f"- Giá hiện tại: {float(cur):.2f}")
-    except Exception as e:
-        logger.exception("range block failed for %s: %s", symbol, e)
-
-    if ctx:
-        lines.append("")
-        lines.append("Context:")
-        for s in ctx:
-            try:
-                lines.append(f"- {s}")
-            except Exception:
-                pass
-
-    lines.append("")
-    lines.append("Liquidity (từ bot):")
-    if liq:
-        for s in liq[:4]:
-            try:
-                lines.append(f"- {s}")
-            except Exception:
-                pass
+    # ===== 0. SCORING =====
+    score = 0
+    score_max = 100
+    
+    # Bias
+    if side == "BUY" and "bullish" in " ".join(ctx).lower():
+        score += 20
+    elif side == "SELL" and "bearish" in " ".join(ctx).lower():
+        score += 20
     else:
-        lines.append("- n/a")
-
+        score += 10
+    
+    # Location (range)
+    if pos is not None:
+        if 0.3 <= pos <= 0.7:
+            score += 20
+        elif 0.2 <= pos <= 0.8:
+            score += 15
+        else:
+            score += 5
+    
+    # Liquidity
+    if liq and "chưa thấy" not in " ".join(liq).lower():
+        score += 15
+    else:
+        score += 8
+    
+    # Confirmation (structure)
+    if gate.get("break_up") or gate.get("break_dn"):
+        score += 20
+    elif gate.get("hl") or gate.get("lh"):
+        score += 12
+    else:
+        score += 5
+    
+    # Volume
+    if volq.get("state") == "HIGH":
+        score += 15
+    elif volq.get("state") == "LOW":
+        score += 5
+    else:
+        score += 10
+    
+    # ===== GRADE =====
+    if score >= 80:
+        grade = "A+"
+    elif score >= 65:
+        grade = "A"
+    elif score >= 50:
+        grade = "B"
+    else:
+        grade = "C"
+    
+    # ===== DECISION TAG =====
+    decision_tag = "HOLD"
+    if grade in ["A", "A+"] and (gate.get("break_up") or gate.get("break_dn")):
+        decision_tag = "ADD OK"
+    elif grade in ["A", "A+"] and not (gate.get("break_up") or gate.get("break_dn")):
+        decision_tag = "HOLD SMALL"
+    elif grade == "B":
+        decision_tag = "SCALP ONLY"
+    else:
+        decision_tag = "AVOID"
+    
+    # ===== HEADER =====
+    lines.append("🧠 REVIEW LỆNH (Manual) V3")
     lines.append("")
-    lines.append("🧱 CHỜ CẤU TRÚC LÀ CHỜ GÌ?")
-    lines.append(str(gate.get("txt", "Không có mô tả gate.")))
-    lines.append(
-        f"- Trạng thái hiện tại: HL={gate.get('hl', False)} | "
-        f"LH={gate.get('lh', False)} | "
-        f"break_up={gate.get('break_up', False)} | "
-        f"break_dn={gate.get('break_dn', False)}"
-    )
-
+    
+    lines.append(f"📌 {symbol} | {side} | {grade} ({score}/100) | {decision_tag}")
+    
+    # ===== EXECUTIVE SUMMARY =====
+    summary = []
+    
+    if "SIDEWAY" in " ".join(ctx):
+        summary.append("sideway → dễ fake breakout")
+    
+    if volq.get("state") == "LOW":
+        summary.append("volume thấp → ưu tiên TP nhanh")
+    
+    if not gate.get("break_up") and not gate.get("break_dn"):
+        summary.append("chưa có break xác nhận")
+    
+    if side == "BUY":
+        summary.append("ưu tiên chờ break đỉnh để giữ mạnh")
+    else:
+        summary.append("ưu tiên chờ break đáy để giữ mạnh")
+    
+    lines.append("Tóm tắt: " + ", ".join(summary))
     lines.append("")
-    lines.append("✅ Gợi ý nên làm gì NGAY BÂY GIỜ:")
-    seen = set()
-    for a1 in actions:
-        try:
-            if a1 and a1 not in seen:
-                seen.add(a1)
-                lines.append(f"- {a1}")
-        except Exception:
-            pass
-    if len(seen) == 0:
-        lines.append("- Chưa có gợi ý cụ thể → ưu tiên giữ nhỏ, không add, chờ cấu trúc rõ hơn.")
-
-    lines.append("")
-    lines.append(f"🪜 Quản trị 5-10-15: {mgmt.get('stage', 'n/a')} | {mgmt.get('label', 'n/a')}")
-    try:
-        for s in (mgmt.get("lines", []) or []):
-            lines.append(f"- {s}")
-    except Exception:
-        lines.append("- n/a")
-
-    if suggest_lines:
+    
+    # ===== CORE =====
+    lines.append(f"- Entry: {entry:.2f}")
+    lines.append(f"- TP: {tp if tp else '...'} | SL: {sl if sl else '...'} | {rr_txt}")
+    lines.append(f"- Phase 369: {phase369.get('phase','n/a')} | {phase369.get('label','n/a')}")
+    lines.append(f"- 5-10-15: {mgmt.get('stage','n/a')} | {mgmt.get('label','n/a')}")
+    
+    # ===== DECISION NOW =====
+    decision_now = decision_tag
+    if side == "BUY" and hi:
+        decision_now += f" → chờ M15 đóng > {hi:.2f}"
+    elif side == "SELL" and lo:
+        decision_now += f" → chờ M15 đóng < {lo:.2f}"
+    
+    lines.append(f"- Decision now: {decision_now}")
+    
+    if a:
+        lines.append(f"- ATR: {a:.2f}")
+    
+    # ===== RANGE =====
+    if rinfo:
+        pos_pct = int(max(0, min(1, pos)) * 100) if pos is not None else 0
         lines.append("")
-        lines.extend(suggest_lines)
-
-    return "\n".join(str(x) for x in lines if x is not None)
+        lines.append("📏 Range M15:")
+        lines.append(f"- {lo:.2f} – {hi:.2f}")
+        lines.append(f"- Current: {cur:.2f} (~{pos_pct}%)")
+    
+    # ===== CONTEXT =====
+    lines.append("")
+    lines.append("Context:")
+    for s in ctx[:2]:
+        lines.append(f"- {s}")
+    
+    # ===== GATE =====
+    lines.append("")
+    lines.append("Structure:")
+    
+    lines.append(
+        f"- HL={gate.get('hl')} | LH={gate.get('lh')} | "
+        f"break_up={gate.get('break_up')} | break_dn={gate.get('break_dn')}"
+    )
+    
+    # ===== ACTION =====
+    lines.append("")
+    lines.append("Action:")
+    
+    if volq.get("state"):
+        lines.append(f"- Volume {volq.get('state')} (x{volq.get('ratio',0):.2f})")
+    
+    if cpat.get("txt"):
+        lines.append(f"- Candle: {cpat.get('txt')}")
+    
+    # ===== INVALIDATION =====
+    if side == "BUY":
+        lines.append(f"- Invalidation: thủng {sl} hoặc mất HL → thoát")
+    else:
+        lines.append(f"- Invalidation: vượt {sl} hoặc mất LH → thoát")
+    
+    # ===== TIME RISK =====
+    lines.append("")
+    lines.append("⏱ Time risk:")
+    lines.append("- Nếu sau 3–5 nến M15 không break → edge giảm mạnh")
+    
+    # ===== ATR PLAN =====
+    if a > 0:
+        if side == "BUY":
+            tp1_s = entry + 0.9 * a
+            tp2_s = entry + 1.8 * a
+        else:
+            tp1_s = entry - 0.9 * a
+            tp2_s = entry - 1.8 * a
+    
+        lines.append("")
+        lines.append("ATR Plan:")
+        lines.append(f"- TP1: {tp1_s:.2f}")
+        lines.append(f"- TP2: {tp2_s:.2f}")
+        lines.append("- +0.8 ATR → BE")
+        lines.append("- +1.2 ATR → trailing")
+    
+    return "\n".join(lines)
 
 
 
