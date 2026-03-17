@@ -133,20 +133,46 @@ _MANUAL_RE = re.compile(
 )
 
 def parse_manual_trade(text: str):
-    m = _MANUAL_RE.match((text or "").strip())
+    """Parse manual trade text from Telegram.
+    Supports examples:
+      BTC BUY 73344 TP 76314 SL 72069
+      BTC BUY 73344 SL 72069 TP 76314
+      XAU SELL 3012-3015 TP:2998 SL:3022
+      btcusd buy 73344, tp 76314, sl 72069
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    cleaned = re.sub(r"[，,;]+", " ", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    m = re.match(
+        r"^(?P<sym>[A-Za-z0-9/_\-]+)\s+(?P<side>BUY|SELL)\s+(?P<entry1>\d+(?:\.\d+)?)(?:\s*[-~]\s*(?P<entry2>\d+(?:\.\d+)?))?(?P<rest>.*)$",
+        cleaned,
+        re.IGNORECASE,
+    )
     if not m:
         return None
 
     symbol = normalize_symbol(m.group("sym"))
     side = m.group("side").upper()
-
     e1 = float(m.group("entry1"))
     e2 = float(m.group("entry2")) if m.group("entry2") else None
     entry_lo = min(e1, e2) if e2 is not None else e1
     entry_hi = max(e1, e2) if e2 is not None else e1
 
-    tp = float(m.group("tp")) if m.group("tp") else None
-    sl = float(m.group("sl")) if m.group("sl") else None
+    rest = m.group("rest") or ""
+    tp = None
+    sl = None
+
+    mtp = re.search(r"(?:TP|TP1|TARGET)\s*[:=]?\s*(\d+(?:\.\d+)?)", rest, re.IGNORECASE)
+    if mtp:
+        tp = float(mtp.group(1))
+
+    msl = re.search(r"(?:SL|STOP)\s*[:=]?\s*(\d+(?:\.\d+)?)", rest, re.IGNORECASE)
+    if msl:
+        sl = float(msl.group(1))
 
     return {
         "symbol": symbol,
@@ -272,6 +298,43 @@ def _hl_lh_gate(m15, atr_val):
         f"- SELL chỉ mạnh khi: LH=True và M15 đóng < đáy gần ({ref_lo:.2f})."
     )
     return {"hl": hl, "lh": lh, "break_up": break_up, "break_dn": break_dn, "ref_hi": ref_hi, "ref_lo": ref_lo, "txt": txt}
+def _trade_management_5_10_15(side: str, entry: float, cur: float | None, atr_val: float | None, gate: dict, div: dict, cpat: dict, volq: dict, tp: float | None, sl: float | None) -> dict:
+    """Simple management ladder: 5=validation, 10=protection, 15=harvest."""
+    out = {"stage": 5, "label": "Validation", "lines": []}
+    if cur is None or not atr_val or atr_val <= 0:
+        out["lines"].append("5-10-15: thiếu ATR/giá hiện tại → giữ plan hiện tại, không add cảm xúc.")
+        return out
+
+    move = (cur - entry) if str(side).upper() == "BUY" else (entry - cur)
+    move_atr = move / max(float(atr_val), 1e-9)
+    side_u = str(side).upper()
+    struct_ok = bool(gate.get("hl") and gate.get("break_up")) if side_u == "BUY" else bool(gate.get("lh") and gate.get("break_dn"))
+    against_div = bool(div.get("bear")) if side_u == "BUY" else bool(div.get("bull"))
+    against_candle = bool(cpat.get("engulf") == "BEAR" or cpat.get("rejection") == "UPPER") if side_u == "BUY" else bool(cpat.get("engulf") == "BULL" or cpat.get("rejection") == "LOWER")
+    low_vol = (volq or {}).get("state") == "LOW"
+
+    if move_atr >= 1.2:
+        out["stage"] = 15
+        out["label"] = "Harvest"
+        out["lines"].append("15: Lệnh đã đi >1.2 ATR → ưu tiên trailing / chốt phần lớn, không mở thêm muộn.")
+        if against_div or against_candle or low_vol:
+            out["lines"].append("⚠️ Cuối nhịp có dấu hiệu hụt hơi → nên chốt mạnh tay hơn phần còn lại.")
+    elif move_atr >= 0.8:
+        out["stage"] = 10
+        out["label"] = "Protection"
+        out["lines"].append("10: Lệnh đã sống → dời BE và cân nhắc chốt 30–50% tại TP1 / vùng gần nhất.")
+        if not struct_ok:
+            out["lines"].append("⚠️ Chưa có cấu trúc giữ lệnh đẹp → ưu tiên bảo vệ lợi nhuận, không add.")
+    else:
+        out["stage"] = 5
+        out["label"] = "Validation"
+        if move_atr <= -0.8 and not struct_ok:
+            out["lines"].append("5: Lệnh đang âm >0.8 ATR mà chưa có cấu trúc ủng hộ → thoát/giảm size, không cầu nguyện.")
+        else:
+            out["lines"].append("5: Lệnh còn ở pha kiểm tra → chỉ giữ ngắn hạn, đợi cấu trúc xác nhận rồi mới nghĩ tới giữ mạnh/add.")
+
+    return out
+
 def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float, tp: float | None, sl: float | None) -> str:
     side = (side or "").upper().strip()
     entry = (float(entry_lo) + float(entry_hi)) / 2.0
@@ -285,10 +348,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     #sig = analyze_pro(symbol, m15, m30, h1, h4)
     try:
         sig = analyze_pro(symbol, m15, m30, h1, h4)
-    except RecursionError as e:
-        logger.exception("RecursionError while analyzing %s", sym)
-        _send_telegram(f"❌ Analysis failed ({sym}): RecursionError (check logs)", chat_id=chat_id)
-        return "ok"
+    except RecursionError:
+        logger.exception("RecursionError while analyzing %s", symbol)
+        return f"❌ REVIEW lỗi cho {symbol}: RecursionError trong analyze_pro (xem logs)."
     # attach data source for Telegram (prefer M30, else M15)
     try:
         ds = src30 or src15 or src1h or src4h
@@ -462,12 +524,17 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         suggest_lines.append(f"- TP2 đề xuất: ~{tp2_s:.2f} (phần còn lại)")
         suggest_lines.append(f"- Rule: đạt +0.8 ATR → dời SL về BE; đạt +1.2 ATR → trailing theo high/low 3 nến M15.")
 
+    mgmt = _trade_management_5_10_15(side, entry, cur, a, gate, div, cpat, volq, tp, sl)
+
     # 8) build reply
     lines = []
     lines.append("🧠 REVIEW LỆNH (Manual)")
     lines.append(f"📌 {symbol} | {side} | Kết luận: {verdict}")
     lines.append(f"- Entry: {entry_lo:.2f} – {entry_hi:.2f}")
     lines.append(f"- TP: {tp if tp is not None else '...'} | SL: {sl if sl is not None else '...'} | {rr_txt}")
+    phase369 = (meta.get("phase_369") or {}) if isinstance(meta, dict) else {}
+    if phase369:
+        lines.append(f"- Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')} | {phase369.get('reason', '')}".rstrip())
     if a:
         lines.append(f"- ATR(14) M15 ≈ {a:.2f}")
 
@@ -502,6 +569,11 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if a1 and a1 not in seen:
             seen.add(a1)
             lines.append(f"- {a1}")
+
+    lines.append("")
+    lines.append(f"🪜 Quản trị 5-10-15: {mgmt.get('stage')} | {mgmt.get('label')}")
+    for s in mgmt.get("lines", []):
+        lines.append(f"- {s}")
 
     if suggest_lines:
         lines.append("")
