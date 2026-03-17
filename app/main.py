@@ -75,11 +75,38 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
                 json={"chat_id": cid, "text": part, "parse_mode": "HTML", "disable_web_page_preview": True},
                 timeout=15
             )
-
-
     except Exception as e:
         logger.exception("[TG] send failed: %s", e)
 
+def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500):
+    text = str(text or "")
+    if not text.strip():
+        return
+
+    parts = []
+    buf = ""
+
+    for line in text.splitlines(True):  # giữ newline
+        if len(buf) + len(line) <= chunk_size:
+            buf += line
+        else:
+            if buf:
+                parts.append(buf)
+            if len(line) <= chunk_size:
+                buf = line
+            else:
+                # line quá dài thì cắt cứng
+                for i in range(0, len(line), chunk_size):
+                    parts.append(line[i:i + chunk_size])
+                buf = ""
+
+    if buf:
+        parts.append(buf)
+
+    total = len(parts)
+    for i, part in enumerate(parts, start=1):
+        header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
+        _send_telegram(header + part, chat_id=chat_id)
 
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
@@ -1059,6 +1086,8 @@ async def telegram_webhook(request: Request):
         return "OK"
 
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
+    
+    # 0) ƯU TIÊN: Manual trade review (không cần "now")
     parsed = parse_manual_trade(text)
     if parsed:
         logger.info("[TG][REVIEW] matched manual trade: text=%r parsed=%s", text, parsed)
@@ -1071,12 +1100,17 @@ async def telegram_webhook(request: Request):
             reply = f"❌ REVIEW lỗi: {e}"
     
         try:
-            _send_telegram(reply, chat_id=chat_id)
+            _send_long_telegram(reply, chat_id=chat_id)
         except Exception as send_err:
             logger.exception(
-                "send telegram failed for manual review: chat_id=%s err=%s reply=%r",
-                chat_id, send_err, reply
+                "send long telegram failed for manual review: chat_id=%s err=%s",
+                chat_id, send_err
             )
+            try:
+                _send_telegram("❌ REVIEW lỗi: không gửi được tin nhắn dài. Xem logs.", chat_id=chat_id)
+            except Exception:
+                pass
+    
         return "OK"
 
     low = text.lower()
