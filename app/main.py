@@ -166,11 +166,11 @@ def parse_manual_trade(text: str):
     tp = None
     sl = None
 
-    mtp = re.search(r"(?:TP|TP1|TARGET)\s*[:=]?\s*(\d+(?:\.\d+)?)", rest, re.IGNORECASE)
+    mtp = re.search(r"\b(?:TP|TP1|TARGET)\b\s*[:=]?\s*(\d+(?:\.\d+)?)", rest, re.IGNORECASE)
     if mtp:
         tp = float(mtp.group(1))
 
-    msl = re.search(r"(?:SL|STOP)\s*[:=]?\s*(\d+(?:\.\d+)?)", rest, re.IGNORECASE)
+    msl = re.search(r"\b(?:SL|STOP)\b\s*[:=]?\s*(\d+(?:\.\d+)?)", rest, re.IGNORECASE)
     if msl:
         sl = float(msl.group(1))
 
@@ -182,7 +182,6 @@ def parse_manual_trade(text: str):
         "tp": tp,
         "sl": sl,
     }
-
 def _as_list_from_get_candles(res):
     """
     get_candles() của mày có lúc trả:
@@ -865,7 +864,11 @@ async def telegram_webhook(request: Request):
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
     parsed = parse_manual_trade(text)
     if parsed:
-        reply = review_manual_trade(**parsed)
+        try:
+            reply = review_manual_trade(**parsed)
+        except Exception as e:
+            logger.exception("[TG] manual review failed for %s: %s", text, e)
+            reply = f"❌ REVIEW lỗi: {type(e).__name__}: {e}"
         _send_telegram(reply, chat_id=chat_id)
         return "OK"
 
