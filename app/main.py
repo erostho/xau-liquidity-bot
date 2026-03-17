@@ -46,7 +46,7 @@ TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
 def health():
     return {"status": "ok"}
 
-def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
+def _send_telegram(text: str, chat_id: Optional[str] = None, parse_mode: Optional[str] = "HTML") -> None:
     token = TELEGRAM_TOKEN
     cid = chat_id or TELEGRAM_CHAT_ID
     if not token or not cid:
@@ -57,7 +57,6 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
     try:
         requests = __import__("requests")
 
-        # split long message to avoid truncation
         chunks: List[str] = []
         buf = (text or "").strip()
         while len(buf) > TG_CHUNK:
@@ -70,15 +69,20 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
             chunks.append(buf)
 
         for part in chunks:
-            requests.post(
-                url,
-                json={"chat_id": cid, "text": part, "parse_mode": "HTML", "disable_web_page_preview": True},
-                timeout=15
-            )
+            payload = {
+                "chat_id": cid,
+                "text": part,
+                "disable_web_page_preview": True,
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+
+            resp = requests.post(url, json=payload, timeout=15)
+            logger.info("[TG] send status=%s body=%s", resp.status_code, resp.text)
     except Exception as e:
         logger.exception("[TG] send failed: %s", e)
 
-def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500):
+def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_mode: Optional[str] = None):
     text = str(text or "")
     if not text.strip():
         return
@@ -86,7 +90,7 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500):
     parts = []
     buf = ""
 
-    for line in text.splitlines(True):  # giữ newline
+    for line in text.splitlines(True):
         if len(buf) + len(line) <= chunk_size:
             buf += line
         else:
@@ -95,7 +99,6 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500):
             if len(line) <= chunk_size:
                 buf = line
             else:
-                # line quá dài thì cắt cứng
                 for i in range(0, len(line), chunk_size):
                     parts.append(line[i:i + chunk_size])
                 buf = ""
@@ -106,7 +109,7 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500):
     total = len(parts)
     for i, part in enumerate(parts, start=1):
         header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
-        _send_telegram(header + part, chat_id=chat_id)
+        _send_telegram(header + part, chat_id=chat_id, parse_mode=parse_mode)
 
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
@@ -1086,8 +1089,6 @@ async def telegram_webhook(request: Request):
         return "OK"
 
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
-    
-    # 0) ƯU TIÊN: Manual trade review (không cần "now")
     parsed = parse_manual_trade(text)
     if parsed:
         logger.info("[TG][REVIEW] matched manual trade: text=%r parsed=%s", text, parsed)
@@ -1100,7 +1101,7 @@ async def telegram_webhook(request: Request):
             reply = f"❌ REVIEW lỗi: {e}"
     
         try:
-            _send_long_telegram(reply, chat_id=chat_id)
+            _send_long_telegram(reply, chat_id=chat_id, parse_mode=None)
         except Exception as send_err:
             logger.exception(
                 "send long telegram failed for manual review: chat_id=%s err=%s",
