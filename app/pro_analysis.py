@@ -2509,6 +2509,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     phase369 = meta.get("phase_369") if isinstance(meta.get("phase_369"), dict) else {}
     if phase369:
         add(f"Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')} | {phase369.get('meaning', '')}")
+    add("5-10-15: chờ entry / chỉ kích hoạt khi review lệnh tay hoặc sau khi đã vào lệnh.")
 
     # ---------- structure / key levels (READ CORRECT KEYS) ----------
     st = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
