@@ -2506,10 +2506,17 @@ def format_signal(sig: Dict[str, Any]) -> str:
         mode_txt = f" | Mode: {trade_mode}" if trade_mode == "MANUAL" else ""
 
     add(f"{stars_txt}  <b>{rec}</b>{mode_txt}")
-    phase369 = meta.get("phase_369") if isinstance(meta.get("phase_369"), dict) else {}
-    if phase369:
-        add(f"Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')} | {phase369.get('meaning', '')}")
-    add("5-10-15: chờ entry / chỉ kích hoạt khi review lệnh tay hoặc sau khi đã vào lệnh.")
+    phase369 = meta.get("phase_369")
+    if isinstance(phase369, dict):
+        p = phase369.get("phase")
+        label = phase369.get("label") or ""
+        note = phase369.get("note") or ""
+        txt = f"Phase 369: {p}"
+        if label:
+            txt += f" | {label}"
+        if note:
+            txt += f" | {note}"
+        add(txt)
 
     # ---------- structure / key levels (READ CORRECT KEYS) ----------
     st = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
