@@ -347,6 +347,20 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     #sig = analyze_pro(symbol, m15, m30, h1, h4)
     try:
         sig = analyze_pro(symbol, m15, m30, h1, h4)
+        if not isinstance(sig, dict):
+            sig = {
+                "symbol": symbol,
+                "tf": "M30",
+                "session": "",
+                "recommendation": "CHỜ",
+                "stars": 1,
+                "trade_mode": "MANUAL",
+                "meta": {},
+                "context_lines": ["Hệ phân tích chưa trả đủ signal → fallback review."],
+                "liquidity_lines": [],
+                "quality_lines": [],
+                "notes": [],
+            }
     except RecursionError:
         logger.exception("RecursionError while analyzing %s", symbol)
         return f"❌ REVIEW lỗi cho {symbol}: RecursionError trong analyze_pro (xem logs)."
@@ -866,10 +880,10 @@ async def telegram_webhook(request: Request):
     if parsed:
         try:
             reply = review_manual_trade(**parsed)
+            _send_telegram(reply, chat_id=chat_id)
         except Exception as e:
-            logger.exception("[TG] manual review failed for %s: %s", text, e)
-            reply = f"❌ REVIEW lỗi: {type(e).__name__}: {e}"
-        _send_telegram(reply, chat_id=chat_id)
+            logger.exception("manual review failed: %s", e)
+            _send_telegram(f"❌ REVIEW lỗi: {e}", chat_id=chat_id)
         return "OK"
 
     low = text.lower()
