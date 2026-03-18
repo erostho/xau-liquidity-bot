@@ -439,6 +439,8 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     no_trade_zone = meta.get("no_trade_zone", {}) or {}
     market_state_v2 = meta.get("market_state_v2")
     playbook = meta.get("playbook_v2", {}) or {}
+    narrative_v3 = meta.get("narrative_v3", {}) or {}
+    scenario_v3 = meta.get("scenario_v3", {}) or {}
 
     ctx = sig.get("context_lines", []) or []
     liq = sig.get("liquidity_lines", []) or []
@@ -574,10 +576,19 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
             plan += f" | Zone: {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
         lines.append(plan)
+    if isinstance(scenario_v3, dict):
+        if scenario_v3.get("base_case"):
+            lines.append(f"🎯 {scenario_v3.get('base_case')}")
+        if scenario_v3.get("alt_case"):
+            lines.append(f"🪄 {scenario_v3.get('alt_case')}")
+        if scenario_v3.get("invalid_if"):
+            lines.append(f"🧯 {scenario_v3.get('invalid_if')}")
     if isinstance(flow_state, dict) and flow_state.get("state"):
         lines.append(f"💰 Flow: {flow_state.get('state')} | Favored: {flow_state.get('favored_side', 'n/a')}")
     if market_state_v2:
         lines.append(f"🌡 State: {market_state_v2}")
+    if isinstance(narrative_v3, dict) and narrative_v3.get("headline"):
+        lines.append(f"🧠 Narrative: {narrative_v3.get('headline')} | {narrative_v3.get('summary', '')}".rstrip(" |"))
     if isinstance(liquidation, dict) and liquidation.get("ok"):
         lines.append(f"⚠️ Liquidation: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR")
     if isinstance(no_trade_zone, dict) and no_trade_zone.get("active"):
