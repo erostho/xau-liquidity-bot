@@ -46,7 +46,7 @@ TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
 def health():
     return {"status": "ok"}
 
-def _send_telegram(text: str, chat_id: Optional[str] = None, parse_mode: Optional[str] = "HTML") -> None:
+def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
     token = TELEGRAM_TOKEN
     cid = chat_id or TELEGRAM_CHAT_ID
     if not token or not cid:
@@ -57,6 +57,7 @@ def _send_telegram(text: str, chat_id: Optional[str] = None, parse_mode: Optiona
     try:
         requests = __import__("requests")
 
+        # split long message to avoid truncation
         chunks: List[str] = []
         buf = (text or "").strip()
         while len(buf) > TG_CHUNK:
@@ -69,47 +70,16 @@ def _send_telegram(text: str, chat_id: Optional[str] = None, parse_mode: Optiona
             chunks.append(buf)
 
         for part in chunks:
-            payload = {
-                "chat_id": cid,
-                "text": part,
-                "disable_web_page_preview": True,
-            }
-            if parse_mode:
-                payload["parse_mode"] = parse_mode
+            requests.post(
+                url,
+                json={"chat_id": cid, "text": part, "parse_mode": "HTML", "disable_web_page_preview": True},
+                timeout=15
+            )
 
-            resp = requests.post(url, json=payload, timeout=15)
-            logger.info("[TG] send status=%s body=%s", resp.status_code, resp.text)
+
     except Exception as e:
         logger.exception("[TG] send failed: %s", e)
 
-def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_mode: Optional[str] = None):
-    text = str(text or "")
-    if not text.strip():
-        return
-
-    parts = []
-    buf = ""
-
-    for line in text.splitlines(True):
-        if len(buf) + len(line) <= chunk_size:
-            buf += line
-        else:
-            if buf:
-                parts.append(buf)
-            if len(line) <= chunk_size:
-                buf = line
-            else:
-                for i in range(0, len(line), chunk_size):
-                    parts.append(line[i:i + chunk_size])
-                buf = ""
-
-    if buf:
-        parts.append(buf)
-
-    total = len(parts)
-    for i, part in enumerate(parts, start=1):
-        header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
-        _send_telegram(header + part, chat_id=chat_id, parse_mode=parse_mode)
 
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
@@ -163,46 +133,20 @@ _MANUAL_RE = re.compile(
 )
 
 def parse_manual_trade(text: str):
-    """Parse manual trade text from Telegram.
-    Supports examples:
-      BTC BUY 73344 TP 76314 SL 72069
-      BTC BUY 73344 SL 72069 TP 76314
-      XAU SELL 3012-3015 TP:2998 SL:3022
-      btcusd buy 73344, tp 76314, sl 72069
-    """
-    raw = (text or "").strip()
-    if not raw:
-        return None
-
-    cleaned = re.sub(r"[，,;]+", " ", raw)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    m = re.match(
-        r"^(?P<sym>[A-Za-z0-9/_\-]+)\s+(?P<side>BUY|SELL)\s+(?P<entry1>\d+(?:\.\d+)?)(?:\s*[-~]\s*(?P<entry2>\d+(?:\.\d+)?))?(?P<rest>.*)$",
-        cleaned,
-        re.IGNORECASE,
-    )
+    m = _MANUAL_RE.match((text or "").strip())
     if not m:
         return None
 
     symbol = normalize_symbol(m.group("sym"))
     side = m.group("side").upper()
+
     e1 = float(m.group("entry1"))
     e2 = float(m.group("entry2")) if m.group("entry2") else None
     entry_lo = min(e1, e2) if e2 is not None else e1
     entry_hi = max(e1, e2) if e2 is not None else e1
 
-    rest = m.group("rest") or ""
-    tp = None
-    sl = None
-
-    mtp = re.search(r"\b(?:TP|TP1|TARGET)\b\s*[:=]?\s*(\d+(?:\.\d+)?)", rest, re.IGNORECASE)
-    if mtp:
-        tp = float(mtp.group(1))
-
-    msl = re.search(r"\b(?:SL|STOP)\b\s*[:=]?\s*(\d+(?:\.\d+)?)", rest, re.IGNORECASE)
-    if msl:
-        sl = float(msl.group(1))
+    tp = float(m.group("tp")) if m.group("tp") else None
+    sl = float(m.group("sl")) if m.group("sl") else None
 
     return {
         "symbol": symbol,
@@ -212,6 +156,7 @@ def parse_manual_trade(text: str):
         "tp": tp,
         "sl": sl,
     }
+
 def _as_list_from_get_candles(res):
     """
     get_candles() của mày có lúc trả:
@@ -327,141 +272,24 @@ def _hl_lh_gate(m15, atr_val):
         f"- SELL chỉ mạnh khi: LH=True và M15 đóng < đáy gần ({ref_lo:.2f})."
     )
     return {"hl": hl, "lh": lh, "break_up": break_up, "break_dn": break_dn, "ref_hi": ref_hi, "ref_lo": ref_lo, "txt": txt}
-def _trade_management_5_10_15(side: str, entry: float, cur: float | None, atr_val: float | None, gate: dict, div: dict, cpat: dict, volq: dict, tp: float | None, sl: float | None) -> dict:
-    """Simple management ladder: 5=validation, 10=protection, 15=harvest."""
-    out = {"stage": 5, "label": "Validation", "lines": []}
-    if cur is None or not atr_val or atr_val <= 0:
-        out["lines"].append("5-10-15: thiếu ATR/giá hiện tại → giữ plan hiện tại, không add cảm xúc.")
-        return out
-
-    move = (cur - entry) if str(side).upper() == "BUY" else (entry - cur)
-    move_atr = move / max(float(atr_val), 1e-9)
-    side_u = str(side).upper()
-    struct_ok = bool(gate.get("hl") and gate.get("break_up")) if side_u == "BUY" else bool(gate.get("lh") and gate.get("break_dn"))
-    against_div = bool(div.get("bear")) if side_u == "BUY" else bool(div.get("bull"))
-    against_candle = bool(cpat.get("engulf") == "BEAR" or cpat.get("rejection") == "UPPER") if side_u == "BUY" else bool(cpat.get("engulf") == "BULL" or cpat.get("rejection") == "LOWER")
-    low_vol = (volq or {}).get("state") == "LOW"
-
-    if move_atr >= 1.2:
-        out["stage"] = 15
-        out["label"] = "Harvest"
-        out["lines"].append("15: Lệnh đã đi >1.2 ATR → ưu tiên trailing / chốt phần lớn, không mở thêm muộn.")
-        if against_div or against_candle or low_vol:
-            out["lines"].append("⚠️ Cuối nhịp có dấu hiệu hụt hơi → nên chốt mạnh tay hơn phần còn lại.")
-    elif move_atr >= 0.8:
-        out["stage"] = 10
-        out["label"] = "Protection"
-        out["lines"].append("10: Lệnh đã sống → dời BE và cân nhắc chốt 30–50% tại TP1 / vùng gần nhất.")
-        if not struct_ok:
-            out["lines"].append("⚠️ Chưa có cấu trúc giữ lệnh đẹp → ưu tiên bảo vệ lợi nhuận, không add.")
-    else:
-        out["stage"] = 5
-        out["label"] = "Validation"
-        if move_atr <= -0.8 and not struct_ok:
-            out["lines"].append("5: Lệnh đang âm >0.8 ATR mà chưa có cấu trúc ủng hộ → thoát/giảm size, không cầu nguyện.")
-        else:
-            out["lines"].append("5: Lệnh còn ở pha kiểm tra → chỉ giữ ngắn hạn, đợi cấu trúc xác nhận rồi mới nghĩ tới giữ mạnh/add.")
-
-    return out
-
 def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float, tp: float | None, sl: float | None) -> str:
-    symbol = str(symbol or "").strip().upper()
     side = (side or "").upper().strip()
+    entry = (float(entry_lo) + float(entry_hi)) / 2.0
 
-    # ========= helpers =========
-    def _f(x, nd: int = 2, default: str = "n/a") -> str:
-        try:
-            if x is None:
-                return default
-            return f"{float(x):.{nd}f}"
-        except Exception:
-            return default
+    # 1) lấy candles (NHỚ unwrap tuple nếu get_candles trả (list, meta))
+    m15, src15 = _as_list_and_source_from_get_candles(get_candles(symbol, "15min", limit=220))
+    m30, src30 = _as_list_and_source_from_get_candles(get_candles(symbol, "30min", limit=220))
+    h1, src1h = _as_list_and_source_from_get_candles(get_candles(symbol, "1h", limit=220))
+    h4, src4h = _as_list_and_source_from_get_candles(get_candles(symbol, "4h", limit=220))
 
-    def _i_pct(x, default: str = "n/a") -> str:
-        try:
-            if x is None:
-                return default
-            return f"{int(round(float(x) * 100))}%"
-        except Exception:
-            return default
-
-    def _safe_float(x, default: float = 0.0) -> float:
-        try:
-            if x is None:
-                return default
-            return float(x)
-        except Exception:
-            return default
-
-    def _as_list(x):
-        if x is None:
-            return []
-        if isinstance(x, list):
-            return x
-        return [str(x)]
-
-    def _icon_bool(v) -> str:
-        return "✅" if bool(v) else "❌"
-
-    def _join_nonempty(items):
-        return [str(x) for x in items if x is not None and str(x).strip()]
-
-    # ========= input =========
-    try:
-        entry_lo = float(entry_lo)
-        entry_hi = float(entry_hi)
-        entry = (entry_lo + entry_hi) / 2.0
-    except Exception as e:
-        logger.exception("Invalid entry values for manual review %s %s: %s", symbol, side, e)
-        return f"❌ REVIEW lỗi cho {symbol}: entry không hợp lệ."
-
-    # ========= candles =========
-    try:
-        m15, src15 = _as_list_and_source_from_get_candles(get_candles(symbol, "15min", limit=220))
-        m30, src30 = _as_list_and_source_from_get_candles(get_candles(symbol, "30min", limit=220))
-        h1, src1h = _as_list_and_source_from_get_candles(get_candles(symbol, "1h", limit=220))
-        h4, src4h = _as_list_and_source_from_get_candles(get_candles(symbol, "4h", limit=220))
-    except Exception as e:
-        logger.exception("get_candles failed for %s: %s", symbol, e)
-        return f"❌ REVIEW lỗi cho {symbol}: không lấy được dữ liệu nến ({e})."
-
-    # ========= analyze =========
+    #sig = analyze_pro(symbol, m15, m30, h1, h4)
     try:
         sig = analyze_pro(symbol, m15, m30, h1, h4)
-        if not isinstance(sig, dict):
-            sig = {
-                "symbol": symbol,
-                "tf": "M30",
-                "session": "",
-                "recommendation": "CHỜ",
-                "stars": 1,
-                "trade_mode": "MANUAL",
-                "meta": {},
-                "context_lines": ["Hệ phân tích chưa trả đủ signal → fallback review."],
-                "liquidity_lines": [],
-                "quality_lines": [],
-                "notes": [],
-            }
-    except RecursionError:
-        logger.exception("RecursionError while analyzing %s", symbol)
-        return f"❌ REVIEW lỗi cho {symbol}: RecursionError trong analyze_pro (xem logs)."
-    except Exception as e:
-        logger.exception("analyze_pro failed for %s: %s", symbol, e)
-        sig = {
-            "symbol": symbol,
-            "tf": "M30",
-            "session": "",
-            "recommendation": "CHỜ",
-            "stars": 1,
-            "trade_mode": "MANUAL",
-            "meta": {},
-            "context_lines": [f"Hệ phân tích lỗi → fallback review ({e})."],
-            "liquidity_lines": [],
-            "quality_lines": [],
-            "notes": [],
-        }
-
-    # ========= attach data source =========
+    except RecursionError as e:
+        logger.exception("RecursionError while analyzing %s", sym)
+        _send_telegram(f"❌ Analysis failed ({sym}): RecursionError (check logs)", chat_id=chat_id)
+        return "ok"
+    # attach data source for Telegram (prefer M30, else M15)
     try:
         ds = src30 or src15 or src1h or src4h
         if ds:
@@ -469,435 +297,242 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             sig.setdefault("meta", {})["data_source"] = ds
     except Exception:
         pass
-
-    # ========= fields =========
-    try:
-        meta = sig.get("meta", {}) or {}
-        if not isinstance(meta, dict):
-            meta = {}
-    except Exception:
-        meta = {}
-
+    meta = sig.get("meta", {}) or {}
     volq = meta.get("volq", {}) or {}
     cpat = meta.get("candle", {}) or {}
-    div = meta.get("div", {}) or {}
-    phase369 = meta.get("phase_369", {}) or {}
+    div  = meta.get("div", {}) or {}
+    actions = []
+    # thêm 3 dòng PRO vào phần "Gợi ý hành động"
+    if volq.get("state") and volq.get("state") != "N/A":
+        actions.append(f"📦 Volume: {volq.get('state')} (x{volq.get('ratio', 0):.2f} vs SMA20)")
+        if volq.get("state") == "LOW":
+            actions.append("⚠️ Volume thấp → ưu tiên TP nhanh, KHÔNG add.")
+        elif volq.get("state") == "HIGH":
+            actions.append("✅ Volume cao → move đáng tin hơn (có thể giữ theo plan).")
 
-    if not isinstance(volq, dict):
-        volq = {}
-    if not isinstance(cpat, dict):
-        cpat = {}
-    if not isinstance(div, dict):
-        div = {}
-    if not isinstance(phase369, dict):
-        phase369 = {}
+    if cpat.get("txt") and cpat.get("txt") != "N/A":
+        actions.append(f"🕯 Candle: {cpat.get('txt')}")
+        # candle phản công theo hướng ngược lệnh -> cảnh báo thoát/giảm
+        if side == "SELL" and (cpat.get("engulf") == "BULL" or cpat.get("rejection") == "LOWER"):
+            actions.append("⚠️ Nến phản công chống SELL → cân nhắc chốt non/giảm size nếu chưa có break đáy.")
+        if side == "BUY" and (cpat.get("engulf") == "BEAR" or cpat.get("rejection") == "UPPER"):
+            actions.append("⚠️ Nến phản công chống BUY → cân nhắc chốt non/giảm size nếu chưa có break đỉnh.")
 
-    ctx = _as_list(sig.get("context_lines", []) or [])
-    liq = _as_list(sig.get("liquidity_lines", []) or [])
-    qlt = _as_list(sig.get("quality_lines", []) or [])
-    notes = _as_list(sig.get("notes", []) or [])
+    if div.get("txt") and div.get("txt") != "N/A":
+        actions.append(f"📉 {div.get('txt')}")
+        if side == "SELL" and div.get("bull"):
+            actions.append("⚠️ Bullish divergence → SELL dễ hụt hơi: ưu tiên TP1 sớm + dời SL về BE khi đạt +0.8 ATR.")
+        if side == "BUY" and div.get("bear"):
+            actions.append("⚠️ Bearish divergence → BUY dễ hụt hơi: ưu tiên TP1 sớm + dời SL về BE khi đạt +0.8 ATR.")
 
-    # ========= ATR =========
+    ctx = sig.get("context_lines", []) or []
+    liq = sig.get("liquidity_lines", []) or []
+    qlt = sig.get("quality_lines", []) or []
+    notes = sig.get("notes", []) or []
+
+    # 2) ATR lấy từ quality_lines (nếu có), fallback tự tính
     atr_val = None
-    try:
-        for x in qlt:
-            s = str(x)
-            if "ATR(" in s and "~" in s:
-                try:
-                    atr_val = float(s.split("~")[-1].strip())
-                    break
-                except Exception:
-                    atr_val = None
-    except Exception:
-        atr_val = None
-
+    for x in qlt:
+        if "ATR(" in x and "~" in x:
+            try:
+                atr_val = float(x.split("~")[-1].strip())
+                break
+            except Exception:
+                atr_val = None
     if atr_val is None:
-        try:
-            atr_val = _atr14_simple(_m15_closed(m15)) or 0.0
-        except Exception as e:
-            logger.exception("ATR fallback failed for %s: %s", symbol, e)
-            atr_val = 0.0
+        atr_val = _atr14_simple(_m15_closed(m15)) or 0.0
 
-    a = _safe_float(atr_val, 0.0)
-
-    # ========= RR =========
+    # 3) RR đơn giản
     rr_txt = "RR: n/a"
-    try:
-        if tp is not None and sl is not None and abs(entry - float(sl)) > 1e-9:
-            risk = abs(entry - float(sl))
-            reward = abs(float(tp) - entry)
-            rr = reward / risk
-            rr_txt = f"RR≈{rr:.2f}"
-    except Exception as e:
-        logger.exception("RR calc failed for %s: %s", symbol, e)
+    if tp is not None and sl is not None and abs(entry - sl) > 1e-9:
+        r = abs(entry - sl)
+        rew = abs(tp - entry)
+        rr = rew / r
+        rr_txt = f"RR≈{rr:.2f}"
 
-    # ========= range =========
-    try:
-        rinfo = _range30_info_m15(m15)
-    except Exception as e:
-        logger.exception("_range30_info_m15 failed for %s: %s", symbol, e)
-        rinfo = None
+    # 4) Range 30 nến M15 (ngắn hạn)
+    rinfo = _range30_info_m15(m15)
+    cur = rinfo["cur"] if rinfo else None
+    pos = rinfo["pos"] if rinfo else None
+    lo = rinfo["lo"] if rinfo else None
+    hi = rinfo["hi"] if rinfo else None
 
-    cur = rinfo["cur"] if isinstance(rinfo, dict) else None
-    pos = rinfo["pos"] if isinstance(rinfo, dict) else None
-    lo = rinfo["lo"] if isinstance(rinfo, dict) else None
-    hi = rinfo["hi"] if isinstance(rinfo, dict) else None
+    # 5) Gate cấu trúc HL/LH + break
+    gate = _hl_lh_gate(m15, atr_val)
 
-    # ========= structure gate =========
-    try:
-        gate = _hl_lh_gate(m15, atr_val) or {}
-        if not isinstance(gate, dict):
-            gate = {}
-    except Exception as e:
-        logger.exception("_hl_lh_gate failed for %s: %s", symbol, e)
-        gate = {}
-
-    gate_txt = gate.get("txt") or "Chưa đọc được gate cấu trúc."
-    gate_hl = bool(gate.get("hl"))
-    gate_lh = bool(gate.get("lh"))
-    gate_break_up = bool(gate.get("break_up"))
-    gate_break_dn = bool(gate.get("break_dn"))
-
-    # ========= merged context =========
-    try:
-        ctx_all = " | ".join(_join_nonempty(ctx + notes))
-    except Exception:
-        ctx_all = ""
-
+    # 6) Nhận diện Liquidity warning / post-sweep từ context/notes
+    ctx_all = " | ".join(ctx + notes)
     is_warn = ("Liquidity WARNING" in ctx_all) or ("POST-SWEEP" in ctx_all)
 
-    # ========= actions =========
-    actions = []
+    # 7) ĐÁNH GIÁ “ĐÚNG/SẠI” + HÀNH ĐỘNG
 
-    # volume
-    try:
-        vol_state = str(volq.get("state") or "").upper().strip()
-        vol_ratio = _safe_float(volq.get("ratio"), 0.0)
-        if vol_state and vol_state != "N/A":
-            actions.append(f"📦 Volume: {vol_state} (x{vol_ratio:.2f} vs SMA20)")
-            if vol_state == "LOW":
-                actions.append("⚠️ Volume thấp → ưu tiên TP nhanh, KHÔNG add.")
-            elif vol_state == "HIGH":
-                actions.append("✅ Volume cao → move đáng tin hơn, có thể giữ theo plan.")
-    except Exception as e:
-        logger.exception("volq actions failed for %s: %s", symbol, e)
-
-    # candle
-    try:
-        cpat_txt = str(cpat.get("txt") or "").strip()
-        if cpat_txt and cpat_txt != "N/A":
-            actions.append(f"🕯 Candle: {cpat_txt}")
-            if side == "SELL" and (cpat.get("engulf") == "BULL" or cpat.get("rejection") == "LOWER"):
-                actions.append("⚠️ Nến phản công chống SELL → cân nhắc chốt non/giảm size nếu chưa break đáy.")
-            if side == "BUY" and (cpat.get("engulf") == "BEAR" or cpat.get("rejection") == "UPPER"):
-                actions.append("⚠️ Nến phản công chống BUY → cân nhắc chốt non/giảm size nếu chưa break đỉnh.")
-    except Exception as e:
-        logger.exception("candle actions failed for %s: %s", symbol, e)
-
-    # divergence
-    try:
-        div_txt = str(div.get("txt") or "").strip()
-        if div_txt and div_txt != "N/A":
-            actions.append(f"📉 {div_txt}")
-            if side == "SELL" and bool(div.get("bull")):
-                actions.append("⚠️ Bullish divergence → SELL dễ hụt hơi: ưu tiên TP1 sớm + BE khi đạt +0.8 ATR.")
-            if side == "BUY" and bool(div.get("bear")):
-                actions.append("⚠️ Bearish divergence → BUY dễ hụt hơi: ưu tiên TP1 sớm + BE khi đạt +0.8 ATR.")
-    except Exception as e:
-        logger.exception("div actions failed for %s: %s", symbol, e)
-
-    # chase
-    try:
-        if pos is not None:
-            pos_pct = int(max(0, min(1, float(pos))) * 100)
-            if side == "BUY" and float(pos) > 0.70:
-                actions.append(f"⚠️ Entry đang ~{pos_pct}% range M15 → BUY dễ bị xem là đuổi.")
-            if side == "SELL" and float(pos) < 0.30:
-                actions.append(f"⚠️ Entry đang ~{pos_pct}% range M15 → SELL dễ bị xem là đuổi.")
-    except Exception as e:
-        logger.exception("chase check failed for %s: %s", symbol, e)
-
-    # H1 direction
-    try:
-        h1_txt = " ".join(str(x).lower() for x in ctx)
-        if side == "BUY" and "h1: bearish" in h1_txt:
-            actions.append("⚠️ BUY ngược H1 bearish → ưu tiên đánh ngắn, không gồng.")
-        if side == "SELL" and "h1: bullish" in h1_txt:
-            actions.append("⚠️ SELL ngược H1 bullish → ưu tiên đánh ngắn, không gồng.")
-    except Exception as e:
-        logger.exception("H1 direction check failed for %s: %s", symbol, e)
-
-    # SL/TP theo ATR
-    sl_atr = None
-    tp_atr = None
-    try:
-        if a > 0:
-            if sl is not None:
-                sl_atr = abs(entry - float(sl)) / a
-                if sl_atr < 0.70:
-                    actions.append(f"⚠️ SL hơi sát: ~{sl_atr:.2f} ATR → dễ dính quét.")
-                else:
-                    actions.append(f"✅ SL khoảng ~{sl_atr:.2f} ATR → tạm ổn.")
-            else:
-                actions.append("⚠️ Chưa có SL → nên đặt theo ATR hoặc sau vùng sweep.")
-
-            if tp is not None:
-                tp_atr = abs(float(tp) - entry) / a
-                if tp_atr < 0.70:
-                    actions.append(f"⚠️ TP hơi ngắn: ~{tp_atr:.2f} ATR.")
-                else:
-                    actions.append(f"✅ TP khoảng ~{tp_atr:.2f} ATR.")
-            else:
-                actions.append("ℹ️ Chưa có TP → gợi ý TP1 ~0.9 ATR, TP2 ~1.8 ATR.")
-    except Exception as e:
-        logger.exception("ATR-based SL/TP check failed for %s: %s", symbol, e)
-
-    # verdict
     verdict = "TRUNG TÍNH"
-    try:
-        if cur is not None and a > 0:
-            move = (float(cur) - entry) if side == "BUY" else (entry - float(cur))
-            dd = -move
-            dd_atr = dd / a
+    hold_style = "NGẮN HẠN"
 
-            if side == "BUY":
-                if gate_hl and gate_break_up:
-                    verdict = "ĐÚNG (cấu trúc ủng hộ)"
-                    actions.append("✅ Đã có HL + break đỉnh gần → có thể GIỮ.")
-                elif dd_atr >= 0.80 and not gate_hl:
-                    verdict = "SAI/NGUY HIỂM"
-                    actions.append("🛑 Đang âm mạnh >0.8 ATR mà chưa có HL → ưu tiên THOÁT hoặc giảm size.")
-                else:
-                    verdict = "CHƯA RÕ"
-                    actions.append("⏳ Có thể giữ ngắn hạn, KHÔNG add. Chờ break xác nhận.")
+    # 7.1) check entry có “đuổi” không theo range30
+    chase_note = None
+    if pos is not None:
+        pos_pct = int(max(0, min(1, pos)) * 100)
+        if side == "BUY" and pos > 0.70:
+            chase_note = f"⚠️ Entry đang ~{pos_pct}% trong range30 M15 → BUY dễ bị xem là 'đuổi'."
+        if side == "SELL" and pos < 0.30:
+            chase_note = f"⚠️ Entry đang ~{pos_pct}% trong range30 M15 → SELL dễ bị xem là 'đuổi'."
+        if chase_note:
+            actions.append(chase_note)
+
+    # 7.2) check H1 cùng/ ngược hướng
+    h1_txt = " ".join(ctx).lower()
+    if side == "BUY" and "h1: bearish" in h1_txt:
+        actions.append("⚠️ BUY ngược H1 bearish → ưu tiên đánh NGẮN, không gồng. Nếu nến M15 xấu thì thoát sớm.")
+    if side == "SELL" and "h1: bullish" in h1_txt:
+        actions.append("⚠️ SELL ngược H1 bullish → ưu tiên đánh NGẮN, không gồng. Nếu nến M15 xấu thì thoát sớm.")
+
+    # 7.3) SL/TP theo ATR
+    a = float(atr_val or 0.0)
+    if a > 0:
+        if sl is not None:
+            dist_sl = abs(entry - float(sl))
+            sl_atr = dist_sl / a
+            if sl_atr < 0.70:
+                actions.append(f"⚠️ SL đang khá SÁT: ~{sl_atr:.2f} ATR → dễ dính quét. Gợi ý SL ≥ 0.9–1.3 ATR (đặc biệt sau quét).")
             else:
-                if gate_lh and gate_break_dn:
-                    verdict = "ĐÚNG (cấu trúc ủng hộ)"
-                    actions.append("✅ Đã có LH + break đáy gần → có thể GIỮ.")
-                elif dd_atr >= 0.80 and not gate_lh:
-                    verdict = "SAI/NGUY HIỂM"
-                    actions.append("🛑 Đang âm mạnh >0.8 ATR mà chưa có LH → ưu tiên THOÁT hoặc giảm size.")
-                else:
-                    verdict = "CHƯA RÕ"
-                    actions.append("⏳ Có thể giữ ngắn hạn, KHÔNG add. Chờ break xác nhận.")
-    except Exception as e:
-        logger.exception("verdict block failed for %s: %s", symbol, e)
-        actions.append("⚠️ Không tính được verdict đầy đủ → tạm ưu tiên giữ nhỏ, không add.")
+                actions.append(f"✅ SL khoảng ~{sl_atr:.2f} ATR → tương đối ổn cho kèo ngắn hạn.")
+        else:
+            actions.append("⚠️ Chưa có SL → nên đặt SL theo ATR (0.9–1.3 ATR) hoặc sau vùng sweep.")
 
+        if tp is not None:
+            dist_tp = abs(float(tp) - entry)
+            tp_atr = dist_tp / a
+            if tp_atr < 0.70:
+                actions.append(f"⚠️ TP đang NGẮN: ~{tp_atr:.2f} ATR. Gợi ý TP1 ~0.9 ATR, TP2 ~1.8 ATR.")
+            else:
+                actions.append(f"✅ TP khoảng ~{tp_atr:.2f} ATR.")
+        else:
+            actions.append("ℹ️ Chưa có TP → gợi ý TP1 ~0.9 ATR, TP2 ~1.8 ATR.")
+
+    # 7.4) “GIỮ / THOÁT / DỜI” dựa trên cấu trúc M15 + mốc gần
+    # Invalidation mềm: nếu ngược cấu trúc (BUY mà phá đáy gần, SELL mà phá đỉnh gần)
+    # Invalidation mạnh: nếu giá hiện tại đi ngược >0.8 ATR mà chưa có cấu trúc cứu
+    if cur is not None and a > 0:
+        move = (cur - entry) if side == "BUY" else (entry - cur)  # lời dương
+        dd = -move  # âm là đang âm
+        dd_atr = dd / a
+
+        if side == "BUY":
+            if gate.get("hl") and gate.get("break_up"):
+                verdict = "ĐÚNG (cấu trúc ủng hộ)"
+                actions.append("✅ Đã có HL + break đỉnh gần → GIỮ (có thể giữ thêm).")
+            elif dd_atr >= 0.80 and not gate.get("hl"):
+                verdict = "SAI/NGUY HIỂM"
+                actions.append("🛑 Giá đang âm mạnh (>0.8 ATR) mà CHƯA có HL → ưu tiên THOÁT hoặc giảm 50% để tránh bị kéo tiếp.")
+            else:
+                verdict = "CHƯA RÕ"
+                actions.append("⏳ Chưa có HL rõ → GIỮ NGẮN HẠN, KHÔNG add. Chờ HL rồi mới tính giữ mạnh.")
+        else:  # SELL
+            if gate.get("lh") and gate.get("break_dn"):
+                verdict = "ĐÚNG (cấu trúc ủng hộ)"
+                actions.append("✅ Đã có LH + break đáy gần → GIỮ (có thể giữ thêm).")
+            elif dd_atr >= 0.80 and not gate.get("lh"):
+                verdict = "SAI/NGUY HIỂM"
+                actions.append("🛑 Giá đang âm mạnh (>0.8 ATR) mà CHƯA có LH → ưu tiên THOÁT hoặc giảm 50% để tránh bị kéo tiếp.")
+            else:
+                verdict = "CHƯA RÕ"
+                actions.append("⏳ Chưa có LH rõ → GIỮ NGẮN HẠN, KHÔNG add. Chờ LH rồi mới tính giữ mạnh.")
+
+    # 7.5) Nếu có Liquidity warning / post-sweep: bắt buộc nhắc “không add”
     if is_warn:
-        actions.append("🚨 Có Liquidity WARNING / POST-SWEEP → KHÔNG add cho tới khi có cấu trúc rõ.")
+        actions.append("🚨 Đang có Liquidity WARNING/POST-SWEEP → KHÔNG add. Chỉ giữ nếu có cấu trúc (HL/LH) như gate bên dưới.")
 
-    # ========= 5-10-15 =========
-    try:
-        mgmt = _trade_management_5_10_15(side, entry, cur, a, gate, div, cpat, volq, tp, sl) or {}
-        if not isinstance(mgmt, dict):
-            mgmt = {}
-    except Exception as e:
-        logger.exception("_trade_management_5_10_15 failed for %s: %s", symbol, e)
-        mgmt = {
-            "stage": "n/a",
-            "label": "fallback",
-            "lines": [f"Không tính được 5-10-15: {e}"],
-        }
-
-    # ========= scoring =========
-    ctx_txt = " ".join(str(x) for x in ctx).lower()
-    score = 0
-
-    try:
-        if side == "BUY" and "bullish" in ctx_txt:
-            score += 20
-        elif side == "SELL" and "bearish" in ctx_txt:
-            score += 20
+    # 7.6) Gợi ý dời SL/TP cụ thể (nếu có ATR)
+    suggest_lines = []
+    if a > 0:
+        # TP1/TP2 đề xuất
+        if side == "BUY":
+            tp1_s = entry + 0.90 * a
+            tp2_s = entry + 1.80 * a
+            sl_s  = entry - 1.10 * a
         else:
-            score += 10
+            tp1_s = entry - 0.90 * a
+            tp2_s = entry - 1.80 * a
+            sl_s  = entry + 1.10 * a
 
-        if pos is not None:
-            p = float(pos)
-            if 0.30 <= p <= 0.70:
-                score += 20
-            elif 0.20 <= p <= 0.80:
-                score += 15
-            else:
-                score += 5
+        suggest_lines.append(f"🎯 Gợi ý chuẩn theo ATR (ngắn hạn M15):")
+        suggest_lines.append(f"- SL đề xuất: ~{sl_s:.2f}")
+        suggest_lines.append(f"- TP1 đề xuất: ~{tp1_s:.2f} (chốt 30–50%)")
+        suggest_lines.append(f"- TP2 đề xuất: ~{tp2_s:.2f} (phần còn lại)")
+        suggest_lines.append(f"- Rule: đạt +0.8 ATR → dời SL về BE; đạt +1.2 ATR → trailing theo high/low 3 nến M15.")
 
-        if liq and "chưa thấy" not in " ".join(str(x).lower() for x in liq):
-            score += 15
-        else:
-            score += 8
-
-        if gate_break_up or gate_break_dn:
-            score += 20
-        elif gate_hl or gate_lh:
-            score += 12
-        else:
-            score += 5
-
-        vol_state = str(volq.get("state") or "").upper().strip()
-        if vol_state == "HIGH":
-            score += 15
-        elif vol_state == "LOW":
-            score += 5
-        else:
-            score += 10
-    except Exception:
-        pass
-
-    if score >= 80:
-        grade = "A+"
-    elif score >= 65:
-        grade = "A"
-    elif score >= 50:
-        grade = "B"
-    else:
-        grade = "C"
-
-    confidence = min(95, int(score * 0.95))
-
-    trap = None
-    try:
-        if "sideway" in ctx_txt and str(volq.get("state") or "").upper() == "LOW":
-            trap = "Fake breakout dễ xảy ra"
-        if bool(div.get("bear")) and side == "BUY":
-            trap = "BUY gặp bearish divergence"
-        if bool(div.get("bull")) and side == "SELL":
-            trap = "SELL gặp bullish divergence"
-    except Exception:
-        trap = None
-
-    if grade in ["A", "A+"] and (gate_break_up or gate_break_dn):
-        decision = "ADD"
-    elif grade in ["A", "A+"] and not (gate_break_up or gate_break_dn):
-        decision = "HOLD SMALL"
-    elif grade == "B":
-        decision = "SCALP"
-    else:
-        decision = "AVOID"
-
-    # ========= ATR plan =========
-    tp1_s = tp2_s = sl_s = None
-    try:
-        if a > 0:
-            if side == "BUY":
-                tp1_s = entry + 0.90 * a
-                tp2_s = entry + 1.80 * a
-                sl_s = entry - 1.10 * a
-            else:
-                tp1_s = entry - 0.90 * a
-                tp2_s = entry - 1.80 * a
-                sl_s = entry + 1.10 * a
-    except Exception:
-        pass
-
-    # ========= build reply =========
+    # 8) build reply
     lines = []
-    lines.append("🧠 REVIEW LỆNH (Manual) V4")
-    lines.append("")
-    lines.append(f"📌 {symbol} | {side} | {grade} | {decision} | Confidence: {confidence}%")
+    lines.append("🧠 REVIEW LỆNH (Manual)")
+    lines.append(f"📌 {symbol} | {side} | Kết luận: {verdict}")
+    lines.append(f"- Entry: {entry_lo:.2f} – {entry_hi:.2f}")
+    lines.append(f"- TP: {tp if tp is not None else '...'} | SL: {sl if sl is not None else '...'} | {rr_txt}")
+    phase369 = (meta.get("phase_369") or {}) if isinstance(meta, dict) else {}
+    flow_state = (meta.get("flow_state") or {}) if isinstance(meta, dict) else {}
+    liquidation = (meta.get("liquidation") or {}) if isinstance(meta, dict) else {}
+    no_trade_zone = (meta.get("no_trade_zone") or {}) if isinstance(meta, dict) else {}
+    market_state_v2 = meta.get("market_state_v2") if isinstance(meta, dict) else None
+    if isinstance(phase369, dict) and phase369:
+        lines.append(f"- Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')} | {phase369.get('reason') or phase369.get('note') or ''}".rstrip(" |"))
+    if isinstance(flow_state, dict) and flow_state.get("state"):
+        lines.append(f"- Flow: {flow_state.get('state')} | Favored: {flow_state.get('favored_side', 'n/a')}")
+    if market_state_v2:
+        lines.append(f"- State: {market_state_v2}")
+    if isinstance(liquidation, dict) and liquidation.get("ok"):
+        lines.append(f"- Liquidation: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR")
+    if isinstance(no_trade_zone, dict) and no_trade_zone.get("active"):
+        reasons = '; '.join(str(x) for x in (no_trade_zone.get('reasons') or []) if x)
+        lines.append(f"- No-trade zone: {reasons or 'active'}")
+    if a:
+        lines.append(f"- ATR(14) M15 ≈ {a:.2f}")
 
-    summary = []
-    if "sideway" in ctx_txt:
-        summary.append("sideway → dễ quét 2 đầu")
-    if str(volq.get('state') or '').upper() == "LOW":
-        summary.append("volume thấp")
-    if not (gate_break_up or gate_break_dn):
-        summary.append("chưa có xác nhận")
-    if trap:
-        summary.append(f"⚠️ {trap}")
-    if not summary:
-        summary.append("đang có dữ liệu cơ bản để review")
-
-    lines.append("Tóm tắt: " + ", ".join(summary))
-    lines.append("")
-    lines.append(f"🎯 Entry: {_f(entry)}")
-    lines.append(f"🎯 TP: {_f(tp, 2, '...')} | 🛑 SL: {_f(sl, 2, '...')} | {rr_txt}")
-    lines.append(f"🧭 Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')}")
-    lines.append(f"🪜 5-10-15: {mgmt.get('stage', 'n/a')} | {mgmt.get('label', 'n/a')}")
-
-    if side == "BUY" and hi is not None:
-        lines.append(f"📍 Decision now: {decision} → chờ M15 đóng > {_f(hi)}")
-    elif side == "SELL" and lo is not None:
-        lines.append(f"📍 Decision now: {decision} → chờ M15 đóng < {_f(lo)}")
-    else:
-        lines.append(f"📍 Decision now: {decision}")
-
-    if a > 0:
-        lines.append(f"📐 ATR(14) M15: {_f(a)}")
-
-    if isinstance(rinfo, dict):
+    if rinfo:
+        pos_pct = int(max(0, min(1, pos)) * 100)
         lines.append("")
-        lines.append("📏 Range M15:")
-        lo_txt = _f(lo)
-        hi_txt = _f(hi)
-        cur_txt = _f(cur)
-        if pos is not None:
-            cur_txt = f"{cur_txt} (~{_i_pct(pos)})"
-        lines.append(f"- {lo_txt} – {hi_txt}")
-        lines.append(f"- Current: {cur_txt}")
+        lines.append("📏 Ngắn hạn (range 30 nến M15 ~ 7.5h):")
+        lines.append(f"- Range: {lo:.2f} – {hi:.2f}")
+        lines.append(f"- Giá hiện tại: {cur:.2f} (~{pos_pct}% trong range)")
 
     lines.append("")
-    lines.append("🧠 Context:")
     if ctx:
-        for s in ctx[:3]:
+        lines.append("Context:")
+        for s in ctx:
             lines.append(f"- {s}")
-    else:
-        lines.append("- n/a")
 
     lines.append("")
-    lines.append("💧 Liquidity:")
-    if liq:
-        for s in liq[:3]:
-            lines.append(f"- {s}")
-    else:
-        lines.append("- Chưa thấy sweep/spring rõ")
+    lines.append("Liquidity (từ bot):")
+    for s in liq[:4]:
+        lines.append(f"- {s}")
 
     lines.append("")
-    lines.append("🏗 Structure:")
-    lines.append(f"- HL={_icon_bool(gate_hl)} | LH={_icon_bool(gate_lh)} | BreakUp={_icon_bool(gate_break_up)} | BreakDn={_icon_bool(gate_break_dn)}")
-    lines.append(f"- {gate_txt}")
+    lines.append("🧱 CHỜ CẤU TRÚC LÀ CHỜ GÌ?")
+    lines.append(gate.get("txt", ""))
+    lines.append(f"- Trạng thái hiện tại: HL={gate.get('hl')} | LH={gate.get('lh')} | break_up={gate.get('break_up')} | break_dn={gate.get('break_dn')}")
 
     lines.append("")
-    lines.append("⚙️ Action:")
-    if actions:
-        seen = set()
-        for s in actions:
-            ss = str(s).strip()
-            if ss and ss not in seen:
-                seen.add(ss)
-                lines.append(f"- {ss}")
-    else:
-        lines.append("- Chưa có action cụ thể.")
+    lines.append("✅ Gợi ý nên làm gì NGAY BÂY GIỜ:")
+    # bỏ trùng
+    seen = set()
+    for a1 in actions:
+        if a1 and a1 not in seen:
+            seen.add(a1)
+            lines.append(f"- {a1}")
 
-    lines.append("")
-    if side == "BUY":
-        lines.append(f"🛑 Invalidation: thủng {_f(sl, 2, 'n/a')} hoặc mất HL → ưu tiên thoát")
-    else:
-        lines.append(f"🛑 Invalidation: vượt {_f(sl, 2, 'n/a')} hoặc mất LH → ưu tiên thoát")
-
-    lines.append("")
-    lines.append("⏱ Time risk:")
-    lines.append("- Nếu sau 3–5 nến M15 không break xác nhận → edge giảm mạnh")
-
-    lines.append("")
-    lines.append("🪜 Quản trị 5-10-15:")
-    mgmt_lines = _as_list(mgmt.get("lines", []) or [])
-    if mgmt_lines:
-        for s in mgmt_lines[:4]:
-            lines.append(f"- {s}")
-    else:
-        lines.append("- n/a")
-
-    if a > 0:
+    if suggest_lines:
         lines.append("")
-        lines.append("📌 ATR Plan:")
-        lines.append(f"- SL chuẩn: {_f(sl_s)}")
-        lines.append(f"- TP1: {_f(tp1_s)}")
-        lines.append(f"- TP2: {_f(tp2_s)}")
-        lines.append("- +0.8 ATR → BE")
-        lines.append("- +1.2 ATR → trailing 3 nến M15")
+        lines.extend(suggest_lines)
 
     return "\n".join(lines)
 
+
+
+#def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
+    # M15, M30, H1
+    #m15, _ = get_candles(symbol, "15min", limit)
+    #m30, _ = get_candles(symbol, "30min", limit)
+    #h1, _ = get_candles(symbol, "1h", limit)
+    #return {"m15": m15, "m30": m30, "h1": h1}
 def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, Any]:
     # M15, M30, H1, H4 (H1+H4 confluence for Bias)
     sym = normalize_symbol(symbol)
@@ -1174,27 +809,8 @@ async def telegram_webhook(request: Request):
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
     parsed = parse_manual_trade(text)
     if parsed:
-        logger.info("[TG][REVIEW] matched manual trade: text=%r parsed=%s", text, parsed)
-        try:
-            reply = review_manual_trade(**parsed)
-            if not reply:
-                reply = "❌ REVIEW lỗi: hàm review không trả nội dung."
-        except Exception as e:
-            logger.exception("manual review failed: text=%r err=%s", text, e)
-            reply = f"❌ REVIEW lỗi: {e}"
-    
-        try:
-            _send_long_telegram(reply, chat_id=chat_id, parse_mode=None)
-        except Exception as send_err:
-            logger.exception(
-                "send long telegram failed for manual review: chat_id=%s err=%s",
-                chat_id, send_err
-            )
-            try:
-                _send_telegram("❌ REVIEW lỗi: không gửi được tin nhắn dài. Xem logs.", chat_id=chat_id)
-            except Exception:
-                pass
-    
+        reply = review_manual_trade(**parsed)
+        _send_telegram(reply, chat_id=chat_id)
         return "OK"
 
     low = text.lower()
