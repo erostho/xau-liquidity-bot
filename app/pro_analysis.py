@@ -1169,6 +1169,187 @@ def _where_wait_text(m15c: Sequence[Any], bias_side: str) -> Tuple[str, str]:
     return where, wait
 
 
+def _detect_liquidation_event(candles: Sequence[Any], atr: Optional[float], volq: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if not candles or len(candles) < 4:
+        return {"ok": False, "side": None, "reason": "not_enough_candles", "severity": 0}
+    a = float(atr or 0.0)
+    if a <= 0:
+        return {"ok": False, "side": None, "reason": "atr_unavailable", "severity": 0}
+    c = candles[-2] if len(candles) > 1 else candles[-1]
+    body = abs(float(c.close) - float(c.open))
+    rng = max(1e-9, float(c.high) - float(c.low))
+    close_pos = (float(c.close) - float(c.low)) / rng
+    vol_state = str((volq or {}).get("state") or "").upper()
+    vol_ratio = _safe_float((volq or {}).get("ratio")) or 0.0
+    direction = None
+    if float(c.close) < float(c.open):
+        direction = "SELL"
+    elif float(c.close) > float(c.open):
+        direction = "BUY"
+    body_atr = body / max(1e-9, a)
+    range_atr = rng / max(1e-9, a)
+    extreme_close = close_pos <= 0.15 or close_pos >= 0.85
+    vol_ok = (vol_state == "HIGH") or (vol_ratio >= 1.4)
+    ok = (body_atr >= 1.8 or range_atr >= 2.2) and extreme_close and vol_ok and direction is not None
+    severity = 0
+    if ok:
+        severity = 2 if (body_atr >= 2.2 or range_atr >= 2.6) else 1
+    return {
+        "ok": bool(ok),
+        "side": direction,
+        "body_atr": body_atr,
+        "range_atr": range_atr,
+        "close_pos": close_pos,
+        "vol_ok": bool(vol_ok),
+        "severity": severity,
+        "reason": "liquidation_move" if ok else "normal_move",
+    }
+
+
+def _detect_market_state_engine(h1_trend: str, spike: bool, weakening: bool, liquidation_evt: Dict[str, Any]) -> str:
+    if liquidation_evt.get("ok"):
+        if liquidation_evt.get("side") == "SELL":
+            return "EXTREME_DOWN"
+        if liquidation_evt.get("side") == "BUY":
+            return "EXTREME_UP"
+    if h1_trend == "bullish" and spike and not weakening:
+        return "TREND_UP"
+    if h1_trend == "bearish" and spike and not weakening:
+        return "TREND_DOWN"
+    if weakening and h1_trend in ("bullish", "bearish"):
+        return "TRANSITION"
+    return "SIDEWAY"
+
+
+def _detect_flow_filter(symbol: str, h1_trend: str, h4_trend: str, market_state_v2: str) -> Dict[str, Any]:
+    s = (symbol or "").upper()
+    favored_side = None
+    asset_state = "NEUTRAL"
+    if "XAU" in s:
+        if h1_trend == "bearish" and h4_trend == "bearish":
+            favored_side = "SELL"
+            asset_state = "OUTFLOW"
+        elif h1_trend == "bullish" and h4_trend == "bullish":
+            favored_side = "BUY"
+            asset_state = "INFLOW"
+    elif "BTC" in s:
+        if h1_trend == "bullish" and h4_trend == "bullish":
+            favored_side = "BUY"
+            asset_state = "RISK_ON"
+        elif h1_trend == "bearish" and h4_trend == "bearish":
+            favored_side = "SELL"
+            asset_state = "RISK_OFF"
+    elif "XAG" in s:
+        if h1_trend == "bullish" and h4_trend == "bullish":
+            favored_side = "BUY"
+            asset_state = "INFLOW"
+        elif h1_trend == "bearish" and h4_trend == "bearish":
+            favored_side = "SELL"
+            asset_state = "OUTFLOW"
+    if market_state_v2.startswith("EXTREME_"):
+        asset_state = f"{asset_state}|EXTREME" if asset_state != "NEUTRAL" else "EXTREME"
+    return {"asset": s, "state": asset_state, "favored_side": favored_side}
+
+
+def _detect_setup_phase_369(m15c: Sequence[Any], h1_trend: str, bias_side: Optional[str] = None,
+                            liq_warn_flag: bool = False, post_sweep_flag: bool = False,
+                            liquidation_evt: Optional[Dict[str, Any]] = None,
+                            market_state_v2: Optional[str] = None) -> Dict[str, Any]:
+    phase = 6
+    label = "READY"
+    meaning = "Pha đẹp để canh theo plan"
+    reason = "range=n/a"
+    sub_phase = None
+    use = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    use = use[-30:] if len(use) >= 30 else use
+    pos = None
+    if use:
+        lo = min(float(c.low) for c in use)
+        hi = max(float(c.high) for c in use)
+        rng = max(1e-9, hi - lo)
+        pos = (float(use[-1].close) - lo) / rng
+        reason = f"range-pos={pos*100:.0f}%"
+
+    if (liquidation_evt or {}).get("ok"):
+        phase = 3
+        label = "EXTREME"
+        sub_phase = "3E"
+        meaning = "Liquidation / panic zone"
+        reason = liquidation_evt.get("reason") or "liquidation"
+    elif post_sweep_flag:
+        phase = 3
+        label = "EARLY"
+        sub_phase = "3"
+        meaning = "Mới quét xong, phải chờ cấu trúc"
+        reason = "post-sweep"
+    elif liq_warn_flag:
+        phase = 3
+        label = "EARLY"
+        sub_phase = "3"
+        meaning = "Còn liquidity warning / vùng lừa"
+    else:
+        side_ref = bias_side or ("BUY" if h1_trend == "bullish" else "SELL" if h1_trend == "bearish" else None)
+        if market_state_v2 == "TRANSITION":
+            phase = 6
+            label = "TRANSITION"
+            sub_phase = "6T"
+            meaning = "Đang chuyển pha, cần confirm"
+        elif pos is not None and side_ref == "BUY" and pos >= 0.80:
+            phase = 9
+            label = "LATE"
+            sub_phase = "9"
+            meaning = "Cuối nhịp BUY, dễ chase"
+        elif pos is not None and side_ref == "SELL" and pos <= 0.20:
+            phase = 9
+            label = "LATE"
+            sub_phase = "9"
+            meaning = "Cuối nhịp SELL, dễ chase"
+        elif pos is not None and (pos <= 0.10 or pos >= 0.90):
+            phase = 9
+            label = "OVEREXTENDED"
+            sub_phase = "9X"
+            meaning = "Quá xa range, ưu tiên tránh đuổi"
+        elif pos is not None and 0.25 <= pos <= 0.75 and side_ref is None:
+            phase = 3
+            label = "EARLY"
+            sub_phase = "3"
+            meaning = "Giữa range / chưa có phe thắng rõ"
+        else:
+            phase = 6
+            label = "READY"
+            sub_phase = "6"
+            meaning = "Có thể thực thi nếu đủ bias + confirm"
+
+    return {
+        "phase": phase,
+        "label": label,
+        "sub_phase": sub_phase,
+        "meaning": meaning,
+        "reason": reason,
+        "note": reason,
+    }
+
+
+def _build_no_trade_zone(symbol: str, phase_369: Dict[str, Any], liquidation_evt: Dict[str, Any],
+                         flow_state: Dict[str, Any], bias_side: Optional[str], confirmation_ok: Optional[bool] = None) -> Dict[str, Any]:
+    reasons = []
+    active = False
+    if liquidation_evt.get("ok"):
+        active = True
+        reasons.append("Liquidation move vừa xảy ra")
+    if phase_369.get("sub_phase") in ("3E", "9X"):
+        active = True
+        reasons.append(f"Phase nguy hiểm: {phase_369.get('sub_phase')}")
+    favored = flow_state.get("favored_side")
+    if favored and bias_side and favored != bias_side:
+        active = True
+        reasons.append(f"Ngược flow proxy ({favored})")
+    if confirmation_ok is False and phase_369.get("phase") == 3:
+        active = True
+        reasons.append("Chưa có confirmation ở vùng trap")
+    return {"active": active, "reasons": reasons}
+
+
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -1214,16 +1395,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         base["short_hint"] = ["- Chưa đủ dữ liệu → CHỜ KÈO"]
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
-        base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
-            bias_side=None,
-            liq_warn_flag=bool(liq_warn),
-            post_sweep_flag=False,
-        )
-        base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
-            bias_side=bias,
-            liq_warn_flag=bool(liq_warn),
-            post_sweep_flag=False,
-        )
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         return base
 
@@ -1267,7 +1438,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 
     # show vào quality_lines (đọc phát hiểu)
     if volq["state"] != "N/A":
-        quality_lines.append(f"Volume: {volq['state']} (x{volq['ratio']:.2f} vs SMA20)")
+        quality_lines.append(f"Volume: {volq['state']} (x{float((volq.get('ratio') or 0.0)):.2f} vs SMA20)")
         # volume cao → thêm điểm chất lượng (đỡ fake breakout)
         if volq["state"] == "HIGH":
             score += 1
@@ -1284,15 +1455,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         quality_lines.append(div["txt"])
         score += 1
 
-    # ====== Market state: chỉ 3 trạng thái (đúng ý mày) ======
-    # spike volatility (M15): range 20 > 1.35 * range 80
+    # ====== Market state + liquidation / flow / phase base ======
     ranges20 = [c.high - c.low for c in m15c[-20:]] if len(m15c) >= 20 else [c.high - c.low for c in m15c]
     ranges80 = [c.high - c.low for c in m15c[-80:]] if len(m15c) >= 80 else [c.high - c.low for c in m15c]
     avg20 = sum(ranges20) / max(1, len(ranges20))
     avg80 = sum(ranges80) / max(1, len(ranges80))
     spike = (avg20 > 1.35 * avg80) if avg80 > 0 else False
 
-    # weakening trend trên H1 dựa EMA20-EMA50 (đã có đoạn dưới, nhưng ta cần dùng sớm)
     h1_closes = [c.close for c in h1c]
     ema20_h1 = _ema(h1_closes, 20)
     ema50_h1 = _ema(h1_closes, 50)
@@ -1306,7 +1475,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         if h1_trend == "bearish" and sep_now > sep_prev:
             weakening = True
 
-    # chỉ 3 nhãn:
     if h1_trend == "bullish" and spike and not weakening:
         market_state = "TĂNG MẠNH"
     elif h1_trend == "bearish" and spike and not weakening:
@@ -1314,9 +1482,24 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     else:
         market_state = "SIDEWAY"
 
-    # ====== Context luôn có (không còn n/a vô nghĩa) ======
+    h4_trend = _trend_label(h4c)
+    liquidation_evt = _detect_liquidation_event(m15c, atr15, volq)
+    market_state_v2 = _detect_market_state_engine(h1_trend, spike, weakening, liquidation_evt)
+    flow_state = _detect_flow_filter(symbol, h1_trend, h4_trend, market_state_v2)
+
+    base["meta"]["liquidation"] = liquidation_evt
+    base["meta"]["market_state_v2"] = market_state_v2
+    base["meta"]["flow_state"] = flow_state
+
     context_lines.append(f"Thị trường: {market_state}")
+    context_lines.append(f"State: {market_state_v2}")
     context_lines.append(f"H1: {h1_trend}")
+    if flow_state.get("state") and flow_state.get("state") != "NEUTRAL":
+        context_lines.append(f"Flow proxy: {flow_state.get('state')} | Ưu tiên {flow_state.get('favored_side') or 'n/a'}")
+    if liquidation_evt.get("ok"):
+        context_lines.append(
+            f"⚠️ Liquidation move: {liquidation_evt.get('side')} | body~{liquidation_evt.get('body_atr', 0):.1f} ATR | range~{liquidation_evt.get('range_atr', 0):.1f} ATR"
+        )
 
     # --- GỢI Ý NGẮN HẠN (dựa 30 nến M15 gần nhất)
     try:
@@ -1409,77 +1592,15 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     if lw:
         context_lines.extend(lw)
 
-    # ===== Phase 369 helper + base value (set sớm để mọi nhánh return đều có) =====
-    def _detect_setup_phase_369(
-        bias_side: Optional[str] = None,
-        liq_warn_flag: bool = False,
-        post_sweep_flag: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        3 = EARLY  : trap / post-sweep / chưa rõ phe thắng
-        6 = READY  : vị trí cân bằng, có thể canh theo plan
-        9 = LATE   : cuối nhịp / dễ chase
-        """
-        phase = 6
-        label = "READY"
-        meaning = "Pha đẹp để canh theo plan"
-        reason = "range=n/a"
-
-        use = closed15[-30:] if len(closed15) >= 30 else closed15
-        pos = None
-        if use:
-            lo = min(c.low for c in use)
-            hi = max(c.high for c in use)
-            rng = max(1e-9, hi - lo)
-            pos = (float(closed15[-1].close) - lo) / rng
-            reason = f"range-pos={pos*100:.0f}%"
-
-        if post_sweep_flag:
-            phase = 3
-            label = "EARLY"
-            meaning = "Mới quét xong, phải chờ cấu trúc"
-            reason = "post-sweep"
-        elif liq_warn_flag:
-            phase = 3
-            label = "EARLY"
-            meaning = "Còn liquidity warning / vùng lừa"
-        else:
-            side_ref = bias_side or (
-                "BUY" if h1_trend == "bullish"
-                else "SELL" if h1_trend == "bearish"
-                else None
-            )
-
-            if pos is not None and side_ref == "BUY" and pos >= 0.80:
-                phase = 9
-                label = "LATE"
-                meaning = "Cuối nhịp BUY, dễ chase"
-            elif pos is not None and side_ref == "SELL" and pos <= 0.20:
-                phase = 9
-                label = "LATE"
-                meaning = "Cuối nhịp SELL, dễ chase"
-            elif pos is not None and 0.25 <= pos <= 0.75 and side_ref is None:
-                phase = 3
-                label = "EARLY"
-                meaning = "Giữa range / chưa có phe thắng rõ"
-            else:
-                phase = 6
-                label = "READY"
-                meaning = "Có thể thực thi nếu đủ bias + confirm"
-
-        return {
-            "phase": phase,
-            "label": label,
-            "meaning": meaning,
-            "reason": reason,
-            "note": reason,
-        }
-
-    liq_warn_flag = bool(lw)
+    liq_warn = bool(lw)
     base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
+        m15c,
+        h1_trend,
         bias_side=None,
-        liq_warn_flag=liq_warn_flag,
+        liq_warn_flag=liq_warn,
         post_sweep_flag=False,
+        liquidation_evt=liquidation_evt,
+        market_state_v2=market_state_v2,
     )
 
     # ===== Rejection =====
@@ -1512,12 +1633,12 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
 
     if spring_buy.get("ok"):
         vtxt = " +VOL" if spring_buy.get("vol_ok") else ""
-        liquidity_lines.append("🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through.")
+        liquidity_lines.append(f"🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through.")
         score += 1
 
     if spring_sell.get("ok"):
         vtxt = " +VOL" if spring_sell.get("vol_ok") else ""
-        liquidity_lines.append("🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through.")
+        liquidity_lines.append(f"🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through.")
         score += 1
 
     if not liquidity_lines:
@@ -1594,16 +1715,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     "stars": 2,
                     "notes": notes + ["➡️ Khi HL + BOS xuất hiện (trạng thái OK/OK) → mới canh BUY theo H1 + chờ M30 confirm."],
                 })
-                base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
-                    bias_side="BUY",
-                    liq_warn_flag=True,
-                    post_sweep_flag=True,
-                )
-                base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
-                    bias_side="SELL",
-                    liq_warn_flag=True,
-                    post_sweep_flag=True,
-                )
                 _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
                 return base
 
@@ -1654,6 +1765,17 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             bias = "SELL"
         elif buy_ok:
             bias = "BUY"
+
+    phase_369 = _detect_setup_phase_369(
+        m15c,
+        h1_trend,
+        bias_side=bias,
+        liq_warn_flag=liq_warn,
+        post_sweep_flag=bool(post_sweep_buy or post_sweep_sell),
+        liquidation_evt=liquidation_evt,
+        market_state_v2=market_state_v2,
+    )
+    base.setdefault("meta", {})["phase_369"] = phase_369
 
     # ---- defaults (avoid UnboundLocalError when structure/bias is n/a) ----
     trade_mode = "HALF"  # default; will be overwritten once scoring is computed
@@ -1741,16 +1863,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 "stars": 1,
                 "notes": ["H1 chưa bullish → không BUY. Chờ H1 confirm hoặc kèo rõ hơn."],
             })
-            base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
-                bias_side="BUY",
-                liq_warn_flag=bool(liq_warn),
-                post_sweep_flag=False,
-            )
-            base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
-                bias_side="SELL",
-                liq_warn_flag=bool(liq_warn),
-                post_sweep_flag=False,
-            )
             _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
             return base
         if bias == "SELL" and h1_trend != "bearish":
@@ -2139,6 +2251,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # - If bias is BUY: require last M15 close >= H1_HL (close-based, ignore wicks).
     # - If bias is SELL: require last M15 close <= H1_LH.
     last_close = float(m15c[-1].close) if m15c else float('nan')
+    m15_last_close = last_close
     h1_hl_lv = kh.get('H1_HL')
     h1_lh_lv = kh.get('H1_LH')
     if bias_side == 'BUY' and h1_hl_lv is not None:
@@ -2275,6 +2388,31 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     elif score3 == 2:
         trade_mode = "HALF"
 
+    # ===== Flow filter + No-trade zone =====
+    flow_alignment = None
+    if flow_state.get("favored_side") and bias_side in ("BUY", "SELL"):
+        flow_alignment = (flow_state.get("favored_side") == bias_side)
+        if not flow_alignment:
+            if trade_mode == "FULL":
+                trade_mode = "HALF"
+            elif trade_mode == "HALF":
+                trade_mode = "WAIT"
+            notes.append(f"⚠️ Flow proxy đang ưu tiên {flow_state.get('favored_side')} → tránh trade ngược dòng tiền.")
+
+    no_trade_zone = _build_no_trade_zone(
+        symbol=symbol,
+        phase_369=phase_369,
+        liquidation_evt=liquidation_evt,
+        flow_state=flow_state,
+        bias_side=bias_side,
+        confirmation_ok=bool(momentum_ok),
+    )
+    base.setdefault("meta", {})["no_trade_zone"] = no_trade_zone
+    if no_trade_zone.get("active"):
+        trade_mode = "WAIT"
+        notes.append("⛔ No-trade zone: " + "; ".join(no_trade_zone.get("reasons") or []))
+
+    base.setdefault("meta", {})["flow_state"]["alignment"] = flow_alignment
 
     # Bonus stars from vol + candle pattern, and penalty from liquidity warning
     bonus = 0
@@ -2340,13 +2478,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             stars = min(stars, 2)
     except Exception:
         pass
-
-    phase_369 = _detect_setup_phase_369(
-        bias_side=bias_side if "bias_side" in locals() else None,
-        liq_warn_flag=bool(liq_warn),
-        post_sweep_flag=bool(post_sweep_buy or post_sweep_sell),
-    )
-    base.setdefault("meta", {})["phase_369"] = phase_369
 
     quality_lines.append("RR ~ 1:2")
     if rdist is not None:
@@ -2546,9 +2677,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     add(f"{stars_txt}  <b>{rec}</b>{mode_txt}")
 
-    # ---------- phase 369 ----------
-    phase369 = meta.get("phase_369")
-    if isinstance(phase369, dict):
+    # ---------- phase / flow / no-trade ----------
+    phase369 = meta.get("phase_369") if isinstance(meta.get("phase_369"), dict) else {}
+    if phase369:
         p = phase369.get("phase")
         label = phase369.get("label") or ""
         note = phase369.get("note") or phase369.get("reason") or ""
@@ -2558,6 +2689,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if note:
             txt += f" | {note}"
         add(txt)
+
+    flow_meta = meta.get("flow_state") if isinstance(meta.get("flow_state"), dict) else {}
+    if flow_meta and flow_meta.get("state"):
+        flow_txt = f"Flow: {flow_meta.get('state')}"
+        if flow_meta.get("favored_side"):
+            flow_txt += f" | Favored: {flow_meta.get('favored_side')}"
+        add(flow_txt)
+
+    liq_meta = meta.get("liquidation") if isinstance(meta.get("liquidation"), dict) else {}
+    if liq_meta.get("ok"):
+        add(f"Liquidation: {liq_meta.get('side')} | body~{float(liq_meta.get('body_atr', 0) or 0):.1f} ATR | range~{float(liq_meta.get('range_atr', 0) or 0):.1f} ATR")
+
+    ntz = meta.get("no_trade_zone") if isinstance(meta.get("no_trade_zone"), dict) else {}
+    if ntz.get("active"):
+        add("⛔ No-trade zone: " + "; ".join([str(x) for x in (ntz.get("reasons") or []) if x]))
 
     # ---------- structure / key levels (READ CORRECT KEYS) ----------
     st = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
