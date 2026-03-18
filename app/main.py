@@ -835,13 +835,25 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     if a:
         lines.append(f"- ATR: {a:.2f}")
     
+
     # ===== RANGE =====
-    if rinfo:
-        pos_pct = int(max(0, min(1, pos)) * 100) if pos is not None else 0
+    if isinstance(rinfo, dict):
         lines.append("")
-        lines.append("📏 Range M15:")
-        lines.append(f"- {lo:.2f} – {hi:.2f}")
-        lines.append(f"- Current: {cur:.2f} (~{pos_pct}%)")
+        lines.append("📏 Range:")
+    
+        lo_txt = f"{float(lo):.2f}" if lo is not None else "n/a"
+        hi_txt = f"{float(hi):.2f}" if hi is not None else "n/a"
+        cur_txt = f"{float(cur):.2f}" if cur is not None else "n/a"
+    
+        if pos is not None:
+            try:
+                pos_pct = int(max(0, min(1, float(pos))) * 100)
+                cur_txt = f"{cur_txt} (~{pos_pct}%)"
+            except Exception:
+                pass
+    
+        lines.append(f"- {lo_txt} – {hi_txt}")
+        lines.append(f"- Current: {cur_txt}")
     
     # ===== CONTEXT =====
     lines.append("")
