@@ -286,6 +286,79 @@ def _hl_lh_gate(m15, atr_val):
         f"- SELL chỉ mạnh khi: LH=True và M15 đóng < đáy gần ({ref_lo:.2f})."
     )
     return {"hl": hl, "lh": lh, "break_up": break_up, "break_dn": break_dn, "ref_hi": ref_hi, "ref_lo": ref_lo, "txt": txt}
+
+def _trade_management_5_10_15(
+    side: str,
+    entry: float,
+    cur: float | None,
+    atr_val: float | None,
+    gate: dict | None,
+    div: dict | None,
+    cpat: dict | None,
+    volq: dict | None,
+    tp: float | None,
+    sl: float | None,
+) -> dict:
+    side = (side or "").upper().strip()
+    gate = gate or {}
+    div = div or {}
+    cpat = cpat or {}
+    volq = volq or {}
+
+    a = float(atr_val or 0.0)
+    if cur is None or a <= 0:
+        return {
+            "stage": "5",
+            "label": "Validation",
+            "lines": [
+                "Chưa đủ dữ liệu giá hiện tại / ATR để tính 5-10-15.",
+                "Tạm coi đang ở pha kiểm tra ban đầu, ưu tiên giữ nhỏ và không add."
+            ],
+        }
+
+    move = (float(cur) - float(entry)) if side == "BUY" else (float(entry) - float(cur)
+)
+    r_mult = move / max(a, 1e-9)
+
+    lines = []
+
+    # ===== Stage 5: Validation =====
+    if r_mult < 0.8:
+        lines.append("5: Lệnh còn ở pha kiểm tra → chỉ giữ ngắn hạn, chưa add.")
+        if volq.get("state") == "LOW":
+            lines.append("Volume thấp → nếu có lời nên ưu tiên chốt nhanh TP1.")
+        if side == "BUY" and div.get("bear"):
+            lines.append("Có bearish divergence chống BUY → tránh gồng.")
+        if side == "SELL" and div.get("bull"):
+            lines.append("Có bullish divergence chống SELL → tránh gồng.")
+        return {"stage": "5", "label": "Validation", "lines": lines}
+
+    # ===== Stage 10: Expansion =====
+    if r_mult < 1.2:
+        lines.append("10: Lệnh bắt đầu có lợi thế → cân nhắc dời SL về BE.")
+        if side == "BUY":
+            if gate.get("hl") or gate.get("break_up"):
+                lines.append("BUY có HL / break_up hỗ trợ → có thể giữ thêm.")
+            else:
+                lines.append("BUY chưa có break_up rõ → vẫn không add.")
+        else:
+            if gate.get("lh") or gate.get("break_dn"):
+                lines.append("SELL có LH / break_dn hỗ trợ → có thể giữ thêm.")
+            else:
+                lines.append("SELL chưa có break_dn rõ → vẫn không add.")
+        return {"stage": "10", "label": "Expansion", "lines": lines}
+
+    # ===== Stage 15: Harvest / Continuation =====
+    lines.append("15: Lệnh đã chạy đủ xa → ưu tiên bảo vệ lợi nhuận.")
+    lines.append("Nên trailing theo high/low 3 nến M15 hoặc chốt từng phần.")
+    if tp is not None:
+        lines.append(f"TP hiện tại đang đặt: {float(tp):.2f}")
+    if sl is not None:
+        lines.append(f"SL hiện tại đang đặt: {float(sl):.2f}")
+    if cpat.get("rejection") in ("UPPER", "LOWER"):
+        lines.append("Có rejection candle gần đây → cân nhắc harvest bớt vị thế.")
+    return {"stage": "15", "label": "Harvest", "lines": lines}
+
 def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float, tp: float | None, sl: float | None) -> str:
     symbol = str(symbol or "").strip().upper()
     side = (side or "").upper().strip()
