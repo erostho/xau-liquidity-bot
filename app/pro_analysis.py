@@ -1316,6 +1316,93 @@ def _attach_gd2_meta(
     meta["phase_369"] = phase_369
     meta["playbook_v2"] = playbook_v2
 
+
+def _build_narrative_v3(symbol: str, bias_side: Optional[str], market_state_v2: str,
+                        flow_state: Dict[str, Any], liquidation_evt: Dict[str, Any],
+                        playbook_v2: Dict[str, Any], no_trade_zone: Dict[str, Any]) -> Dict[str, Any]:
+    sym = str(symbol or "").upper()
+    asset = "BTC" if "BTC" in sym else ("XAU" if "XAU" in sym else ("XAG" if "XAG" in sym else sym))
+    plan = str(playbook_v2.get("plan") or "OBSERVE")
+    flow = str(flow_state.get("state") or "NEUTRAL")
+    ms = str(market_state_v2 or "")
+    headline = "Quan sát thêm"
+    summary = "Thị trường chưa cho lợi thế rõ."
+    danger = []
+    if liquidation_evt.get("ok"):
+        headline = "Sau liquidation"
+        summary = f"{asset} vừa có liquidation move; ưu tiên chờ phản ứng sau panic, không follow ngay."
+        danger.append("biến động 2 đầu")
+    elif plan in ("BOUNCE_TO_SELL", "SELL_RALLY", "WAIT_BOUNCE_TO_SELL"):
+        headline = "Hồi để bán"
+        summary = f"{asset} đang hồi kỹ thuật trong bối cảnh giảm; ưu tiên sell-the-rally, tránh sell đáy."
+        danger.append("fake reversal")
+    elif plan in ("DIP_TO_BUY", "BUY_DIP", "WAIT_PULLBACK_TO_BUY"):
+        headline = "Hồi để mua"
+        summary = f"{asset} đang pullback trong xu hướng tăng; ưu tiên buy-the-dip, tránh buy đuổi."
+        danger.append("fake breakdown")
+    elif ms in ("CHOP", "TRANSITION"):
+        headline = "Nhiễu / chuyển pha"
+        summary = f"{asset} đang ở trạng thái nhiễu hoặc chuyển pha; edge thấp, nên đứng ngoài là chính."
+        danger.append("stop-hunt")
+    elif flow in ("OUTFLOW", "RISK_OFF"):
+        headline = "Dòng tiền chưa ủng hộ"
+        summary = f"Flow hiện tại chưa ủng hộ {asset}; thuận flow vẫn ưu tiên SELL nếu có setup rõ."
+    elif flow in ("INFLOW", "RISK_ON"):
+        headline = "Dòng tiền đang ủng hộ"
+        summary = f"Flow hiện tại ủng hộ {asset}; ưu tiên BUY khi có pullback hoặc break xác nhận."
+    if no_trade_zone.get("active"):
+        danger.extend(no_trade_zone.get("reasons") or [])
+    return {
+        "headline": headline,
+        "summary": summary,
+        "danger": [str(x) for x in danger if x],
+    }
+
+
+def _build_scenario_v3(bias_side: Optional[str], playbook_v2: Dict[str, Any], key_levels: Dict[str, Any],
+                       flow_state: Dict[str, Any], market_state_v2: str, no_trade_zone: Dict[str, Any]) -> Dict[str, Any]:
+    plan = str(playbook_v2.get("plan") or "OBSERVE")
+    zl = _safe_float(playbook_v2.get("zone_low"))
+    zh = _safe_float(playbook_v2.get("zone_high"))
+    favored = str(flow_state.get("favored_side") or "NONE")
+    base_case = "Quan sát thêm"
+    alt_case = "Chờ break xác nhận"
+    invalid = "Mất cấu trúc hiện tại"
+    best_zone = None
+    if zl is not None and zh is not None:
+        best_zone = f"{zl:.2f} – {zh:.2f}"
+    if plan in ("BOUNCE_TO_SELL", "SELL_RALLY", "WAIT_BOUNCE_TO_SELL"):
+        base_case = f"Base case: hồi để SELL{' ở vùng ' + best_zone if best_zone else ''}"
+        alt_level = _safe_float(key_levels.get("H1_HH") or key_levels.get("M15_RANGE_HIGH"))
+        alt_case = f"Alt case: nếu giữ trên {alt_level:.2f} → chuyển sang reversal candidate" if alt_level is not None else "Alt case: nếu break đỉnh mạnh → reversal candidate"
+        inv = _safe_float(key_levels.get("H1_LH") or key_levels.get("M15_RANGE_HIGH"))
+        invalid = f"Invalid if: M15/H1 giữ trên {inv:.2f}" if inv is not None else invalid
+    elif plan in ("DIP_TO_BUY", "BUY_DIP", "WAIT_PULLBACK_TO_BUY"):
+        base_case = f"Base case: hồi để BUY{' ở vùng ' + best_zone if best_zone else ''}"
+        alt_level = _safe_float(key_levels.get("H1_LL") or key_levels.get("M15_RANGE_LOW"))
+        alt_case = f"Alt case: nếu thủng {alt_level:.2f} → breakdown / reversal risk" if alt_level is not None else "Alt case: nếu thủng đáy mạnh → breakdown risk"
+        inv = _safe_float(key_levels.get("H1_HL") or key_levels.get("M15_RANGE_LOW"))
+        invalid = f"Invalid if: M15/H1 mất {inv:.2f}" if inv is not None else invalid
+    elif no_trade_zone.get("active"):
+        base_case = "Base case: NO TRADE / đứng ngoài"
+        alt_case = "Alt case: chờ displacement thật + follow-through"
+        invalid = "Invalid if: market state thoát khỏi CHOP/TRANSITION"
+    elif favored in ("BUY", "SELL") and bias_side in ("BUY", "SELL"):
+        base_case = f"Base case: ưu tiên {favored} theo flow"
+        alt_case = "Alt case: chỉ đổi kịch bản nếu break major level"
+    return {
+        "base_case": base_case,
+        "alt_case": alt_case,
+        "invalid_if": invalid,
+        "best_zone": best_zone,
+    }
+
+
+def _attach_gd3_meta(base: Dict[str, Any], narrative_v3: Dict[str, Any], scenario_v3: Dict[str, Any]) -> None:
+    meta = base.setdefault("meta", {})
+    meta["narrative_v3"] = narrative_v3
+    meta["scenario_v3"] = scenario_v3
+
 def _where_wait_text(m15c: Sequence[Any], bias_side: str) -> Tuple[str, str]:
     lo, hi, last = _range_levels(m15c, n=20)
     if lo is None or hi is None:
@@ -1746,6 +1833,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     playbook_v2 = _detect_playbook_v2(symbol, bias_guess, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
     phase_369_v2 = _detect_phase_369_v2(bias_guess, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
     _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
+    _attach_gd3_meta(
+        base,
+        _build_narrative_v3(symbol, bias_guess, market_state_v2, flow_state, liquidation_evt, playbook_v2, no_trade_zone),
+        _build_scenario_v3(bias_guess, playbook_v2, base.get("meta", {}).get("key_levels", {}), flow_state, market_state_v2, no_trade_zone),
+    )
 
     if flow_state.get("state"):
         context_lines.append(f"Flow proxy: {flow_state.get('state')} | Ưu tiên {flow_state.get('favored_side') or 'n/a'}")
@@ -1838,6 +1930,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     playbook_v2 = _detect_playbook_v2(symbol, bias_for_gd2, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
     phase_369_v2 = _detect_phase_369_v2(bias_for_gd2, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
     _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
+    _attach_gd3_meta(
+        base,
+        _build_narrative_v3(symbol, bias_for_gd2, market_state_v2, flow_state, liquidation_evt, playbook_v2, no_trade_zone),
+        _build_scenario_v3(bias_for_gd2, playbook_v2, base.get("meta", {}).get("key_levels", {}), flow_state, market_state_v2, no_trade_zone),
+    )
 
     if bias is None:
         # --------------------
@@ -2528,6 +2625,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     playbook_v2 = _detect_playbook_v2(symbol, bias_side, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
     phase_369_v2 = _detect_phase_369_v2(bias_side, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
     _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
+    _attach_gd3_meta(
+        base,
+        _build_narrative_v3(symbol, bias_side, market_state_v2, flow_state, liquidation_evt, playbook_v2, no_trade_zone),
+        _build_scenario_v3(bias_side, playbook_v2, base.get("meta", {}).get("key_levels", {}), flow_state, market_state_v2, no_trade_zone),
+    )
 
     base.update({
         "context_lines": context_lines,
@@ -2578,403 +2680,156 @@ def _safe_float(x):
         return None
 
 def format_signal(sig: Dict[str, Any]) -> str:
-    """
-    Telegram formatter (PRO++).
-    FIX:
-    1) Không bị đúp tiêu đề/preface (kể cả preface có '\\n\\n').
-    2) Không bị n/a sai do đọc nhầm key (structure/key_levels/entry-plan).
-    3) 3⭐ vẫn luôn hiển thị Entry/SL/TP (nếu có thì hiện số, không thì '...').
-    4) Checklist 4 yếu tố theo logic mới: Bias / Location / Liquidity / Confirmation.
-    """
-    from typing import List, Dict, Any
-
-    def _to_lines(txt: str) -> List[str]:
-        """Convert a string that may contain literal '\\n' into real lines."""
-        if txt is None:
-            return []
-        s = str(txt).strip()
-        if not s:
-            return []
-        # if caller accidentally passed "\\n\\n" as literal text
-        s = s.replace("\\n", "\n")
-        parts = [x.rstrip() for x in s.split("\n")]
-        return [p for p in parts if p.strip()]
-
-    def _safe_float_local(x):
-        # use the _safe_float already defined in file if available
+    """Telegram formatter GD3: desk-note style, no raw HTML, concise and readable."""
+    def sf(x):
         try:
-            return _safe_float(x)  # type: ignore
+            return _safe_float(x)
         except Exception:
             try:
                 return float(x)
             except Exception:
                 return None
 
-    def nf2(x):
-        v = _safe_float_local(x)
+    def nf(x, nd: int = 2, default: str = "...") -> str:
+        v = sf(x)
         if v is None:
-            return "..."
-        try:
-            return f"{float(v):.2f}"
-        except Exception:
-            return "..."
-
-    def mk(flag):
-        if flag is None:
-            return "…"
-        return "✅" if bool(flag) else "❌"
+            return default
+        return f"{v:.{nd}f}"
 
     if not isinstance(sig, dict):
-        return "❌ Invalid signal payload (not dict)."
+        return "❌ Invalid signal payload."
 
     meta = sig.get("meta") if isinstance(sig.get("meta"), dict) else {}
-    sd = meta.get("score_detail") if isinstance(meta.get("score_detail"), dict) else {}
-
-    # ---------- basics ----------
-    symbol = (sig.get("symbol") or "n/a")
-    tf = (sig.get("tf") or "n/a")
-    session = (sig.get("session") or "")
-
-    trade_mode = (sig.get("trade_mode") or "").upper()
-    if trade_mode not in ("FULL", "HALF", "WAIT", "MANUAL"):
-        trade_mode = "MANUAL" if trade_mode else "MANUAL"
-
-    # recommendation may be "🟢 BUY" / "🔴 SELL" / "CHỜ"
-    rec_raw = (sig.get("recommendation") or sig.get("rec") or "CHỜ")
-    rec_u = str(rec_raw).upper()
-    if "BUY" in rec_u:
-        rec = "BUY"
-    elif "SELL" in rec_u:
-        rec = "SELL"
-    else:
-        rec = "CHỜ"
-
-    # stars
-    stars_i = 0
-    try:
-        stars_i = int(sig.get("stars", 0) or 0)
-    except Exception:
-        stars_i = 0
-    stars_i = max(0, min(5, stars_i))
-    stars_txt = "⭐" * max(1, stars_i) if stars_i > 0 else "⭐"
-
-    # data source
-    data_source = (
-        sig.get("data_source")
-        or meta.get("data_source")
-        or meta.get("source")
-        or sig.get("source")
-        or ""
-    )
-
-    # ---------- preface (NO DUP) ----------
-    # auto warning only if no custom preface provided
-    preface = sig.get("preface") or meta.get("preface") or ""
-    preface = str(preface).replace("\\n", "\n")
-    preface = "\n".join(dict.fromkeys(preface.splitlines())).strip()
-    #if not preface and trade_mode == "MANUAL" and stars_i and stars_i < 3:
-        #preface = "⚠️ (Manual) Kèo dưới 3⭐ – tham khảo thôi."
+    symbol = sig.get("symbol") or "n/a"
+    tf = sig.get("tf") or "n/a"
+    session = sig.get("session") or ""
+    data_source = sig.get("data_source") or meta.get("data_source") or ""
+    trade_mode = str(sig.get("trade_mode") or "MANUAL").upper()
+    stars = max(0, min(5, int(sig.get("stars", 0) or 0)))
+    stars_txt = "⭐" * max(1, stars)
+    rec_raw = str(sig.get("recommendation") or "CHỜ")
+    rec = "BUY" if "BUY" in rec_raw.upper() else ("SELL" if "SELL" in rec_raw.upper() else "CHỜ")
 
     lines: List[str] = []
-    seen = set()
+    def add(x: str = ""):
+        if x is None:
+            return
+        s = str(x).rstrip()
+        if s:
+            lines.append(s)
+        elif lines and lines[-1] != "":
+            lines.append("")
 
-    def add(line: str):
-        if line is None:
-            return
-        s = str(line).rstrip()
-        if not s.strip():
-            return
-        # remove duplicate consecutive / global duplicates
-        key = s
-        if lines and lines[-1] == key:
-            return
-        # also avoid repeating exact same preface block
-        if key in seen and (key.startswith("⚠️") or "Kèo dưới" in key):
-            return
-        lines.append(key)
-        seen.add(key)
-
-    # push preface as lines (handle literal \n)
-    for pl in _to_lines(preface):
-        add(pl)
-
-    # ---------- header (OLD LOOK) ----------
     head = f"📊 {symbol} | {tf}"
     if session:
         head += f" | {session}"
     add(head)
-
     if data_source:
         add(f"📡 Data: {data_source}")
+    add(f"{stars_txt} {rec} | Mode: {trade_mode}")
 
-    # stars + rec + mode
-    mode_txt = ""
-    # optional (score/max_score) if present
-    score_total = sd.get("score")
-    score_max = sd.get("max_score") or 4
-    if trade_mode in ("FULL", "HALF") and isinstance(score_total, (int, float)):
-        mode_txt = f" | Mode: {trade_mode} ({int(score_total)}/{int(score_max)})"
-    elif trade_mode in ("FULL", "HALF"):
-        mode_txt = f" | Mode: {trade_mode}"
-    else:
-        # keep MANUAL/WAIT minimal like old
-        mode_txt = f" | Mode: {trade_mode}" if trade_mode == "MANUAL" else ""
-
-    add(f"{stars_txt} {rec}{mode_txt}")
-
-    # ---------- GD2 context ----------
-    phase_meta = meta.get("phase_369") if isinstance(meta.get("phase_369"), dict) else {}
-    if phase_meta:
-        txt = f"Phase 369: {phase_meta.get('phase', 'n/a')}"
-        if phase_meta.get("label"):
-            txt += f" | {phase_meta.get('label')}"
-        if phase_meta.get("reason"):
-            txt += f" | {phase_meta.get('reason')}"
-        add(txt)
-
-    flow_meta = meta.get("flow_state") if isinstance(meta.get("flow_state"), dict) else {}
-    if flow_meta.get("state"):
-        txt = f"Flow: {flow_meta.get('state')}"
-        if flow_meta.get("favored_side"):
-            txt += f" | Favored: {flow_meta.get('favored_side')}"
-        add(txt)
-
-    if meta.get("market_state_v2"):
-        add(f"State: {meta.get('market_state_v2')}")
-
-    liq_meta = meta.get("liquidation") if isinstance(meta.get("liquidation"), dict) else {}
-    if liq_meta.get("ok"):
-        add(f"Liquidation: {liq_meta.get('side')} | body~{float(liq_meta.get('body_atr', 0) or 0):.1f} ATR | range~{float(liq_meta.get('range_atr', 0) or 0):.1f} ATR")
-
+    narrative = meta.get("narrative_v3") if isinstance(meta.get("narrative_v3"), dict) else {}
+    scenario = meta.get("scenario_v3") if isinstance(meta.get("scenario_v3"), dict) else {}
+    phase = meta.get("phase_369") if isinstance(meta.get("phase_369"), dict) else {}
+    flow = meta.get("flow_state") if isinstance(meta.get("flow_state"), dict) else {}
+    liq = meta.get("liquidation") if isinstance(meta.get("liquidation"), dict) else {}
     ntz = meta.get("no_trade_zone") if isinstance(meta.get("no_trade_zone"), dict) else {}
+    playbook = meta.get("playbook_v2") if isinstance(meta.get("playbook_v2"), dict) else {}
+    k = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
+    struct = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
+
+    if narrative.get("headline"):
+        add(f"🧠 {narrative.get('headline')}")
+    if narrative.get("summary"):
+        add(f"- {narrative.get('summary')}")
+
+    state = meta.get("market_state_v2")
+    if state:
+        add(f"🌡 State: {state}")
+    if phase:
+        extra = f" | {phase.get('reason')}" if phase.get("reason") else ""
+        add(f"🧭 Phase 369: {phase.get('phase', 'n/a')} | {phase.get('label', 'n/a')}{extra}")
+    if flow.get("state"):
+        note = f" | {flow.get('note')}" if flow.get("note") else ""
+        add(f"💰 Flow: {flow.get('state')} | Favored: {flow.get('favored_side', 'n/a')}{note}")
+    if liq.get("ok"):
+        add(f"⚠️ Liquidation: {liq.get('side')} | {liq.get('kind')} | body~{float(liq.get('body_atr', 0) or 0):.1f} ATR")
     if ntz.get("active"):
-        reasons = "; ".join([str(x) for x in (ntz.get("reasons") or []) if x])
-        add("⛔ No-trade zone: " + (reasons or "active"))
+        add("⛔ No-trade: " + ("; ".join(str(x) for x in (ntz.get("reasons") or []) if x) or "active"))
 
-    pb = meta.get("playbook_v2") if isinstance(meta.get("playbook_v2"), dict) else {}
-    if pb.get("plan"):
-        txt = f"Plan: {pb.get('plan')}"
-        zl = _safe_float_local(pb.get("zone_low"))
-        zh = _safe_float_local(pb.get("zone_high"))
-        if zl is not None and zh is not None:
-            txt += f" | Zone: {nf2(zl)} – {nf2(zh)}"
-        add(txt)
-
-    # ---------- structure / key levels (READ CORRECT KEYS) ----------
-    st = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
-    h4_tag = st.get("H4", "n/a")
-    h1_tag = st.get("H1", "n/a")
-    m15_tag = st.get("M15", "n/a")
-
-    add(f"Structure (Major): H4 {h4_tag} | H1 {h1_tag}")
-    add(f"Structure (Minor): M15 {m15_tag}")
-
-    where = meta.get("where") or sig.get("where")
-    wait_for = meta.get("wait_for") or sig.get("wait_for")
-    if where:
-        add(f"Now: {where}")
-    if wait_for:
-        add(f"Wait: {wait_for}")
-
-    kl = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
-    if kl:
-        add("Key levels:")
-        add("Major (H4/H1):")
-        if kl.get("H1_HH") is not None:
-            add(f"- H1 HH: {nf2(kl.get('H1_HH'))}")
-        if kl.get("H1_HL") is not None:
-            add(f"- H1 HL (trend giữ): {nf2(kl.get('H1_HL'))}")
-        if kl.get("H1_LH") is not None:
-            add(f"- H1 LH: {nf2(kl.get('H1_LH'))}")
-        if kl.get("H1_LL") is not None:
-            add(f"- H1 LL: {nf2(kl.get('H1_LL'))}")
-
-        add("Minor (M15):")
-        if kl.get("M15_RANGE_LOW") is not None and kl.get("M15_RANGE_HIGH") is not None:
-            add(f"- M15 Range: {nf2(kl.get('M15_RANGE_LOW'))} – {nf2(kl.get('M15_RANGE_HIGH'))}")
-        # correct key is M15_LAST (not M15_LAST_CLOSE)
-        if kl.get("M15_LAST") is not None:
-            add(f"- M15 Last close: {nf2(kl.get('M15_LAST'))}")
-        # correct key is M15_BOS (not M15_BOS_LEVEL)
-        if kl.get("M15_BOS") is not None:
-            add(f"- M15 BOS level: {nf2(kl.get('M15_BOS'))}")
-        # optional
-        if kl.get("M15_PB_EXT") is not None:
-            add(f"- M15 pullback extreme: {nf2(kl.get('M15_PB_EXT'))}")
-
-    # ---------- trade plan (3⭐ MUST SHOW) ----------
-    # prefer top-level (analyze_pro sets these)
-    entry = sig.get("entry")
-    sl = sig.get("sl")
-    tp1 = sig.get("tp1")
-    tp2 = sig.get("tp2")
-
-    add(f"Entry: {nf2(entry) if _safe_float_local(entry) is not None else '...'}")
-    add(
-        f"SL: {nf2(sl) if _safe_float_local(sl) is not None else '...'} | "
-        f"TP1: {nf2(tp1) if _safe_float_local(tp1) is not None else '...'} | "
-        f"TP2: {nf2(tp2) if _safe_float_local(tp2) is not None else '...'}"
-    )
-
-    # ---------- liquidity block ----------
     add("")
-    add("Liquidity:")
-    liq_lines = sig.get("liquidity_lines") or meta.get("liquidity_lines") or []
-    if isinstance(liq_lines, str):
-        liq_lines = [liq_lines]
-    if isinstance(liq_lines, list) and liq_lines:
-        for s in liq_lines:
+    add("🗺 Plan:")
+    if playbook.get("plan"):
+        zone_txt = ""
+        zl = sf(playbook.get("zone_low")); zh = sf(playbook.get("zone_high"))
+        if zl is not None and zh is not None:
+            zone_txt = f" | Zone: {nf(zl)} – {nf(zh)}"
+        add(f"- {playbook.get('plan')}{zone_txt}")
+    if scenario.get("base_case"):
+        add(f"- {scenario.get('base_case')}")
+    if scenario.get("alt_case"):
+        add(f"- {scenario.get('alt_case')}")
+    if scenario.get("invalid_if"):
+        add(f"- {scenario.get('invalid_if')}")
+
+    add("")
+    add("🏗 Structure:")
+    add(f"- Major: H4 {struct.get('H4', 'n/a')} | H1 {struct.get('H1', 'n/a')}")
+    add(f"- Minor: M15 {struct.get('M15', 'n/a')}")
+    if k.get("M15_RANGE_LOW") is not None and k.get("M15_RANGE_HIGH") is not None:
+        add(f"- M15 Range: {nf(k.get('M15_RANGE_LOW'))} – {nf(k.get('M15_RANGE_HIGH'))}")
+    if k.get("M15_BOS") is not None:
+        add(f"- BOS level: {nf(k.get('M15_BOS'))}")
+    if k.get("H1_HL") is not None or k.get("H1_LH") is not None:
+        keep = nf(k.get('H1_HL')) if rec == 'BUY' else nf(k.get('H1_LH'))
+        add(f"- Trend keep level: {keep}")
+
+    entry = sig.get("entry"); sl = sig.get("sl"); tp1 = sig.get("tp1"); tp2 = sig.get("tp2")
+    add("")
+    add("🎯 Trade map:")
+    add(f"- Entry: {nf(entry)}")
+    add(f"- SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
+
+    ctx_lines = sig.get("context_lines") or []
+    if ctx_lines:
+        add("")
+        add("🧩 Context:")
+        for s in ctx_lines[:5]:
+            s = str(s).replace('\n', ' ').strip()
             if s:
                 add(f"- {s}")
-    else:
-        add("- Chưa thấy sweep/spring rõ (liquidity proxy).")
 
-    # ---------- normalized signal + checklist 4 pillars (NEW LOGIC) ----------
-    add("")
-    add("📌 TÍN HIỆU (chuẩn hoá):")
-
-    # Priority line similar to old
-    if rec in ("BUY", "SELL"):
-        add(f"- Ưu tiên {rec}")
-    else:
-        add("- Ưu tiên CHỜ (bias chưa rõ)")
-
-    # Context lines
-    ctx_lines = sig.get("context_lines") or meta.get("context_lines") or []
-    if isinstance(ctx_lines, str):
-        ctx_lines = [ctx_lines]
-    if ctx_lines:
-        add("Context:")
-        for s in ctx_lines:
-            if not s:
-                continue
-            s = str(s).strip().replace("\\n", "\n")
-            if s.startswith("-"):
-                add(s)
-            else:
+    liq_lines = sig.get("liquidity_lines") or []
+    if liq_lines:
+        add("")
+        add("💧 Liquidity:")
+        for s in liq_lines[:4]:
+            s = str(s).replace('\n', ' ').strip()
+            if s:
                 add(f"- {s}")
 
-    # ----- derive 4 pillars -----
-    # Bias: based on bias_ok and confluence_ok (H1/H4 same direction). If confluence missing -> just bias_ok.
-    bias_ok_raw = sd.get("bias_ok")
-    conf_ok_raw = sd.get("confluence_ok")
-    bias_ok = bool(bias_ok_raw) if bias_ok_raw is not None else False
-    confluence_ok = None
-    if conf_ok_raw is not None:
-        try:
-            confluence_ok = bool(int(conf_ok_raw) == 1)
-        except Exception:
-            confluence_ok = bool(conf_ok_raw)
+    q = sig.get("quality_lines") or []
+    if q:
+        add("")
+        add("⚙️ Quality:")
+        for s in q[:5]:
+            s = str(s).replace('\n', ' ').strip()
+            if s:
+                add(f"- {s}")
 
-    bias_final = (bias_ok and confluence_ok) if confluence_ok is not None else bias_ok
-    bias_note = f"{h4_tag} / {h1_tag}"
+    notes = sig.get("notes") or sig.get("note_lines") or []
+    if notes:
+        add("")
+        add("📌 Notes:")
+        for s in notes[:6]:
+            s = str(s).replace('\n', ' ').strip()
+            if s:
+                add(f"- {s}")
 
-    # Confirmation: momentum_ok
-    mom = sd.get("momentum_ok")
-    confirmation_ok = bool(mom) if mom is not None else False
-
-    # Liquidity: pass if NOT liq_warn
-    liq_warn = sd.get("liq_warn")
-    if liq_warn is None:
-        # fallback: scan context text
-        joined = " | ".join([str(x) for x in (ctx_lines or [])])
-        liq_warn = ("LIQUIDITY WARNING" in joined.upper())
-    liquidity_ok = (not bool(liq_warn))
-    liq_note = "OK" if liquidity_ok else "WARN"
-
-    # Location: use M15 range + current price (prefer M15_LAST, else entry, else last close in kl)
-    loc_ok = None
-    loc_note = "thiếu dữ liệu range"
-    try:
-        lo = _safe_float_local(kl.get("M15_RANGE_LOW"))
-        hi = _safe_float_local(kl.get("M15_RANGE_HIGH"))
-        px = _safe_float_local(kl.get("M15_LAST"))
-        if px is None:
-            px = _safe_float_local(entry)
-        if lo is not None and hi is not None and hi > lo:
-            rng = hi - lo
-            pos = (px - lo) / rng if px is not None else 0.5
-            pos_clamped = max(0.0, min(1.0, pos))
-            pos_pct = pos_clamped * 100.0
-
-            if pos < 0.0:
-                zone = "Dưới range (breakdown)"
-            elif pos > 1.0:
-                zone = "Trên range (breakout)"
-            elif 0.20 <= pos_clamped <= 0.80:
-                zone = "Giữa range – No trade zone"
-            elif pos_clamped < 0.20:
-                zone = "Gần đáy range"
-            else:
-                zone = "Gần đỉnh range"
-
-            if rec == "BUY":
-                loc_ok = (pos_clamped <= 0.36)
-            elif rec == "SELL":
-                loc_ok = (pos_clamped >= 0.65)
-            else:
-                loc_ok = not (0.20 <= pos_clamped <= 0.80)
-
-            loc_note = f"{zone} (pos={pos_pct:.0f}%)"
-    except Exception:
-        loc_ok = None
-        loc_note = "lỗi tính location"
-
-    # Grade/trade decision (A+/A/B)
-    pillars = [bias_final, loc_ok, liquidity_ok, confirmation_ok]
-    passed = sum(1 for x in pillars if x is True)
-    grade = "A+" if passed >= 4 else ("A" if passed >= 3 else "B")
-    trade_ok = (grade in ("A", "A+")) and (rec in ("BUY", "SELL"))
-
-    add(f"- Grade: {grade} | Trade: {('YES' if trade_ok else 'NO')}")
-
-    add("Checklist (4):")
-    add(f"1) Bias (H4/H1): {mk(bias_final)}  ({bias_note})")
-    add(f"2) Location: {mk(loc_ok)}  ({loc_note})")
-    add(f"3) Liquidity: {mk(liquidity_ok)}  ({liq_note})")
-    add(f"4) Confirmation: {mk(confirmation_ok)}")
-
-    need = []
-    if bias_final is False:
-        need.append("Bias (H4/H1) hoặc Reversal rõ")
-    if loc_ok is False:
-        need.append("Location (về biên range)")
-    if liquidity_ok is False:
-        need.append("Liquidity (đợi sweep/spring xong & ổn định)")
-    if confirmation_ok is False:
-        need.append("Confirmation (BOS/CHOCH/impulse rõ)")
-    if need:
-        add("Thiếu / chờ thêm:")
-        for n in need:
-            add(f"- {n}")
-
-    # Notes (avoid repeating preface)
-    note_lines = sig.get("note_lines") or meta.get("note_lines") or []
-    if isinstance(note_lines, str):
-        note_lines = [note_lines]
-    
-    preface_lines = set(_to_lines(preface)) if preface else set()
-    
-    if note_lines:
-        for s in note_lines:
-            if not s:
-                continue
-    
-            s2 = str(s).replace("\\n", "\n").strip()
-            if not s2:
-                continue
-    
-            # tách note thành từng dòng để so với preface
-            sub_lines = _to_lines(s2)
-    
-            # nếu tất cả các dòng trong note đều đã nằm trong preface -> bỏ
-            if sub_lines and all(x in preface_lines for x in sub_lines):
-                continue
-    
-            for sub in sub_lines:
-                if sub in preface_lines:
-                    continue
-                add(sub)
-
-    # final: remove duplicate consecutive lines already handled by add()
-    return "\n".join(lines)
+    # clean duplicate blank lines
+    out = []
+    for line in lines:
+        if line == "" and (not out or out[-1] == ""):
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
