@@ -1214,6 +1214,16 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         base["short_hint"] = ["- Chưa đủ dữ liệu → CHỜ KÈO"]
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
+        base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
+            bias_side=None,
+            liq_warn_flag=bool(liq_warn),
+            post_sweep_flag=False,
+        )
+        base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
+            bias_side=bias,
+            liq_warn_flag=bool(liq_warn),
+            post_sweep_flag=False,
+        )
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         return base
 
@@ -1399,6 +1409,79 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     if lw:
         context_lines.extend(lw)
 
+    # ===== Phase 369 helper + base value (set sớm để mọi nhánh return đều có) =====
+    def _detect_setup_phase_369(
+        bias_side: Optional[str] = None,
+        liq_warn_flag: bool = False,
+        post_sweep_flag: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        3 = EARLY  : trap / post-sweep / chưa rõ phe thắng
+        6 = READY  : vị trí cân bằng, có thể canh theo plan
+        9 = LATE   : cuối nhịp / dễ chase
+        """
+        phase = 6
+        label = "READY"
+        meaning = "Pha đẹp để canh theo plan"
+        reason = "range=n/a"
+
+        use = closed15[-30:] if len(closed15) >= 30 else closed15
+        pos = None
+        if use:
+            lo = min(c.low for c in use)
+            hi = max(c.high for c in use)
+            rng = max(1e-9, hi - lo)
+            pos = (float(closed15[-1].close) - lo) / rng
+            reason = f"range-pos={pos*100:.0f}%"
+
+        if post_sweep_flag:
+            phase = 3
+            label = "EARLY"
+            meaning = "Mới quét xong, phải chờ cấu trúc"
+            reason = "post-sweep"
+        elif liq_warn_flag:
+            phase = 3
+            label = "EARLY"
+            meaning = "Còn liquidity warning / vùng lừa"
+        else:
+            side_ref = bias_side or (
+                "BUY" if h1_trend == "bullish"
+                else "SELL" if h1_trend == "bearish"
+                else None
+            )
+
+            if pos is not None and side_ref == "BUY" and pos >= 0.80:
+                phase = 9
+                label = "LATE"
+                meaning = "Cuối nhịp BUY, dễ chase"
+            elif pos is not None and side_ref == "SELL" and pos <= 0.20:
+                phase = 9
+                label = "LATE"
+                meaning = "Cuối nhịp SELL, dễ chase"
+            elif pos is not None and 0.25 <= pos <= 0.75 and side_ref is None:
+                phase = 3
+                label = "EARLY"
+                meaning = "Giữa range / chưa có phe thắng rõ"
+            else:
+                phase = 6
+                label = "READY"
+                meaning = "Có thể thực thi nếu đủ bias + confirm"
+
+        return {
+            "phase": phase,
+            "label": label,
+            "meaning": meaning,
+            "reason": reason,
+            "note": reason,
+        }
+
+    liq_warn_flag = bool(lw)
+    base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
+        bias_side=None,
+        liq_warn_flag=liq_warn_flag,
+        post_sweep_flag=False,
+    )
+
     # ===== Rejection =====
     rej = _is_rejection(last15)
 
@@ -1495,60 +1578,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # Nếu có quét -> vào POST-SWEEP mode (báo context) + KHÓA vào lệnh cho tới khi có cấu trúc
     post_sweep_buy = bool(sweep_buy.get("ok")) or bool(spring_buy.get("ok"))
     post_sweep_sell = bool(sweep_sell.get("ok")) or bool(spring_sell.get("ok"))
-
-    def _detect_setup_phase_369(bias_side: Optional[str] = None, liq_warn_flag: bool = False) -> Dict[str, Any]:
-        """369 = setup maturity, not magic numbers.
-        3: early / trap / post-sweep wait
-        6: ready / balanced / executable
-        9: late / extension / chase-risk
-        """
-        phase = 6
-        label = "READY"
-        meaning = "Pha đẹp để canh theo plan"
-        reason = ""
-
-        use = closed15[-30:] if len(closed15) >= 30 else closed15
-        pos = None
-        if use:
-            lo = min(c.low for c in use)
-            hi = max(c.high for c in use)
-            rng = max(1e-9, hi - lo)
-            pos = (float(closed15[-1].close) - lo) / rng
-
-        if post_sweep_buy or post_sweep_sell:
-            phase = 3
-            label = "EARLY"
-            meaning = "Mới quét xong, phải chờ cấu trúc"
-            reason = "post-sweep"
-        elif liq_warn_flag and pos is not None and 0.20 <= pos <= 0.80:
-            phase = 3
-            label = "EARLY"
-            meaning = "Còn vùng lừa / liquidity warning"
-            reason = "liquidity-warning"
-        else:
-            side_ref = bias_side or ("BUY" if h1_trend == "bullish" else "SELL" if h1_trend == "bearish" else None)
-            if pos is not None and side_ref == "BUY" and pos >= 0.80:
-                phase = 9
-                label = "LATE"
-                meaning = "Cuối nhịp BUY, dễ chase"
-                reason = f"range-pos={pos*100:.0f}%"
-            elif pos is not None and side_ref == "SELL" and pos <= 0.20:
-                phase = 9
-                label = "LATE"
-                meaning = "Cuối nhịp SELL, dễ chase"
-                reason = f"range-pos={pos*100:.0f}%"
-            elif pos is not None and 0.25 <= pos <= 0.75 and side_ref is None:
-                phase = 3
-                label = "EARLY"
-                meaning = "Sideway / giữa range, chưa có phe thắng rõ"
-                reason = f"range-pos={pos*100:.0f}%"
-            else:
-                phase = 6
-                label = "READY"
-                meaning = "Có thể thực thi nếu đủ bias + confirm"
-                reason = (f"range-pos={pos*100:.0f}%" if pos is not None else "range=n/a")
-
-        return {"phase": phase, "label": label, "meaning": meaning, "reason": reason}
     if post_sweep_buy or post_sweep_sell:
         context_lines.append("POST-SWEEP: Đã xảy ra QUÉT thanh khoản → KHÔNG vào ngay, chờ cấu trúc.")
         # (để telegram đọc là biết)
@@ -1556,7 +1585,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             ok_struct, explain = _post_sweep_structure_state("BUY")
             notes.extend(explain)
             if not ok_struct:
-                base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369("BUY", liq_warn_flag=True)
                 base.update({
                     "context_lines": context_lines,
                     "position_lines": position_lines,
@@ -1566,6 +1594,16 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     "stars": 2,
                     "notes": notes + ["➡️ Khi HL + BOS xuất hiện (trạng thái OK/OK) → mới canh BUY theo H1 + chờ M30 confirm."],
                 })
+                base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
+                    bias_side="BUY",
+                    liq_warn_flag=True,
+                    post_sweep_flag=True,
+                )
+                base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
+                    bias_side="SELL",
+                    liq_warn_flag=True,
+                    post_sweep_flag=True,
+                )
                 _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
                 return base
 
@@ -1573,7 +1611,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             ok_struct, explain = _post_sweep_structure_state("SELL")
             notes.extend(explain)
             if not ok_struct:
-                base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369("SELL", liq_warn_flag=True)
                 base.update({
                     "context_lines": context_lines,
                     "position_lines": position_lines,
@@ -1704,6 +1741,16 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 "stars": 1,
                 "notes": ["H1 chưa bullish → không BUY. Chờ H1 confirm hoặc kèo rõ hơn."],
             })
+            base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
+                bias_side="BUY",
+                liq_warn_flag=bool(liq_warn),
+                post_sweep_flag=False,
+            )
+            base.setdefault("meta", {})["phase_369"] = _detect_setup_phase_369(
+                bias_side="SELL",
+                liq_warn_flag=bool(liq_warn),
+                post_sweep_flag=False,
+            )
             _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
             return base
         if bias == "SELL" and h1_trend != "bearish":
@@ -2294,20 +2341,12 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     except Exception:
         pass
 
-    phase_369 = _detect_setup_phase_369(bias_side if "bias_side" in locals() else None, liq_warn_flag=bool(liq_warn))
+    phase_369 = _detect_setup_phase_369(
+        bias_side=bias_side if "bias_side" in locals() else None,
+        liq_warn_flag=bool(liq_warn),
+        post_sweep_flag=bool(post_sweep_buy or post_sweep_sell),
+    )
     base.setdefault("meta", {})["phase_369"] = phase_369
-
-    # 369 gate: giữ logic cũ nhưng chặn 2 lỗi lớn: vào quá sớm và chase cuối nhịp.
-    if phase_369.get("phase") == 3 and recommendation != "CHỜ":
-        recommendation = "CHỜ"
-        base["trade_mode"] = "WAIT"
-        stars = min(int(stars or 2), 2)
-        notes.append("369: Pha 3 (EARLY) → chưa bấm, chờ thêm cấu trúc/confirm.")
-    elif phase_369.get("phase") == 9 and recommendation != "CHỜ":
-        recommendation = "CHỜ"
-        base["trade_mode"] = "WAIT"
-        stars = min(int(stars or 2), 2)
-        notes.append("369: Pha 9 (LATE) → không chase, chờ pullback rồi tính tiếp.")
 
     quality_lines.append("RR ~ 1:2")
     if rdist is not None:
@@ -2506,12 +2545,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
         mode_txt = f" | Mode: {trade_mode}" if trade_mode == "MANUAL" else ""
 
     add(f"{stars_txt}  <b>{rec}</b>{mode_txt}")
+
+    # ---------- phase 369 ----------
     phase369 = meta.get("phase_369")
     if isinstance(phase369, dict):
         p = phase369.get("phase")
         label = phase369.get("label") or ""
-        note = phase369.get("note") or ""
-        txt = f"Phase 369: {p}"
+        note = phase369.get("note") or phase369.get("reason") or ""
+        txt = f"Phase 369: {p if p is not None else 'n/a'}"
         if label:
             txt += f" | {label}"
         if note:
