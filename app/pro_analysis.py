@@ -1632,6 +1632,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     lw = _liquidity_warning_lines(cur)
     if lw:
         context_lines.extend(lw)
+    liq_warn = bool(lw)
 
     # ===== Rejection =====
     rej = _is_rejection(last15)
@@ -1741,7 +1742,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     bias_guess = "BUY" if h1_trend == "bullish" else ("SELL" if h1_trend == "bearish" else None)
     market_state_v2 = _detect_market_state_v2(h1_trend, h4_trend, range_pos, atr15, avg20, avg80, div, liquidation_evt)
     flow_state = _detect_flow_state_v2(symbol, h1_trend, h4_trend, market_state_v2, range_pos)
-    no_trade_zone = _detect_no_trade_zone_v2(bias_guess, market_state_v2, range_pos, liq_warn_flag, liquidation_evt, confirmation_ok=None)
+    no_trade_zone = _detect_no_trade_zone_v2(bias_guess, market_state_v2, range_pos, liq_warn, liquidation_evt, confirmation_ok=None)
     playbook_v2 = _detect_playbook_v2(symbol, bias_guess, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
     phase_369_v2 = _detect_phase_369_v2(bias_guess, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
     _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
@@ -1833,7 +1834,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     bias_for_gd2 = bias if bias in ("BUY", "SELL") else bias_guess
     market_state_v2 = _detect_market_state_v2(h1_trend, h4_trend, range_pos, atr15, avg20, avg80, div, liquidation_evt)
     flow_state = _detect_flow_state_v2(symbol, h1_trend, h4_trend, market_state_v2, range_pos)
-    no_trade_zone = _detect_no_trade_zone_v2(bias_for_gd2, market_state_v2, range_pos, liq_warn_flag, liquidation_evt, confirmation_ok=None)
+    no_trade_zone = _detect_no_trade_zone_v2(bias_for_gd2, market_state_v2, range_pos, liq_warn, liquidation_evt, confirmation_ok=None)
     playbook_v2 = _detect_playbook_v2(symbol, bias_for_gd2, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
     phase_369_v2 = _detect_phase_369_v2(bias_for_gd2, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
     _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
