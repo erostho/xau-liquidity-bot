@@ -1616,6 +1616,198 @@ def _attach_gd4_meta(base: Dict[str, Any], session_v4: Dict[str, Any], htf_press
     meta["macro_v4"] = macro_v4
     meta["playbook_v4"] = playbook_v4
 
+
+def _opening_expansion_imbalance_v5(m15c: Sequence[Any], atr15: float, session_v4: Dict[str, Any]) -> Dict[str, Any]:
+    """Detect opening expansion / session imbalance.
+    GAP ở đây là gap vận động: biên độ mở đầu phiên bị kéo giãn mạnh,
+    không phải gap close-open qua ngày.
+    """
+    out = {
+        "state": "NORMAL_OPEN",
+        "range_atr": None,
+        "body_bias": "NONE",
+        "one_sided": False,
+        "opening_sweep_risk": "LOW",
+        "note": "Phiên mở bình thường.",
+    }
+    if not m15c or len(m15c) < 8 or not atr15 or atr15 <= 0:
+        return out
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    first = closed[-6:]
+    if len(first) < 4:
+        return out
+    hi = max(float(c.high) for c in first)
+    lo = min(float(c.low) for c in first)
+    op = float(first[0].open)
+    cl = float(first[-1].close)
+    rng = max(1e-9, hi - lo)
+    rng_atr = rng / max(1e-9, float(atr15))
+    body = abs(cl - op)
+    body_ratio = body / rng
+    one_sided = body_ratio >= 0.62
+    bias = "UP" if cl > op else ("DOWN" if cl < op else "NONE")
+
+    if rng_atr >= 2.4:
+        state = "SESSION_IMBALANCE"
+    elif rng_atr >= 1.6:
+        state = "ABNORMAL_EXPANSION"
+    else:
+        state = "NORMAL_OPEN"
+
+    sweep_risk = "HIGH" if (state != "NORMAL_OPEN" and body_ratio < 0.72) else ("MEDIUM" if state != "NORMAL_OPEN" else "LOW")
+
+    note = "Phiên mở bình thường."
+    if state == "SESSION_IMBALANCE":
+        note = "Biên độ mở đầu phiên rất rộng, market đang mất cân bằng; đọc trend theo kiểu bình thường sẽ kém tin cậy hơn."
+    elif state == "ABNORMAL_EXPANSION":
+        note = "Đầu phiên mở biên độ rộng bất thường; dễ có quét thanh khoản 2 đầu trước khi chọn hướng rõ."
+
+    if session_v4.get("fake_move_risk") == "HIGH" and state != "NORMAL_OPEN":
+        sweep_risk = "HIGH"
+        note += " Fake-move risk cao."
+
+    out.update({
+        "state": state,
+        "range_atr": rng_atr,
+        "body_bias": bias,
+        "one_sided": one_sided,
+        "opening_sweep_risk": sweep_risk,
+        "note": note,
+    })
+    return out
+
+
+def _location_verdict_v5(
+    bias_side: Optional[str],
+    range_pos: Optional[float],
+    market_state_v2: str,
+    liquidation_evt: Dict[str, Any],
+    playbook_v2: Dict[str, Any],
+) -> Dict[str, Any]:
+    label = "NEUTRAL"
+    note = "Vị trí hiện tại chưa rõ edge."
+    if range_pos is None:
+        return {"label": label, "note": note}
+
+    plan = str(playbook_v2.get("plan") or "")
+    pos = float(range_pos)
+
+    if liquidation_evt.get("ok"):
+        side = str(liquidation_evt.get("side") or "")
+        if "SELL" in side and pos <= 0.22:
+            return {"label": "POST_DUMP_LOW", "note": "Giá đang ở vùng panic low sau dump/liquidation; không đẹp để SELL tiếp."}
+        if "BUY" in side and pos >= 0.78:
+            return {"label": "POST_PUMP_HIGH", "note": "Giá đang ở vùng pump high sau squeeze/liquidation; không đẹp để BUY đuổi."}
+
+    if 0.35 <= pos <= 0.65:
+        return {"label": "MID_RANGE_NO_EDGE", "note": "Giá đang ở giữa range; edge thấp, dễ nhiễu và khó vào đẹp."}
+
+    if bias_side == "SELL":
+        if pos <= 0.20:
+            return {"label": "LATE_SELL", "note": "Đúng hướng giảm nhưng vị trí hiện tại đã thấp; SELL lúc này dễ bị hồi quét."}
+        if pos >= 0.58 or plan in ("BOUNCE_TO_SELL", "SELL_RALLY"):
+            return {"label": "GOOD_SELL_LOCATION", "note": "Giá đang ở vùng hồi / vùng phân phối thuận cho kịch bản SELL nếu xuất hiện tín hiệu yếu đi."}
+    if bias_side == "BUY":
+        if pos >= 0.80:
+            return {"label": "LATE_BUY", "note": "Đúng hướng tăng nhưng vị trí hiện tại đã cao; BUY lúc này dễ bị quét hồi xuống."}
+        if pos <= 0.42 or plan in ("DIP_TO_BUY", "BUY_DIP"):
+            return {"label": "GOOD_BUY_LOCATION", "note": "Giá đang ở vùng hồi / vùng tích lũy thuận cho kịch bản BUY nếu xuất hiện tín hiệu đỡ giá."}
+
+    if market_state_v2 in ("POST_LIQUIDATION_BOUNCE", "POST_SHORT_COVER"):
+        return {"label": "POST_LIQUIDATION_BAD_FOLLOW", "note": "Sau liquidation, follow ngay thường không đẹp; nên đợi market cân bằng lại."}
+
+    return {"label": label, "note": note}
+
+
+def _late_entry_risk_v5(
+    bias_side: Optional[str],
+    range_pos: Optional[float],
+    atr15: float,
+    liquidation_evt: Dict[str, Any],
+    opening_state_v5: Dict[str, Any],
+    rsi15: float,
+) -> Dict[str, Any]:
+    risk = "LOW"
+    note = "Timing hiện tại tạm ổn."
+    if range_pos is None:
+        return {"risk": risk, "note": note}
+    pos = float(range_pos)
+    if bias_side == "SELL" and pos <= 0.18:
+        risk = "HIGH"
+        note = "SELL đang khá muộn; giá đã đi sâu xuống đáy range hiện tại."
+    elif bias_side == "BUY" and pos >= 0.82:
+        risk = "HIGH"
+        note = "BUY đang khá muộn; giá đã ở sát đỉnh range hiện tại."
+    elif 0.28 <= pos <= 0.72:
+        risk = "MEDIUM"
+        note = "Giá ở giữa range; không hẳn muộn nhưng edge không cao."
+
+    if liquidation_evt.get("ok"):
+        side = str(liquidation_evt.get("side") or "")
+        if (bias_side == "SELL" and "SELL" in side and pos <= 0.25) or (bias_side == "BUY" and "BUY" in side and pos >= 0.75):
+            risk = "HIGH"
+            note = "Sau liquidation mà follow cùng hướng ngay thường là entry muộn / dễ dính hồi ngược."
+
+    if opening_state_v5.get("state") in ("SESSION_IMBALANCE", "ABNORMAL_EXPANSION") and risk != "HIGH":
+        risk = "MEDIUM"
+        note = "Đầu phiên đang mở biên độ bất thường; timing ngắn hạn dễ bị méo và khó bấm đẹp."
+
+    if bias_side == "SELL" and rsi15 <= 28:
+        risk = "HIGH"
+        note = "RSI đang quá bán; SELL lúc này dễ thành đuổi đáy."
+    if bias_side == "BUY" and rsi15 >= 72:
+        risk = "HIGH"
+        note = "RSI đang quá mua; BUY lúc này dễ thành đuổi đỉnh."
+
+    return {"risk": risk, "note": note}
+
+
+def _bounce_quality_v5(
+    m15c: Sequence[Any],
+    bias_side: Optional[str],
+    liquidation_evt: Dict[str, Any],
+    atr15: float,
+) -> Dict[str, Any]:
+    out = {"label": "N/A", "note": "Chưa có bounce đặc biệt."}
+    if not m15c or len(m15c) < 8 or not liquidation_evt.get("ok") or not atr15 or atr15 <= 0:
+        return out
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    recent = closed[-4:]
+    if len(recent) < 3:
+        return out
+    start = float(recent[0].open)
+    end = float(recent[-1].close)
+    move = end - start
+    move_atr = abs(move) / max(1e-9, float(atr15))
+    side = str(liquidation_evt.get("side") or "")
+
+    if "SELL" in side:
+        # dump trước đó, giờ nhìn bounce lên
+        bounce = max(float(c.high) for c in recent) - min(float(c.low) for c in recent)
+        reclaim = (end - min(float(c.low) for c in recent)) / max(1e-9, float(atr15))
+        if reclaim >= 1.2:
+            return {"label": "AGGRESSIVE", "note": "Bounce sau dump đang reclaim khá mạnh; coi chừng không còn là nhịp hồi yếu đơn thuần."}
+        if reclaim >= 0.6:
+            return {"label": "NORMAL", "note": "Bounce đang ở mức bình thường; cần chờ lên vùng cao hơn để đánh giá SELL lại."}
+        return {"label": "WEAK", "note": "Bounce còn yếu; nếu hồi lên vùng cung rồi xuất hiện lực bán lại sẽ hợp với kịch bản hồi để bán."}
+
+    if "BUY" in side:
+        drop = (max(float(c.high) for c in recent) - end) / max(1e-9, float(atr15))
+        if drop >= 1.2:
+            return {"label": "AGGRESSIVE", "note": "Nhịp xả xuống sau pump đang khá mạnh; coi chừng không chỉ là pullback nhỏ."}
+        if drop >= 0.6:
+            return {"label": "NORMAL", "note": "Nhịp xả xuống sau pump đang ở mức bình thường; cần chờ sâu hơn để đánh giá BUY lại."}
+        return {"label": "WEAK", "note": "Nhịp xả xuống còn yếu; nếu tạo nền giữ giá sẽ hợp với kịch bản buy-the-dip."}
+    return out
+
+
+def _attach_gd5_meta(base: Dict[str, Any], opening_state_v5: Dict[str, Any], location_v5: Dict[str, Any], late_entry_v5: Dict[str, Any], bounce_quality_v5: Dict[str, Any]) -> None:
+    meta = base.setdefault("meta", {})
+    meta["opening_state_v5"] = opening_state_v5
+    meta["location_v5"] = location_v5
+    meta["late_entry_v5"] = late_entry_v5
+    meta["bounce_quality_v5"] = bounce_quality_v5
+
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -1975,6 +2167,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         )
     if no_trade_zone.get("active"):
         notes.append("⛔ No-trade zone: " + "; ".join(no_trade_zone.get("reasons") or []))
+    try:
+        opening_state_v5 = _opening_expansion_imbalance_v5(m15c, atr15, _session_engine_v4(m15c, market_state_v2))
+        if opening_state_v5.get("state") != "NORMAL_OPEN":
+            context_lines.append(f"Session condition: {opening_state_v5.get('state')} | sweep risk {opening_state_v5.get('opening_sweep_risk')}")
+            notes.append("⚠️ " + str(opening_state_v5.get("note") or "Đầu phiên đang bất thường."))
+    except Exception:
+        pass
     if post_sweep_buy or post_sweep_sell:
         context_lines.append("POST-SWEEP: Đã xảy ra QUÉT thanh khoản → KHÔNG vào ngay, chờ cấu trúc.")
         # (để telegram đọc là biết)
@@ -2067,6 +2266,16 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
+    opening_state_v5 = _opening_expansion_imbalance_v5(m15c, atr15, session_v4)
+    location_v5 = _location_verdict_v5(bias_side, range_pos, market_state_v2, liquidation_evt, playbook_v2)
+    late_entry_v5 = _late_entry_risk_v5(bias_side, range_pos, atr15, liquidation_evt, opening_state_v5, rsi15)
+    bounce_quality_v5 = _bounce_quality_v5(m15c, bias_side, liquidation_evt, atr15)
+    _attach_gd5_meta(base, opening_state_v5, location_v5, late_entry_v5, bounce_quality_v5)
+    opening_state_v5 = _opening_expansion_imbalance_v5(m15c, atr15, session_v4)
+    location_v5 = _location_verdict_v5(bias_for_gd2, range_pos, market_state_v2, liquidation_evt, playbook_v2)
+    late_entry_v5 = _late_entry_risk_v5(bias_for_gd2, range_pos, atr15, liquidation_evt, opening_state_v5, rsi15)
+    bounce_quality_v5 = _bounce_quality_v5(m15c, bias_for_gd2, liquidation_evt, atr15)
+    _attach_gd5_meta(base, opening_state_v5, location_v5, late_entry_v5, bounce_quality_v5)
 
     if bias is None:
         # --------------------
@@ -2900,6 +3109,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(f"⚠️ Liquidation: {liq.get('side')} | {liq.get('kind')} | body~{float(liq.get('body_atr', 0) or 0):.1f} ATR")
     if ntz.get("active"):
         add("⛔ No-trade: " + ("; ".join(str(x) for x in (ntz.get("reasons") or []) if x) or "active"))
+    opening_v5 = meta.get("opening_state_v5") if isinstance(meta.get("opening_state_v5"), dict) else {}
+    location_v5 = meta.get("location_v5") if isinstance(meta.get("location_v5"), dict) else {}
+    late_entry_v5 = meta.get("late_entry_v5") if isinstance(meta.get("late_entry_v5"), dict) else {}
+    bounce_v5 = meta.get("bounce_quality_v5") if isinstance(meta.get("bounce_quality_v5"), dict) else {}
+    if opening_v5.get("state") and opening_v5.get("state") != "NORMAL_OPEN":
+        add(f"🌉 Opening: {opening_v5.get('state')} | Sweep risk: {opening_v5.get('opening_sweep_risk')}")
+        if opening_v5.get("note"):
+            add(f"- {opening_v5.get('note')}")
+    if location_v5.get("label"):
+        add(f"📍 Location verdict: {location_v5.get('label')}")
+        if location_v5.get("note"):
+            add(f"- {location_v5.get('note')}")
+    if late_entry_v5.get("risk"):
+        add(f"⏱ Late-entry risk: {late_entry_v5.get('risk')}")
+        if late_entry_v5.get("note"):
+            add(f"- {late_entry_v5.get('note')}")
+    if bounce_v5.get("label") and bounce_v5.get("label") != "N/A":
+        add(f"🪃 Bounce quality: {bounce_v5.get('label')}")
+        if bounce_v5.get("note"):
+            add(f"- {bounce_v5.get('note')}")
 
     add("")
     add("🗺 Plan:")
