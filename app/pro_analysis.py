@@ -1146,263 +1146,6 @@ def _range_levels(candles: Sequence[Any], n: int = 20) -> Tuple[Optional[float],
     last = float(_c_val(c[-1], "close", 0.0) or 0.0)
     return lo, hi, last
 
-
-def _detect_liquidation_v2(
-    m15c: Sequence[Any],
-    atr15: float,
-    sweep_buy: Dict[str, Any],
-    sweep_sell: Dict[str, Any],
-    spring_buy: Dict[str, Any],
-    spring_sell: Dict[str, Any],
-) -> Dict[str, Any]:
-    if not m15c or len(m15c) < 3 or not atr15:
-        return {"ok": False}
-    c = list(m15c)[-2]  # last closed candle
-    rng = max(1e-9, float(c.high) - float(c.low))
-    body = abs(float(c.close) - float(c.open))
-    upper = float(c.high) - max(float(c.open), float(c.close))
-    lower = min(float(c.open), float(c.close)) - float(c.low)
-    close_pos = (float(c.close) - float(c.low)) / rng
-    range_atr = rng / max(1e-9, float(atr15))
-    body_atr = body / max(1e-9, float(atr15))
-
-    if sweep_buy.get("ok") or spring_buy.get("ok"):
-        return {
-            "ok": True, "side": "BUY LIQUIDATION", "kind": "sweep_to_buy",
-            "body_atr": body_atr, "range_atr": range_atr,
-            "severity": "HIGH" if range_atr >= 2.0 else "MEDIUM",
-        }
-    if sweep_sell.get("ok") or spring_sell.get("ok"):
-        return {
-            "ok": True, "side": "SELL LIQUIDATION", "kind": "sweep_to_sell",
-            "body_atr": body_atr, "range_atr": range_atr,
-            "severity": "HIGH" if range_atr >= 2.0 else "MEDIUM",
-        }
-
-    if range_atr >= 2.2 and body_atr >= 1.1:
-        if close_pos <= 0.22:
-            return {"ok": True, "side": "SELL LIQUIDATION", "kind": "panic_dump", "body_atr": body_atr, "range_atr": range_atr, "severity": "HIGH"}
-        if close_pos >= 0.78:
-            return {"ok": True, "side": "BUY LIQUIDATION", "kind": "panic_pump", "body_atr": body_atr, "range_atr": range_atr, "severity": "HIGH"}
-
-    if range_atr >= 1.5 and (upper / rng >= 0.55 or lower / rng >= 0.55):
-        side = "SELL SWEEP" if upper > lower else "BUY SWEEP"
-        return {"ok": True, "side": side, "kind": "stop_hunt", "body_atr": body_atr, "range_atr": range_atr, "severity": "LOW"}
-
-    return {"ok": False, "body_atr": body_atr, "range_atr": range_atr}
-
-def _detect_market_state_v2(
-    h1_trend: str,
-    h4_trend: str,
-    range_pos: Optional[float],
-    atr15: float,
-    avg20: float,
-    avg80: float,
-    div: Dict[str, Any],
-    liquidation_evt: Dict[str, Any],
-) -> str:
-    spike = bool(avg80 > 0 and avg20 > 1.35 * avg80)
-    if liquidation_evt.get("ok"):
-        side = str(liquidation_evt.get("side") or "")
-        if "SELL" in side:
-            return "POST_LIQUIDATION_BOUNCE"
-        if "BUY" in side:
-            return "POST_SHORT_COVER"
-    if h1_trend == "bearish" and h4_trend == "bearish":
-        if div.get("bull"):
-            return "EXHAUSTION_DOWN"
-        if range_pos is not None and range_pos >= 0.45:
-            return "BOUNCE_TO_SELL"
-        return "TREND_DOWN" if spike else "PULLBACK_DOWN"
-    if h1_trend == "bullish" and h4_trend == "bullish":
-        if div.get("bear"):
-            return "EXHAUSTION_UP"
-        if range_pos is not None and range_pos <= 0.55:
-            return "DIP_TO_BUY"
-        return "TREND_UP" if spike else "PULLBACK_UP"
-    if range_pos is not None and 0.20 <= range_pos <= 0.80:
-        return "CHOP"
-    return "TRANSITION"
-
-def _detect_flow_state_v2(
-    symbol: str,
-    h1_trend: str,
-    h4_trend: str,
-    market_state_v2: str,
-    range_pos: Optional[float],
-) -> Dict[str, Any]:
-    sym = str(symbol or "").upper()
-    if h1_trend == "bearish" and h4_trend == "bearish":
-        state = "OUTFLOW" if "XAU" in sym or "XAG" in sym else "RISK_OFF"
-        favored = "SELL"
-        note = "smart money selling rally" if market_state_v2 in ("BOUNCE_TO_SELL", "PULLBACK_DOWN") else "trend pressure still down"
-    elif h1_trend == "bullish" and h4_trend == "bullish":
-        state = "INFLOW" if "BTC" in sym else "RISK_ON"
-        favored = "BUY"
-        note = "smart money buying dip" if market_state_v2 in ("DIP_TO_BUY", "PULLBACK_UP") else "trend pressure still up"
-    else:
-        state = "NEUTRAL"
-        favored = "NONE"
-        note = "flow chưa rõ"
-    if range_pos is not None and 0.25 <= range_pos <= 0.75 and state != "NEUTRAL":
-        note += " | mid-range"
-    return {"state": state, "favored_side": favored, "note": note}
-
-def _detect_no_trade_zone_v2(
-    bias_side: Optional[str],
-    market_state_v2: str,
-    range_pos: Optional[float],
-    liq_warn_flag: bool,
-    liquidation_evt: Dict[str, Any],
-    confirmation_ok: Optional[bool] = None,
-) -> Dict[str, Any]:
-    reasons: List[str] = []
-    if market_state_v2 in ("CHOP", "TRANSITION"):
-        reasons.append("market state nhiễu")
-    if liq_warn_flag:
-        reasons.append("liquidity warning")
-    if liquidation_evt.get("ok"):
-        reasons.append("vừa có liquidation")
-    if range_pos is not None and 0.25 <= range_pos <= 0.75:
-        reasons.append("mid-range")
-    if not bias_side or bias_side == "NONE":
-        reasons.append("bias chưa rõ")
-    if confirmation_ok is False:
-        reasons.append("chưa có confirm")
-    active = False
-    if market_state_v2 in ("CHOP", "POST_LIQUIDATION_BOUNCE", "POST_SHORT_COVER"):
-        active = True
-    if len(reasons) >= 2 and (range_pos is None or 0.15 <= range_pos <= 0.85):
-        active = True
-    return {"active": active, "reasons": reasons}
-
-def _detect_phase_369_v2(
-    bias_side: Optional[str],
-    market_state_v2: str,
-    playbook: Dict[str, Any],
-    range_pos: Optional[float],
-    liquidation_evt: Dict[str, Any],
-    no_trade_zone: Dict[str, Any],
-) -> Dict[str, Any]:
-    plan = str(playbook.get("plan") or "")
-    if liquidation_evt.get("ok"):
-        return {"phase": 3, "label": "EXTREME", "meaning": "liquidation / panic zone", "reason": str(liquidation_evt.get("kind") or liquidation_evt.get("side") or "liquidation")}
-    if no_trade_zone.get("active") and market_state_v2 in ("CHOP", "TRANSITION"):
-        return {"phase": 3, "label": "EARLY", "meaning": "nhiễu / chưa có lợi thế", "reason": "; ".join(no_trade_zone.get("reasons") or []) or "no-trade"}
-    if plan in ("BOUNCE_TO_SELL", "SELL_RALLY"):
-        return {"phase": 6, "label": "BOUNCE_TO_SELL", "meaning": "hồi để bán", "reason": f"range-pos={int((range_pos or 0)*100)}%"}
-    if plan in ("DIP_TO_BUY", "BUY_DIP"):
-        return {"phase": 6, "label": "DIP_TO_BUY", "meaning": "hồi để mua", "reason": f"range-pos={int((range_pos or 0)*100)}%"}
-    if bias_side == "SELL" and range_pos is not None and range_pos <= 0.18:
-        return {"phase": 9, "label": "LATE", "meaning": "đang sát đáy, dễ sell trễ", "reason": f"range-pos={int(range_pos*100)}%"}
-    if bias_side == "BUY" and range_pos is not None and range_pos >= 0.82:
-        return {"phase": 9, "label": "LATE", "meaning": "đang sát đỉnh, dễ buy trễ", "reason": f"range-pos={int(range_pos*100)}%"}
-    return {"phase": 6, "label": "READY", "meaning": "đợi đủ bias + confirm", "reason": f"range-pos={int((range_pos or 0)*100)}%"}
-
-def _attach_gd2_meta(
-    base: Dict[str, Any],
-    flow_state: Dict[str, Any],
-    market_state_v2: str,
-    liquidation_evt: Dict[str, Any],
-    no_trade_zone: Dict[str, Any],
-    phase_369: Dict[str, Any],
-    playbook_v2: Dict[str, Any],
-) -> None:
-    meta = base.setdefault("meta", {})
-    meta["flow_state"] = flow_state
-    meta["market_state_v2"] = market_state_v2
-    meta["liquidation"] = liquidation_evt
-    meta["no_trade_zone"] = no_trade_zone
-    meta["phase_369"] = phase_369
-    meta["playbook_v2"] = playbook_v2
-
-
-def _build_narrative_v3(symbol: str, bias_side: Optional[str], market_state_v2: str,
-                        flow_state: Dict[str, Any], liquidation_evt: Dict[str, Any],
-                        playbook_v2: Dict[str, Any], no_trade_zone: Dict[str, Any]) -> Dict[str, Any]:
-    sym = str(symbol or "").upper()
-    asset = "BTC" if "BTC" in sym else ("XAU" if "XAU" in sym else ("XAG" if "XAG" in sym else sym))
-    plan = str(playbook_v2.get("plan") or "OBSERVE")
-    flow = str(flow_state.get("state") or "NEUTRAL")
-    ms = str(market_state_v2 or "")
-    headline = "Quan sát thêm"
-    summary = "Thị trường chưa cho lợi thế rõ."
-    danger = []
-    if liquidation_evt.get("ok"):
-        headline = "Sau liquidation"
-        summary = f"{asset} vừa có liquidation move; ưu tiên chờ phản ứng sau panic, không follow ngay."
-        danger.append("biến động 2 đầu")
-    elif plan in ("BOUNCE_TO_SELL", "SELL_RALLY", "WAIT_BOUNCE_TO_SELL"):
-        headline = "Hồi để bán"
-        summary = f"{asset} đang hồi kỹ thuật trong bối cảnh giảm; ưu tiên sell-the-rally, tránh sell đáy."
-        danger.append("fake reversal")
-    elif plan in ("DIP_TO_BUY", "BUY_DIP", "WAIT_PULLBACK_TO_BUY"):
-        headline = "Hồi để mua"
-        summary = f"{asset} đang pullback trong xu hướng tăng; ưu tiên buy-the-dip, tránh buy đuổi."
-        danger.append("fake breakdown")
-    elif ms in ("CHOP", "TRANSITION"):
-        headline = "Nhiễu / chuyển pha"
-        summary = f"{asset} đang ở trạng thái nhiễu hoặc chuyển pha; edge thấp, nên đứng ngoài là chính."
-        danger.append("stop-hunt")
-    elif flow in ("OUTFLOW", "RISK_OFF"):
-        headline = "Dòng tiền chưa ủng hộ"
-        summary = f"Flow hiện tại chưa ủng hộ {asset}; thuận flow vẫn ưu tiên SELL nếu có setup rõ."
-    elif flow in ("INFLOW", "RISK_ON"):
-        headline = "Dòng tiền đang ủng hộ"
-        summary = f"Flow hiện tại ủng hộ {asset}; ưu tiên BUY khi có pullback hoặc break xác nhận."
-    if no_trade_zone.get("active"):
-        danger.extend(no_trade_zone.get("reasons") or [])
-    return {
-        "headline": headline,
-        "summary": summary,
-        "danger": [str(x) for x in danger if x],
-    }
-
-
-def _build_scenario_v3(bias_side: Optional[str], playbook_v2: Dict[str, Any], key_levels: Dict[str, Any],
-                       flow_state: Dict[str, Any], market_state_v2: str, no_trade_zone: Dict[str, Any]) -> Dict[str, Any]:
-    plan = str(playbook_v2.get("plan") or "OBSERVE")
-    zl = _safe_float(playbook_v2.get("zone_low"))
-    zh = _safe_float(playbook_v2.get("zone_high"))
-    favored = str(flow_state.get("favored_side") or "NONE")
-    base_case = "Quan sát thêm"
-    alt_case = "Chờ break xác nhận"
-    invalid = "Mất cấu trúc hiện tại"
-    best_zone = None
-    if zl is not None and zh is not None:
-        best_zone = f"{zl:.2f} – {zh:.2f}"
-    if plan in ("BOUNCE_TO_SELL", "SELL_RALLY", "WAIT_BOUNCE_TO_SELL"):
-        base_case = f"Base case: hồi để SELL{' ở vùng ' + best_zone if best_zone else ''}"
-        alt_level = _safe_float(key_levels.get("H1_HH") or key_levels.get("M15_RANGE_HIGH"))
-        alt_case = f"Alt case: nếu giữ trên {alt_level:.2f} → chuyển sang reversal candidate" if alt_level is not None else "Alt case: nếu break đỉnh mạnh → reversal candidate"
-        inv = _safe_float(key_levels.get("H1_LH") or key_levels.get("M15_RANGE_HIGH"))
-        invalid = f"Invalid if: M15/H1 giữ trên {inv:.2f}" if inv is not None else invalid
-    elif plan in ("DIP_TO_BUY", "BUY_DIP", "WAIT_PULLBACK_TO_BUY"):
-        base_case = f"Base case: hồi để BUY{' ở vùng ' + best_zone if best_zone else ''}"
-        alt_level = _safe_float(key_levels.get("H1_LL") or key_levels.get("M15_RANGE_LOW"))
-        alt_case = f"Alt case: nếu thủng {alt_level:.2f} → breakdown / reversal risk" if alt_level is not None else "Alt case: nếu thủng đáy mạnh → breakdown risk"
-        inv = _safe_float(key_levels.get("H1_HL") or key_levels.get("M15_RANGE_LOW"))
-        invalid = f"Invalid if: M15/H1 mất {inv:.2f}" if inv is not None else invalid
-    elif no_trade_zone.get("active"):
-        base_case = "Base case: NO TRADE / đứng ngoài"
-        alt_case = "Alt case: chờ displacement thật + follow-through"
-        invalid = "Invalid if: market state thoát khỏi CHOP/TRANSITION"
-    elif favored in ("BUY", "SELL") and bias_side in ("BUY", "SELL"):
-        base_case = f"Base case: ưu tiên {favored} theo flow"
-        alt_case = "Alt case: chỉ đổi kịch bản nếu break major level"
-    return {
-        "base_case": base_case,
-        "alt_case": alt_case,
-        "invalid_if": invalid,
-        "best_zone": best_zone,
-    }
-
-
-def _attach_gd3_meta(base: Dict[str, Any], narrative_v3: Dict[str, Any], scenario_v3: Dict[str, Any]) -> None:
-    meta = base.setdefault("meta", {})
-    meta["narrative_v3"] = narrative_v3
-    meta["scenario_v3"] = scenario_v3
-
 def _where_wait_text(m15c: Sequence[Any], bias_side: str) -> Tuple[str, str]:
     lo, hi, last = _range_levels(m15c, n=20)
     if lo is None or hi is None:
@@ -1426,195 +1169,62 @@ def _where_wait_text(m15c: Sequence[Any], bias_side: str) -> Tuple[str, str]:
     return where, wait
 
 
-
-def _detect_playbook_v2(symbol: str, bias_side: Optional[str], h1_trend: str, market_state_v2: str,
-                        m15c: Sequence[Any], flow_state: Dict[str, Any], no_trade_zone: Dict[str, Any],
-                        liquidation_evt: Dict[str, Any]) -> Dict[str, Any]:
-    """Human-readable plan for NOW/REVIEW. Not an auto-entry engine."""
-    lo, hi, last = _range_levels(m15c[:-1] if len(m15c) > 1 else m15c, n=20)
-    pos = None
-    if lo is not None and hi is not None and hi > lo and last is not None:
-        pos = (last - lo) / max(1e-9, hi - lo)
-
-    favored = flow_state.get("favored_side")
-    plan = "OBSERVE"
-    why = []
-    zone_low = zone_high = None
-
-    if no_trade_zone.get("active"):
-        plan = "NO_TRADE"
-        why.extend(no_trade_zone.get("reasons") or [])
-    elif liquidation_evt.get("ok"):
-        plan = "POST_LIQUIDATION_WAIT"
-        why.append("vừa có liquidation move")
-    elif market_state_v2 in ("BOUNCE_TO_SELL", "PULLBACK_DOWN", "TREND_DOWN", "EXHAUSTION_DOWN") or (bias_side == "SELL" and h1_trend == "bearish"):
-        if pos is not None and pos <= 0.22:
-            plan = "WAIT_BOUNCE_TO_SELL"
-            why.append("đang sát đáy range, không sell đáy")
-        elif pos is not None and pos <= 0.55:
-            plan = "BOUNCE_TO_SELL"
-            why.append("hồi kỹ thuật trong xu hướng giảm")
-        else:
-            plan = "SELL_RALLY"
-            why.append("đang ở vùng hồi thuận trend giảm")
-        if lo is not None and hi is not None:
-            span = hi - lo
-            zone_low = lo + 0.52 * span
-            zone_high = lo + 0.82 * span
-    elif market_state_v2 in ("DIP_TO_BUY", "PULLBACK_UP", "TREND_UP", "EXHAUSTION_UP") or (bias_side == "BUY" and h1_trend == "bullish"):
-        if pos is not None and pos >= 0.78:
-            plan = "WAIT_PULLBACK_TO_BUY"
-            why.append("đang sát đỉnh range, không buy đuổi")
-        elif pos is not None and pos >= 0.45:
-            plan = "DIP_TO_BUY"
-            why.append("pullback trong xu hướng tăng")
-        else:
-            plan = "BUY_DIP"
-            why.append("đang ở vùng hồi đẹp thuận trend tăng")
-        if lo is not None and hi is not None:
-            span = hi - lo
-            zone_low = lo + 0.18 * span
-            zone_high = lo + 0.48 * span
-    else:
-        plan = "RANGE_WAIT"
-        why.append("thị trường đi ngang / chuyển pha")
-
-    if favored and bias_side and favored not in ("NONE", bias_side):
-        why.append(f"flow proxy ưu tiên {favored}")
-
-    return {
-        "plan": plan,
-        "why": why,
-        "range_pos": pos,
-        "zone_low": zone_low,
-        "zone_high": zone_high,
-    }
-
-
-
 # =========================
-# GD4 MODULES (append-only on V3)
+# GD5 MODULES (append-only): trap / SL-hunt / liquidity-event
 # =========================
-def _session_engine_v4(m15c: Sequence[Any], market_state_v2: str) -> Dict[str, Any]:
-    if not m15c or len(m15c) < 16:
-        return {"session_tag": "N/A", "follow_through": "N/A", "fake_move_risk": "MEDIUM", "bias": "NONE"}
+def _detect_liquidity_event_v5(m15c: Sequence[Any], atr15: float, session_v4: Dict[str, Any],
+                               liquidation_evt: Dict[str, Any], market_state_v2: str) -> Dict[str, Any]:
+    if not m15c or len(m15c) < 12 or not atr15:
+        return {"active": False, "tag": "n/a", "bias": "NONE", "trade_allowed": True, "range_atr": None, "gap_atr": None, "stop_hunt_risk": "LOW", "note": ""}
     closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
     recent = closed[-8:]
-    first = recent[:4]
-    last = recent[4:]
-    move1 = (float(first[-1].close) - float(first[0].open)) if first else 0.0
-    move2 = (float(last[-1].close) - float(last[0].open)) if last else 0.0
+    prev = closed[-9] if len(closed) >= 9 else closed[-1]
     hi = max(float(c.high) for c in recent)
     lo = min(float(c.low) for c in recent)
     span = max(1e-9, hi - lo)
-    if abs(move1) / span >= 0.45:
-        tag = "OPEN_IMPULSE_UP" if move1 > 0 else "OPEN_IMPULSE_DOWN"
-    else:
-        tag = "SESSION_CHOP"
-    same_dir = (move1 > 0 and move2 > 0) or (move1 < 0 and move2 < 0)
-    follow = "YES" if same_dir and abs(move2) >= 0.20 * span else "NO"
-    fake = "HIGH" if tag != "SESSION_CHOP" and follow == "NO" else ("LOW" if follow == "YES" else "MEDIUM")
-    bias = "BUY" if "UP" in tag and follow == "YES" else ("SELL" if "DOWN" in tag and follow == "YES" else "NONE")
-    if market_state_v2 in ("CHOP", "TRANSITION"):
-        fake = "HIGH"
-    return {"session_tag": tag, "follow_through": follow, "fake_move_risk": fake, "bias": bias}
-
-def _htf_pressure_v4(h1c: Sequence[Any], h4c: Sequence[Any]) -> Dict[str, Any]:
-    def _close_bias(candles, n=4):
-        if not candles or len(candles) < n + 1:
-            return "NEUTRAL", 0
-        cs = [float(_c_val(x, "close", 0.0) or 0.0) for x in candles[-(n+1):]]
-        diffs = [cs[i] - cs[i-1] for i in range(1, len(cs))]
-        up = sum(1 for d in diffs if d > 0)
-        dn = sum(1 for d in diffs if d < 0)
-        if dn >= max(3, n-1):
-            return "DOWN", dn
-        if up >= max(3, n-1):
-            return "UP", up
-        return "MIXED", max(up, dn)
-    h1_bias, h1_cnt = _close_bias(h1c, 4)
-    h4_bias, h4_cnt = _close_bias(h4c, 4)
-    if h1_bias == "DOWN" and h4_bias == "DOWN":
-        state = "BEARISH_STRONG"
-    elif h1_bias == "UP" and h4_bias == "UP":
-        state = "BULLISH_STRONG"
-    elif "DOWN" in (h1_bias, h4_bias):
-        state = "BEARISH_WEAK"
-    elif "UP" in (h1_bias, h4_bias):
-        state = "BULLISH_WEAK"
-    else:
-        state = "NEUTRAL"
-    stability = "HIGH" if state.endswith("STRONG") else ("MEDIUM" if state != "NEUTRAL" else "LOW")
-    return {"state": state, "h1_close_bias": h1_bias, "h4_close_bias": h4_bias, "stability": stability}
-
-def _close_confirmation_v4(m15c: Sequence[Any], bias_side: Optional[str], bos_level: Optional[float]) -> Dict[str, Any]:
-    if not m15c or len(m15c) < 4 or bos_level is None or bias_side not in ("BUY", "SELL"):
-        return {"break_valid": False, "strength": "N/A", "hold": "N/A"}
-    c1 = list(m15c)[-3]
-    c2 = list(m15c)[-2]
-    level = float(bos_level)
-    if bias_side == "BUY":
-        break_valid = float(c1.close) > level and float(c2.close) >= level
-        strength = "STRONG" if break_valid and float(c1.close) > max(float(c1.open), level) else ("WEAK" if float(c1.high) > level else "NO")
-        hold = "YES" if float(c2.low) >= level or float(c2.close) >= level else "NO"
-    else:
-        break_valid = float(c1.close) < level and float(c2.close) <= level
-        strength = "STRONG" if break_valid and float(c1.close) < min(float(c1.open), level) else ("WEAK" if float(c1.low) < level else "NO")
-        hold = "YES" if float(c2.high) <= level or float(c2.close) <= level else "NO"
-    return {"break_valid": bool(break_valid), "strength": strength, "hold": hold, "level": level}
-
-def _macro_intermarket_v4(symbol: str, flow_state: Dict[str, Any], h1_trend: str, market_state_v2: str) -> Dict[str, Any]:
-    sym = str(symbol or "").upper()
-    if "XAU" in sym or "XAG" in sym:
-        if flow_state.get("state") == "OUTFLOW":
-            headline = "USD headwind / metals outflow"
+    range_atr = span / max(1e-9, float(atr15))
+    gap_atr = abs(float(recent[0].open) - float(prev.close)) / max(1e-9, float(atr15))
+    up_wick_hits = dn_wick_hits = 0
+    for c in recent[-4:]:
+        rng = max(1e-9, float(c.high) - float(c.low))
+        up_w = float(c.high) - max(float(c.open), float(c.close))
+        dn_w = min(float(c.open), float(c.close)) - float(c.low)
+        if up_w / rng >= 0.45: up_wick_hits += 1
+        if dn_w / rng >= 0.45: dn_wick_hits += 1
+    net_move = abs(float(recent[-1].close) - float(recent[0].open)) / max(1e-9, span)
+    fake_risk = str(session_v4.get("fake_move_risk") or "MEDIUM")
+    follow = str(session_v4.get("follow_through") or "NO")
+    wide_open = gap_atr >= 0.80 or range_atr >= 4.50
+    two_side = (up_wick_hits >= 2 and dn_wick_hits >= 2 and net_move <= 0.45)
+    stop_hunt = bool(liquidation_evt.get("ok")) or (wide_open and follow == "NO")
+    tag = "ỔN ĐỊNH"; note = ""; active = False; trade_allowed = True; bias = "NONE"
+    if two_side or (market_state_v2 in ("CHOP", "TRANSITION") and wide_open and fake_risk in ("HIGH", "MEDIUM")):
+        tag = "BẪY 2 ĐẦU"
+        note = "Biên độ mở rộng + quét 2 đầu; market đang săn thanh khoản, không nên tin move đầu tiên."
+        active = True; trade_allowed = False
+    elif stop_hunt:
+        tag = "ĐANG QUÉT SL"
+        note = "Có dấu hiệu stop-hunt / liquidation; ưu tiên chờ market ổn định rồi mới đánh."
+        active = True; trade_allowed = False
+    elif wide_open and fake_risk == "HIGH":
+        tag = "KHÔNG TRADE ĐẦU SÓNG"
+        note = "Move đầu phiên quá rộng nhưng thiếu follow-through; tránh đu giá."
+        active = True; trade_allowed = False
+    if active:
+        if float(recent[-1].close) < (lo + 0.35 * span):
             bias = "SELL"
-        elif flow_state.get("state") == "INFLOW":
-            headline = "metals supported / USD soft"
+        elif float(recent[-1].close) > (lo + 0.65 * span):
             bias = "BUY"
-        else:
-            headline = "macro mixed"
-            bias = "NONE"
-    else:
-        if flow_state.get("state") in ("INFLOW", "RISK_ON"):
-            headline = "risk appetite supportive"
-            bias = "BUY"
-        elif flow_state.get("state") in ("OUTFLOW", "RISK_OFF"):
-            headline = "risk-off / pressure remains"
-            bias = "SELL"
-        else:
-            headline = "macro mixed"
-            bias = "NONE"
-    note = "environment aligns with trend" if ((bias == "BUY" and h1_trend == "bullish") or (bias == "SELL" and h1_trend == "bearish")) else "macro chưa thật sự rõ"
-    if market_state_v2 in ("CHOP", "TRANSITION"):
-        note = "market regime nhiễu, macro edge thấp"
-    return {"headline": headline, "bias": bias, "note": note}
+    stop_hunt_risk = "HIGH" if active else ("MEDIUM" if wide_open else "LOW")
+    return {
+        "active": bool(active), "tag": tag, "bias": bias, "trade_allowed": bool(trade_allowed),
+        "range_atr": float(range_atr), "gap_atr": float(gap_atr), "stop_hunt_risk": stop_hunt_risk,
+        "two_sided": bool(two_side), "wide_open": bool(wide_open), "note": note,
+    }
 
-def _refine_playbook_v4(playbook_v2: Dict[str, Any], close_confirm: Dict[str, Any], session_v4: Dict[str, Any],
-                        htf_pressure_v4: Dict[str, Any], macro_v4: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(playbook_v2 or {})
-    plan = str(out.get("plan") or "OBSERVE")
-    triggers = []
-    if close_confirm.get("strength") not in (None, "N/A", "NO"):
-        triggers.append(f"close-confirm {close_confirm.get('strength')}")
-    if session_v4.get("follow_through") == "YES":
-        triggers.append("session follow-through")
-    if htf_pressure_v4.get("state") in ("BEARISH_STRONG", "BULLISH_STRONG"):
-        triggers.append(f"HTF {htf_pressure_v4.get('state')}")
-    if macro_v4.get("bias") in ("BUY", "SELL"):
-        triggers.append(f"macro {macro_v4.get('bias')}")
-    out["trigger_pack"] = triggers
-    out["quality"] = "HIGH" if len(triggers) >= 3 else ("MEDIUM" if len(triggers) >= 2 else "LOW")
-    return out
-
-def _attach_gd4_meta(base: Dict[str, Any], session_v4: Dict[str, Any], htf_pressure_v4: Dict[str, Any],
-                     close_confirm_v4: Dict[str, Any], macro_v4: Dict[str, Any], playbook_v4: Dict[str, Any]) -> None:
+def _attach_gd5_meta(base: Dict[str, Any], liquidity_event_v5: Dict[str, Any]) -> None:
     meta = base.setdefault("meta", {})
-    meta["session_v4"] = session_v4
-    meta["htf_pressure_v4"] = htf_pressure_v4
-    meta["close_confirm_v4"] = close_confirm_v4
-    meta["macro_v4"] = macro_v4
-    meta["playbook_v4"] = playbook_v4
+    meta["liquidity_event_v5"] = liquidity_event_v5
 
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
@@ -1845,7 +1455,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     lw = _liquidity_warning_lines(cur)
     if lw:
         context_lines.extend(lw)
-    liq_warn = bool(lw)
 
     # ===== Rejection =====
     rej = _is_rejection(last15)
@@ -1943,38 +1552,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # Nếu có quét -> vào POST-SWEEP mode (báo context) + KHÓA vào lệnh cho tới khi có cấu trúc
     post_sweep_buy = bool(sweep_buy.get("ok")) or bool(spring_buy.get("ok"))
     post_sweep_sell = bool(sweep_sell.get("ok")) or bool(spring_sell.get("ok"))
-
-    # ===== GD2 initial context (available for all early returns) =====
-    lo20, hi20, last20 = _range_levels(closed15, n=20)
-    range_pos = None
-    if lo20 is not None and hi20 is not None and hi20 > lo20 and last20 is not None:
-        range_pos = (last20 - lo20) / max(1e-9, hi20 - lo20)
-
-    h4_trend = _trend_label(h4c)
-    liquidation_evt = _detect_liquidation_v2(m15c, atr15, sweep_buy, sweep_sell, spring_buy, spring_sell)
-    bias_guess = "BUY" if h1_trend == "bullish" else ("SELL" if h1_trend == "bearish" else None)
-    market_state_v2 = _detect_market_state_v2(h1_trend, h4_trend, range_pos, atr15, avg20, avg80, div, liquidation_evt)
-    flow_state = _detect_flow_state_v2(symbol, h1_trend, h4_trend, market_state_v2, range_pos)
-    no_trade_zone = _detect_no_trade_zone_v2(bias_guess, market_state_v2, range_pos, liq_warn, liquidation_evt, confirmation_ok=None)
-    playbook_v2 = _detect_playbook_v2(symbol, bias_guess, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
-    phase_369_v2 = _detect_phase_369_v2(bias_guess, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
-    _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
-    _attach_gd3_meta(
-        base,
-        _build_narrative_v3(symbol, bias_guess, market_state_v2, flow_state, liquidation_evt, playbook_v2, no_trade_zone),
-        _build_scenario_v3(bias_guess, playbook_v2, base.get("meta", {}).get("key_levels", {}), flow_state, market_state_v2, no_trade_zone),
-    )
-
-    if flow_state.get("state"):
-        context_lines.append(f"Flow proxy: {flow_state.get('state')} | Ưu tiên {flow_state.get('favored_side') or 'n/a'}")
-    if market_state_v2:
-        context_lines.append(f"State: {market_state_v2}")
-    if liquidation_evt.get("ok"):
-        notes.append(
-            f"⚠️ Liquidation move: {liquidation_evt.get('side')} | body~{liquidation_evt.get('body_atr', 0):.1f} ATR | range~{liquidation_evt.get('range_atr', 0):.1f} ATR"
-        )
-    if no_trade_zone.get("active"):
-        notes.append("⛔ No-trade zone: " + "; ".join(no_trade_zone.get("reasons") or []))
     if post_sweep_buy or post_sweep_sell:
         context_lines.append("POST-SWEEP: Đã xảy ra QUÉT thanh khoản → KHÔNG vào ngay, chờ cấu trúc.")
         # (để telegram đọc là biết)
@@ -2046,27 +1623,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     trade_mode = "HALF"  # default; will be overwritten once scoring is computed
     entry_major = sl_major = tp1_major = tp2_major = None
     entry_minor = sl_minor = tp1_minor = tp2_minor = None
-
-
-    # ===== GD2 recompute after bias decision =====
-    bias_for_gd2 = bias if bias in ("BUY", "SELL") else bias_guess
-    market_state_v2 = _detect_market_state_v2(h1_trend, h4_trend, range_pos, atr15, avg20, avg80, div, liquidation_evt)
-    flow_state = _detect_flow_state_v2(symbol, h1_trend, h4_trend, market_state_v2, range_pos)
-    no_trade_zone = _detect_no_trade_zone_v2(bias_for_gd2, market_state_v2, range_pos, liq_warn, liquidation_evt, confirmation_ok=None)
-    playbook_v2 = _detect_playbook_v2(symbol, bias_for_gd2, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
-    phase_369_v2 = _detect_phase_369_v2(bias_for_gd2, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
-    _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
-    _attach_gd3_meta(
-        base,
-        _build_narrative_v3(symbol, bias_for_gd2, market_state_v2, flow_state, liquidation_evt, playbook_v2, no_trade_zone),
-        _build_scenario_v3(bias_for_gd2, playbook_v2, base.get("meta", {}).get("key_levels", {}), flow_state, market_state_v2, no_trade_zone),
-    )
-    session_v4 = _session_engine_v4(m15c, market_state_v2)
-    htf_pressure_v4 = _htf_pressure_v4(h1c, h4c)
-    close_confirm_v4 = _close_confirmation_v4(m15c, bias_for_gd2, (base.get('meta', {}).get('key_levels', {}) or {}).get('M15_BOS'))
-    macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
-    playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
-    _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
 
     if bias is None:
         # --------------------
@@ -2744,31 +2300,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         quality_lines.append(f"R~{rdist:.2f} | SL=MIN(Liq, ATR, Risk) (risk engine)")
 
     stars = max(1, min(5, int(stars)))
-
-    # ===== GD2 final attach with scoring-aware no-trade =====
-    no_trade_zone = _detect_no_trade_zone_v2(
-        bias_side,
-        market_state_v2,
-        range_pos,
-        liq_warn,
-        liquidation_evt,
-        confirmation_ok=bool(momentum_ok),
-    )
-    playbook_v2 = _detect_playbook_v2(symbol, bias_side, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
-    phase_369_v2 = _detect_phase_369_v2(bias_side, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
-    _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
-    _attach_gd3_meta(
-        base,
-        _build_narrative_v3(symbol, bias_side, market_state_v2, flow_state, liquidation_evt, playbook_v2, no_trade_zone),
-        _build_scenario_v3(bias_side, playbook_v2, base.get("meta", {}).get("key_levels", {}), flow_state, market_state_v2, no_trade_zone),
-    )
-    session_v4 = _session_engine_v4(m15c, market_state_v2)
-    htf_pressure_v4 = _htf_pressure_v4(h1c, h4c)
-    close_confirm_v4 = _close_confirmation_v4(m15c, bias_side, (base.get('meta', {}).get('key_levels', {}) or {}).get('M15_BOS'))
-    macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
-    playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
-    _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
-
     base.update({
         "context_lines": context_lines,
         "position_lines": position_lines,
@@ -2818,178 +2349,377 @@ def _safe_float(x):
         return None
 
 def format_signal(sig: Dict[str, Any]) -> str:
-    """Telegram formatter GD3: desk-note style, no raw HTML, concise and readable."""
-    def sf(x):
+    """
+    Telegram formatter (PRO++).
+    FIX:
+    1) Không bị đúp tiêu đề/preface (kể cả preface có '\\n\\n').
+    2) Không bị n/a sai do đọc nhầm key (structure/key_levels/entry-plan).
+    3) 3⭐ vẫn luôn hiển thị Entry/SL/TP (nếu có thì hiện số, không thì '...').
+    4) Checklist 4 yếu tố theo logic mới: Bias / Location / Liquidity / Confirmation.
+    """
+    from typing import List, Dict, Any
+
+    def _to_lines(txt: str) -> List[str]:
+        """Convert a string that may contain literal '\\n' into real lines."""
+        if txt is None:
+            return []
+        s = str(txt).strip()
+        if not s:
+            return []
+        # if caller accidentally passed "\\n\\n" as literal text
+        s = s.replace("\\n", "\n")
+        parts = [x.rstrip() for x in s.split("\n")]
+        return [p for p in parts if p.strip()]
+
+    def _safe_float_local(x):
+        # use the _safe_float already defined in file if available
         try:
-            return _safe_float(x)
+            return _safe_float(x)  # type: ignore
         except Exception:
             try:
                 return float(x)
             except Exception:
                 return None
 
-    def nf(x, nd: int = 2, default: str = "...") -> str:
-        v = sf(x)
+    def nf2(x):
+        v = _safe_float_local(x)
         if v is None:
-            return default
-        return f"{v:.{nd}f}"
+            return "..."
+        try:
+            return f"{float(v):.2f}"
+        except Exception:
+            return "..."
+
+    def mk(flag):
+        if flag is None:
+            return "…"
+        return "✅" if bool(flag) else "❌"
 
     if not isinstance(sig, dict):
-        return "❌ Invalid signal payload."
+        return "❌ Invalid signal payload (not dict)."
 
     meta = sig.get("meta") if isinstance(sig.get("meta"), dict) else {}
-    symbol = sig.get("symbol") or "n/a"
-    tf = sig.get("tf") or "n/a"
-    session = sig.get("session") or ""
-    data_source = sig.get("data_source") or meta.get("data_source") or ""
-    trade_mode = str(sig.get("trade_mode") or "MANUAL").upper()
-    stars = max(0, min(5, int(sig.get("stars", 0) or 0)))
-    stars_txt = "⭐" * max(1, stars)
-    rec_raw = str(sig.get("recommendation") or "CHỜ")
-    rec = "BUY" if "BUY" in rec_raw.upper() else ("SELL" if "SELL" in rec_raw.upper() else "CHỜ")
+    sd = meta.get("score_detail") if isinstance(meta.get("score_detail"), dict) else {}
+
+    # ---------- basics ----------
+    symbol = (sig.get("symbol") or "n/a")
+    tf = (sig.get("tf") or "n/a")
+    session = (sig.get("session") or "")
+
+    trade_mode = (sig.get("trade_mode") or "").upper()
+    if trade_mode not in ("FULL", "HALF", "WAIT", "MANUAL"):
+        trade_mode = "MANUAL" if trade_mode else "MANUAL"
+
+    # recommendation may be "🟢 BUY" / "🔴 SELL" / "CHỜ"
+    rec_raw = (sig.get("recommendation") or sig.get("rec") or "CHỜ")
+    rec_u = str(rec_raw).upper()
+    if "BUY" in rec_u:
+        rec = "BUY"
+    elif "SELL" in rec_u:
+        rec = "SELL"
+    else:
+        rec = "CHỜ"
+
+    # stars
+    stars_i = 0
+    try:
+        stars_i = int(sig.get("stars", 0) or 0)
+    except Exception:
+        stars_i = 0
+    stars_i = max(0, min(5, stars_i))
+    stars_txt = "⭐" * max(1, stars_i) if stars_i > 0 else "⭐"
+
+    # data source
+    data_source = (
+        sig.get("data_source")
+        or meta.get("data_source")
+        or meta.get("source")
+        or sig.get("source")
+        or ""
+    )
+
+    # ---------- preface (NO DUP) ----------
+    # auto warning only if no custom preface provided
+    preface = sig.get("preface") or meta.get("preface") or ""
+    preface = str(preface).replace("\\n", "\n")
+    preface = "\n".join(dict.fromkeys(preface.splitlines())).strip()
+    #if not preface and trade_mode == "MANUAL" and stars_i and stars_i < 3:
+        #preface = "⚠️ (Manual) Kèo dưới 3⭐ – tham khảo thôi."
 
     lines: List[str] = []
-    def add(x: str = ""):
-        if x is None:
-            return
-        s = str(x).rstrip()
-        if s:
-            lines.append(s)
-        elif lines and lines[-1] != "":
-            lines.append("")
+    seen = set()
 
+    def add(line: str):
+        if line is None:
+            return
+        s = str(line).rstrip()
+        if not s.strip():
+            return
+        # remove duplicate consecutive / global duplicates
+        key = s
+        if lines and lines[-1] == key:
+            return
+        # also avoid repeating exact same preface block
+        if key in seen and (key.startswith("⚠️") or "Kèo dưới" in key):
+            return
+        lines.append(key)
+        seen.add(key)
+
+    # push preface as lines (handle literal \n)
+    for pl in _to_lines(preface):
+        add(pl)
+
+    # ---------- header (OLD LOOK) ----------
     head = f"📊 {symbol} | {tf}"
     if session:
         head += f" | {session}"
     add(head)
+
     if data_source:
         add(f"📡 Data: {data_source}")
-    add(f"{stars_txt} {rec} | Mode: {trade_mode}")
 
-    narrative = meta.get("narrative_v3") if isinstance(meta.get("narrative_v3"), dict) else {}
-    scenario = meta.get("scenario_v3") if isinstance(meta.get("scenario_v3"), dict) else {}
-    phase = meta.get("phase_369") if isinstance(meta.get("phase_369"), dict) else {}
-    flow = meta.get("flow_state") if isinstance(meta.get("flow_state"), dict) else {}
-    liq = meta.get("liquidation") if isinstance(meta.get("liquidation"), dict) else {}
-    ntz = meta.get("no_trade_zone") if isinstance(meta.get("no_trade_zone"), dict) else {}
-    playbook = meta.get("playbook_v2") if isinstance(meta.get("playbook_v2"), dict) else {}
-    k = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
-    struct = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
+    # stars + rec + mode
+    mode_txt = ""
+    # optional (score/max_score) if present
+    score_total = sd.get("score")
+    score_max = sd.get("max_score") or 4
+    if trade_mode in ("FULL", "HALF") and isinstance(score_total, (int, float)):
+        mode_txt = f" | Mode: {trade_mode} ({int(score_total)}/{int(score_max)})"
+    elif trade_mode in ("FULL", "HALF"):
+        mode_txt = f" | Mode: {trade_mode}"
+    else:
+        # keep MANUAL/WAIT minimal like old
+        mode_txt = f" | Mode: {trade_mode}" if trade_mode == "MANUAL" else ""
 
-    session_v4 = meta.get("session_v4") if isinstance(meta.get("session_v4"), dict) else {}
-    htf_pressure_v4 = meta.get("htf_pressure_v4") if isinstance(meta.get("htf_pressure_v4"), dict) else {}
-    close_confirm_v4 = meta.get("close_confirm_v4") if isinstance(meta.get("close_confirm_v4"), dict) else {}
-    macro_v4 = meta.get("macro_v4") if isinstance(meta.get("macro_v4"), dict) else {}
-    playbook_v4 = meta.get("playbook_v4") if isinstance(meta.get("playbook_v4"), dict) else {}
+    add(f"{stars_txt}  <b>{rec}</b>{mode_txt}")
 
-    if narrative.get("headline"):
-        add(f"🧠 {narrative.get('headline')}")
-    if narrative.get("summary"):
-        add(f"- {narrative.get('summary')}")
+    # ---------- structure / key levels (READ CORRECT KEYS) ----------
+    st = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
+    h4_tag = st.get("H4", "n/a")
+    h1_tag = st.get("H1", "n/a")
+    m15_tag = st.get("M15", "n/a")
 
-    state = meta.get("market_state_v2")
-    if state:
-        add(f"🌡 State: {state}")
-    if phase:
-        extra = f" | {phase.get('reason')}" if phase.get("reason") else ""
-        add(f"🧭 Phase 369: {phase.get('phase', 'n/a')} | {phase.get('label', 'n/a')}{extra}")
-    if flow.get("state"):
-        note = f" | {flow.get('note')}" if flow.get("note") else ""
-        add(f"💰 Flow: {flow.get('state')} | Favored: {flow.get('favored_side', 'n/a')}{note}")
-    if liq.get("ok"):
-        add(f"⚠️ Liquidation: {liq.get('side')} | {liq.get('kind')} | body~{float(liq.get('body_atr', 0) or 0):.1f} ATR")
-    if ntz.get("active"):
-        add("⛔ No-trade: " + ("; ".join(str(x) for x in (ntz.get("reasons") or []) if x) or "active"))
+    add(f"Structure (Major): H4 {h4_tag} | H1 {h1_tag}")
+    add(f"Structure (Minor): M15 {m15_tag}")
 
+    where = meta.get("where") or sig.get("where")
+    wait_for = meta.get("wait_for") or sig.get("wait_for")
+    if where:
+        add(f"Now: {where}")
+    if wait_for:
+        add(f"Wait: {wait_for}")
+
+    kl = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
+    if kl:
+        add("Key levels:")
+        add("Major (H4/H1):")
+        if kl.get("H1_HH") is not None:
+            add(f"- H1 HH: {nf2(kl.get('H1_HH'))}")
+        if kl.get("H1_HL") is not None:
+            add(f"- H1 HL (trend giữ): {nf2(kl.get('H1_HL'))}")
+        if kl.get("H1_LH") is not None:
+            add(f"- H1 LH: {nf2(kl.get('H1_LH'))}")
+        if kl.get("H1_LL") is not None:
+            add(f"- H1 LL: {nf2(kl.get('H1_LL'))}")
+
+        add("Minor (M15):")
+        if kl.get("M15_RANGE_LOW") is not None and kl.get("M15_RANGE_HIGH") is not None:
+            add(f"- M15 Range: {nf2(kl.get('M15_RANGE_LOW'))} – {nf2(kl.get('M15_RANGE_HIGH'))}")
+        # correct key is M15_LAST (not M15_LAST_CLOSE)
+        if kl.get("M15_LAST") is not None:
+            add(f"- M15 Last close: {nf2(kl.get('M15_LAST'))}")
+        # correct key is M15_BOS (not M15_BOS_LEVEL)
+        if kl.get("M15_BOS") is not None:
+            add(f"- M15 BOS level: {nf2(kl.get('M15_BOS'))}")
+        # optional
+        if kl.get("M15_PB_EXT") is not None:
+            add(f"- M15 pullback extreme: {nf2(kl.get('M15_PB_EXT'))}")
+
+    # ---------- trade plan (3⭐ MUST SHOW) ----------
+    # prefer top-level (analyze_pro sets these)
+    entry = sig.get("entry")
+    sl = sig.get("sl")
+    tp1 = sig.get("tp1")
+    tp2 = sig.get("tp2")
+
+    add(f"Entry: {nf2(entry) if _safe_float_local(entry) is not None else '...'}")
+    add(
+        f"SL: {nf2(sl) if _safe_float_local(sl) is not None else '...'} | "
+        f"TP1: {nf2(tp1) if _safe_float_local(tp1) is not None else '...'} | "
+        f"TP2: {nf2(tp2) if _safe_float_local(tp2) is not None else '...'}"
+    )
+
+    # ---------- liquidity block ----------
     add("")
-    add("🗺 Plan:")
-    if playbook.get("plan"):
-        zone_txt = ""
-        zl = sf(playbook.get("zone_low")); zh = sf(playbook.get("zone_high"))
-        if zl is not None and zh is not None:
-            zone_txt = f" | Zone: {nf(zl)} – {nf(zh)}"
-        add(f"- {playbook.get('plan')}{zone_txt}")
-    if scenario.get("base_case"):
-        add(f"- {scenario.get('base_case')}")
-    if scenario.get("alt_case"):
-        add(f"- {scenario.get('alt_case')}")
-    if scenario.get("invalid_if"):
-        add(f"- {scenario.get('invalid_if')}")
+    add("Liquidity:")
+    liq_lines = sig.get("liquidity_lines") or meta.get("liquidity_lines") or []
+    if isinstance(liq_lines, str):
+        liq_lines = [liq_lines]
+    if isinstance(liq_lines, list) and liq_lines:
+        for s in liq_lines:
+            if s:
+                add(f"- {s}")
+    else:
+        add("- Chưa thấy sweep/spring rõ (liquidity proxy).")
 
+    # ---------- normalized signal + checklist 4 pillars (NEW LOGIC) ----------
     add("")
-    add("🏗 Structure:")
-    add(f"- Major: H4 {struct.get('H4', 'n/a')} | H1 {struct.get('H1', 'n/a')}")
-    add(f"- Minor: M15 {struct.get('M15', 'n/a')}")
-    if k.get("M15_RANGE_LOW") is not None and k.get("M15_RANGE_HIGH") is not None:
-        add(f"- M15 Range: {nf(k.get('M15_RANGE_LOW'))} – {nf(k.get('M15_RANGE_HIGH'))}")
-    if k.get("M15_BOS") is not None:
-        add(f"- BOS level: {nf(k.get('M15_BOS'))}")
-    if k.get("H1_HL") is not None or k.get("H1_LH") is not None:
-        keep = nf(k.get('H1_HL')) if rec == 'BUY' else nf(k.get('H1_LH'))
-        add(f"- Trend keep level: {keep}")
+    add("📌 TÍN HIỆU (chuẩn hoá):")
 
-    entry = sig.get("entry"); sl = sig.get("sl"); tp1 = sig.get("tp1"); tp2 = sig.get("tp2")
-    add("")
-    add("🎯 Trade map:")
-    add(f"- Entry: {nf(entry)}")
-    add(f"- SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
+    # Priority line similar to old
+    if rec in ("BUY", "SELL"):
+        add(f"- Ưu tiên <b>{rec}</b>")
+    else:
+        add("- Ưu tiên <b>CHỜ</b> (bias chưa rõ)")
 
-    ctx_lines = sig.get("context_lines") or []
+    # Context lines
+    ctx_lines = sig.get("context_lines") or meta.get("context_lines") or []
+    if isinstance(ctx_lines, str):
+        ctx_lines = [ctx_lines]
     if ctx_lines:
-        add("")
-        add("🧩 Context:")
-        for s in ctx_lines[:5]:
-            s = str(s).replace('\n', ' ').strip()
-            if s:
+        add("Context:")
+        for s in ctx_lines:
+            if not s:
+                continue
+            s = str(s).strip().replace("\\n", "\n")
+            if s.startswith("-"):
+                add(s)
+            else:
                 add(f"- {s}")
 
-    liq_lines = sig.get("liquidity_lines") or []
-    if liq_lines:
+    # ----- derive 4 pillars -----
+    # Bias: based on bias_ok and confluence_ok (H1/H4 same direction). If confluence missing -> just bias_ok.
+    bias_ok_raw = sd.get("bias_ok")
+    conf_ok_raw = sd.get("confluence_ok")
+    bias_ok = bool(bias_ok_raw) if bias_ok_raw is not None else False
+    confluence_ok = None
+    if conf_ok_raw is not None:
+        try:
+            confluence_ok = bool(int(conf_ok_raw) == 1)
+        except Exception:
+            confluence_ok = bool(conf_ok_raw)
+
+    bias_final = (bias_ok and confluence_ok) if confluence_ok is not None else bias_ok
+    bias_note = f"{h4_tag} / {h1_tag}"
+
+    # Confirmation: momentum_ok
+    mom = sd.get("momentum_ok")
+    confirmation_ok = bool(mom) if mom is not None else False
+
+    # Liquidity: pass if NOT liq_warn
+    liq_warn = sd.get("liq_warn")
+    if liq_warn is None:
+        # fallback: scan context text
+        joined = " | ".join([str(x) for x in (ctx_lines or [])])
+        liq_warn = ("LIQUIDITY WARNING" in joined.upper())
+    liquidity_ok = (not bool(liq_warn))
+    liq_note = "OK" if liquidity_ok else "WARN"
+
+    # Location: use M15 range + current price (prefer M15_LAST, else entry, else last close in kl)
+    loc_ok = None
+    loc_note = "thiếu dữ liệu range"
+    try:
+        lo = _safe_float_local(kl.get("M15_RANGE_LOW"))
+        hi = _safe_float_local(kl.get("M15_RANGE_HIGH"))
+        px = _safe_float_local(kl.get("M15_LAST"))
+        if px is None:
+            px = _safe_float_local(entry)
+        if lo is not None and hi is not None and hi > lo:
+            rng = hi - lo
+            pos = (px - lo) / rng if px is not None else 0.5
+            pos_clamped = max(0.0, min(1.0, pos))
+            pos_pct = pos_clamped * 100.0
+
+            if pos < 0.0:
+                zone = "Dưới range (breakdown)"
+            elif pos > 1.0:
+                zone = "Trên range (breakout)"
+            elif 0.20 <= pos_clamped <= 0.80:
+                zone = "Giữa range – No trade zone"
+            elif pos_clamped < 0.20:
+                zone = "Gần đáy range"
+            else:
+                zone = "Gần đỉnh range"
+
+            if rec == "BUY":
+                loc_ok = (pos_clamped <= 0.36)
+            elif rec == "SELL":
+                loc_ok = (pos_clamped >= 0.65)
+            else:
+                loc_ok = not (0.20 <= pos_clamped <= 0.80)
+
+            loc_note = f"{zone} (pos={pos_pct:.0f}%)"
+    except Exception:
+        loc_ok = None
+        loc_note = "lỗi tính location"
+
+    # Grade/trade decision (A+/A/B)
+    pillars = [bias_final, loc_ok, liquidity_ok, confirmation_ok]
+    passed = sum(1 for x in pillars if x is True)
+    grade = "A+" if passed >= 4 else ("A" if passed >= 3 else "B")
+    trade_ok = (grade in ("A", "A+")) and (rec in ("BUY", "SELL"))
+
+    add(f"- Grade: <b>{grade}</b> | Trade: {('YES' if trade_ok else 'NO')}")
+
+    add("Checklist (4):")
+    add(f"1) Bias (H4/H1): {mk(bias_final)}  ({bias_note})")
+    add(f"2) Location: {mk(loc_ok)}  ({loc_note})")
+    add(f"3) Liquidity: {mk(liquidity_ok)}  ({liq_note})")
+    add(f"4) Confirmation: {mk(confirmation_ok)}")
+
+    need = []
+    if bias_final is False:
+        need.append("Bias (H4/H1) hoặc Reversal rõ")
+    if loc_ok is False:
+        need.append("Location (về biên range)")
+    if liquidity_ok is False:
+        need.append("Liquidity (đợi sweep/spring xong & ổn định)")
+    if confirmation_ok is False:
+        need.append("Confirmation (BOS/CHOCH/impulse rõ)")
+    if need:
+        add("Thiếu / chờ thêm:")
+        for n in need:
+            add(f"- {n}")
+
+    # ---------- V5 trap / SL-hunt block ----------
+    liq_evt_v5 = meta.get("liquidity_event_v5") if isinstance(meta.get("liquidity_event_v5"), dict) else {}
+    if liq_evt_v5 and liq_evt_v5.get("active"):
         add("")
-        add("💧 Liquidity:")
-        for s in liq_lines[:4]:
-            s = str(s).replace('\n', ' ').strip()
-            if s:
-                add(f"- {s}")
+        add("🧭 V5 Hành vi market:")
+        add(f"- {liq_evt_v5.get('tag')} | Stop-hunt risk: {liq_evt_v5.get('stop_hunt_risk')}")
+        add(f"- Trade allowed: {'YES' if liq_evt_v5.get('trade_allowed') else 'NO'} | Bias sau quét: {liq_evt_v5.get('bias')}")
+        if liq_evt_v5.get('range_atr') is not None or liq_evt_v5.get('gap_atr') is not None:
+            add(f"- Range~{float(liq_evt_v5.get('range_atr') or 0):.1f} ATR | Gap-like~{float(liq_evt_v5.get('gap_atr') or 0):.1f} ATR")
+        if liq_evt_v5.get('note'):
+            add(f"- {liq_evt_v5.get('note')}")
 
-    q = sig.get("quality_lines") or []
-    if q:
-        add("")
-        add("⚙️ Quality:")
-        for s in q[:5]:
-            s = str(s).replace('\n', ' ').strip()
-            if s:
-                add(f"- {s}")
+    # Notes (avoid repeating preface)
+    note_lines = sig.get("note_lines") or meta.get("note_lines") or []
+    if isinstance(note_lines, str):
+        note_lines = [note_lines]
+    
+    preface_lines = set(_to_lines(preface)) if preface else set()
+    
+    if note_lines:
+        for s in note_lines:
+            if not s:
+                continue
+    
+            s2 = str(s).replace("\\n", "\n").strip()
+            if not s2:
+                continue
+    
+            # tách note thành từng dòng để so với preface
+            sub_lines = _to_lines(s2)
+    
+            # nếu tất cả các dòng trong note đều đã nằm trong preface -> bỏ
+            if sub_lines and all(x in preface_lines for x in sub_lines):
+                continue
+    
+            for sub in sub_lines:
+                if sub in preface_lines:
+                    continue
+                add(sub)
 
-
-    if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
-        add("")
-        add("🧪 V4 Modules:")
-        if session_v4.get("session_tag"):
-            add(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
-        if htf_pressure_v4.get("state"):
-            add(f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-        if close_confirm_v4.get("strength") not in (None, "N/A"):
-            add(f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}")
-        if macro_v4.get("headline"):
-            add(f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
-        if playbook_v4.get("quality"):
-            trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-            add(f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
-
-    notes = sig.get("notes") or sig.get("note_lines") or []
-    if notes:
-        add("")
-        add("📌 Notes:")
-        for s in notes[:6]:
-            s = str(s).replace('\n', ' ').strip()
-            if s:
-                add(f"- {s}")
-
-    # clean duplicate blank lines
-    out = []
-    for line in lines:
-        if line == "" and (not out or out[-1] == ""):
-            continue
-        out.append(line)
-    return "\n".join(out).strip()
+    # final: remove duplicate consecutive lines already handled by add()
+    return "\n".join(lines)
