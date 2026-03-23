@@ -625,6 +625,15 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append(f"🌡 State: {market_state_v2}")
     if isinstance(narrative_v3, dict) and narrative_v3.get("headline"):
         lines.append(f"🧠 Narrative: {narrative_v3.get('headline')} | {narrative_v3.get('summary', '')}".rstrip(" |"))
+    gap_lines = []
+    for s in (ctx or []):
+        ss = str(s).lower()
+        if "gap" in ss or "mở cửa" in ss or "biên độ đầu phiên" in ss:
+            gap_lines.append(str(s))
+    if gap_lines:
+        lines.append("🕳 GAP:")
+        for s in gap_lines[:3]:
+            lines.append(f"- {s}")
     if isinstance(liquidation, dict) and liquidation.get("ok"):
         lines.append(
             f"⚠️ Liquidation: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR"
