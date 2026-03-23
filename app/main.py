@@ -9,7 +9,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from app.data_source import get_candles, ingest_mt5_candles
-from app.pro_analysis import analyze_pro, format_signal
+#from app.pro_analysis import analyze_pro, format_signal
+
+import sys
+from pathlib import Path
+from pro_analysis import analyze_pro, render_analysis_text, render_review_text, review_manual_order
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
