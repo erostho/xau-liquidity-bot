@@ -53,13 +53,13 @@ def mean(values: List[float]) -> float:
 
 @dataclass
 class Candle:
+    ts: int
     open: float
     high: float
     low: float
     close: float
     volume: float = 0.0
     spread: float = 0.0
-    time: Optional[str] = None
 
     @property
     def body(self) -> float:
