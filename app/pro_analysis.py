@@ -6,20 +6,18 @@ import math
 
 
 # ============================================================
-# PRO ANALYSIS V5
-# - Giữ lõi logic cũ: xu hướng / vị trí / thanh khoản / xác nhận
-# - Chỉ thêm GAP V5 như 1 lớp ngữ cảnh bổ sung
+# PRO ANALYSIS V4.1
+# - Giữ logic cũ theo 4 lớp: xu hướng / vị trí / thanh khoản / xác nhận
+# - Chỉ thêm GAP Context V5
 # - Chuẩn hoá đầu ra sang tiếng Việt dễ hiểu hơn
-# - Fix lỗi bias_side luôn có giá trị mặc định
-# - Tương thích 2 kiểu gọi:
-#     analyze_pro(symbol, data={...})
-#     analyze_pro(symbol, m15, m30, h1, h4)
+# - Fix lỗi bias_side chưa được khởi tạo
 # ============================================================
 
 
 # -----------------------------
 # Helpers an toàn
 # -----------------------------
+
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -30,14 +28,17 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
+
 
 
 def pct(numerator: float, denominator: float) -> float:
     if denominator == 0:
         return 0.0
     return numerator / denominator * 100.0
+
 
 
 def mean(values: List[float]) -> float:
@@ -51,15 +52,15 @@ def mean(values: List[float]) -> float:
 # Cấu trúc dữ liệu
 # -----------------------------
 
+
 @dataclass
 class Candle:
-    ts: int
     open: float
     high: float
     low: float
     close: float
     volume: float = 0.0
-    spread: float = 0.0
+    time: Optional[str] = None
 
     @property
     def body(self) -> float:
@@ -86,14 +87,15 @@ class GapContext:
 # Chuẩn hoá từ ngữ đầu ra
 # -----------------------------
 
+
 TERM_MAP = {
     "BUY": "MUA",
     "SELL": "BÁN",
     "SIDEWAY": "ĐI NGANG",
-    "TREND": "Xu hướng đang rõ hơn",
-    "SIDEWAY_STATE": "Đi ngang / nhiễu",
+    "TREND": "Xu hướng rõ",
+    "SIDEWAY_STATE": "Đi ngang",
     "EXTREME": "Biến động quá mạnh",
-    "EXHAUSTION": "Đà đang yếu dần",
+    "EXHAUSTION": "Đà yếu dần",
     "TRANSITION": "Đang chuyển trạng thái",
     "POST_LIQUIDATION_BOUNCE": "Sau nhịp quét mạnh, giá đang hồi",
     "BOUNCE_TO_SELL": "Hồi lên để canh bán",
@@ -106,13 +108,11 @@ TERM_MAP = {
 }
 
 
-def vn_term(key: str, fallback: str = "") -> str:
-    return TERM_MAP.get(str(key or ""), fallback or str(key or ""))
-
-
 # -----------------------------
 # Chuyển dữ liệu đầu vào
 # -----------------------------
+
+
 
 def _to_candle(item: Any) -> Candle:
     if isinstance(item, Candle):
@@ -123,9 +123,8 @@ def _to_candle(item: Any) -> Candle:
             high=safe_float(item.get("high")),
             low=safe_float(item.get("low")),
             close=safe_float(item.get("close")),
-            volume=safe_float(item.get("volume", item.get("tick_volume", 0.0))),
-            spread=safe_float(item.get("spread", 0.0)),
-            time=item.get("time") or item.get("ts"),
+            volume=safe_float(item.get("volume", 0.0)),
+            time=item.get("time"),
         )
     if isinstance(item, (list, tuple)) and len(item) >= 4:
         return Candle(
@@ -137,6 +136,7 @@ def _to_candle(item: Any) -> Candle:
             time=item[5] if len(item) > 5 else None,
         )
     raise ValueError(f"Không đọc được candle: {item!r}")
+
 
 
 def normalize_candles(data: Optional[List[Any]]) -> List[Candle]:
@@ -155,10 +155,13 @@ def normalize_candles(data: Optional[List[Any]]) -> List[Candle]:
 # Chỉ báo cơ bản
 # -----------------------------
 
+
+
 def calc_true_range(curr: Candle, prev_close: Optional[float]) -> float:
     if prev_close is None:
         return curr.range
     return max(curr.high - curr.low, abs(curr.high - prev_close), abs(curr.low - prev_close))
+
 
 
 def calc_atr(candles: List[Candle], period: int = 14) -> float:
@@ -170,6 +173,7 @@ def calc_atr(candles: List[Candle], period: int = 14) -> float:
         trs.append(calc_true_range(c, prev_close))
         prev_close = c.close
     return mean(trs[-period:]) if trs else 0.0
+
 
 
 def calc_rsi(candles: List[Candle], period: int = 14) -> float:
@@ -190,6 +194,7 @@ def calc_rsi(candles: List[Candle], period: int = 14) -> float:
     return 100.0 - (100.0 / (1.0 + rs))
 
 
+
 def sma(values: List[float], period: int) -> float:
     if not values:
         return 0.0
@@ -199,6 +204,8 @@ def sma(values: List[float], period: int) -> float:
 # -----------------------------
 # Logic cũ - 4 lớp
 # -----------------------------
+
+
 
 def detect_bias(h4: List[Candle], h1: List[Candle]) -> Tuple[str, str, str]:
     # FIX: luôn gán mặc định trước để tránh lỗi bias_side
@@ -234,6 +241,7 @@ def detect_bias(h4: List[Candle], h1: List[Candle]) -> Tuple[str, str, str]:
     return bias_side, bias_text, bias_detail
 
 
+
 def detect_location(m15: List[Candle]) -> Dict[str, Any]:
     if not m15:
         return {
@@ -267,42 +275,47 @@ def detect_location(m15: List[Candle]) -> Dict[str, Any]:
     }
 
 
+
 def detect_liquidity(m15: List[Candle], atr: float) -> Dict[str, Any]:
     if len(m15) < 5:
         return {
             "has_sweep": False,
             "sweep_side": None,
-            "is_liquidation": False,
             "liquidity_text": "Chưa đủ dữ liệu để đọc thanh khoản",
         }
 
     recent = m15[-6:]
+    prev = recent[-2]
     last = recent[-1]
 
     up_sweep = last.high > max(c.high for c in recent[:-1]) and last.close < last.high - (last.range * 0.35)
     down_sweep = last.low < min(c.low for c in recent[:-1]) and last.close > last.low + (last.range * 0.35)
+
     liquidation = atr > 0 and last.range >= 1.8 * atr
 
     if up_sweep:
+        text = "Vừa quét vùng thanh khoản phía trên"
         return {
             "has_sweep": True,
             "sweep_side": "up",
             "is_liquidation": liquidation,
-            "liquidity_text": "Vừa quét vùng thanh khoản phía trên",
+            "liquidity_text": text,
         }
     if down_sweep:
+        text = "Vừa quét vùng thanh khoản phía dưới"
         return {
             "has_sweep": True,
             "sweep_side": "down",
             "is_liquidation": liquidation,
-            "liquidity_text": "Vừa quét vùng thanh khoản phía dưới",
+            "liquidity_text": text,
         }
+
     if liquidation:
         return {
             "has_sweep": False,
             "sweep_side": None,
             "is_liquidation": True,
-            "liquidity_text": "Vừa có nhịp quét mạnh nhưng chưa rõ hướng quét hai đầu",
+            "liquidity_text": "Vừa có nhịp quét mạnh nhưng chưa rõ hai đầu",
         }
 
     return {
@@ -311,6 +324,7 @@ def detect_liquidity(m15: List[Candle], atr: float) -> Dict[str, Any]:
         "is_liquidation": False,
         "liquidity_text": "Chưa thấy quét thanh khoản rõ",
     }
+
 
 
 def detect_confirmation(m15: List[Candle]) -> Dict[str, Any]:
@@ -353,26 +367,24 @@ def detect_confirmation(m15: List[Candle]) -> Dict[str, Any]:
     }
 
 
+
 def detect_flow(symbol: str, bias_side: str) -> Dict[str, str]:
     symbol = (symbol or "").upper()
 
-    if symbol.startswith(("XAU", "GOLD", "XAG", "SILVER")):
+    if symbol.startswith("XAU") or symbol.startswith("GOLD"):
         if bias_side == "SELL":
-            return {"flow": "OUTFLOW", "flow_text": "Dòng tiền đang nghiêng về phía bán", "favored": "SELL"}
+            return {"flow": "OUTFLOW", "flow_text": "Dòng tiền đang rút ra, nghiêng về phía bán", "favored": "SELL"}
         if bias_side == "BUY":
-            return {"flow": "INFLOW", "flow_text": "Dòng tiền đang nghiêng về phía mua", "favored": "BUY"}
+            return {"flow": "INFLOW", "flow_text": "Dòng tiền đang vào, nghiêng về phía mua", "favored": "BUY"}
 
-    if symbol.startswith(("BTC", "ETH")):
+    if symbol.startswith("BTC") or symbol.startswith("ETH"):
         if bias_side == "BUY":
-            return {"flow": "INFLOW", "flow_text": "Dòng tiền đang vào nhóm tài sản rủi ro", "favored": "BUY"}
+            return {"flow": "INFLOW", "flow_text": "Dòng tiền đang vào nhóm rủi ro", "favored": "BUY"}
         if bias_side == "SELL":
-            return {"flow": "OUTFLOW", "flow_text": "Dòng tiền đang rời nhóm tài sản rủi ro", "favored": "SELL"}
+            return {"flow": "OUTFLOW", "flow_text": "Dòng tiền đang rời nhóm rủi ro", "favored": "SELL"}
 
-    return {
-        "flow": "NEUTRAL",
-        "flow_text": "Dòng tiền chưa rõ ràng",
-        "favored": bias_side if bias_side in ("BUY", "SELL") else "SIDEWAY",
-    }
+    return {"flow": "NEUTRAL", "flow_text": "Dòng tiền chưa rõ ràng", "favored": bias_side if bias_side in ("BUY", "SELL") else "SIDEWAY"}
+
 
 
 def detect_market_state(
@@ -386,6 +398,7 @@ def detect_market_state(
     if not m15:
         return "SIDEWAY_STATE", "Không đủ dữ liệu để đọc trạng thái thị trường"
 
+    last = m15[-1]
     rsi = calc_rsi(m15)
 
     if liquidity.get("is_liquidation"):
@@ -415,6 +428,8 @@ def detect_market_state(
 # -----------------------------
 # GAP V5 - chỉ thêm ngữ cảnh, không đổi logic cũ
 # -----------------------------
+
+
 
 def detect_gap_context(m15: List[Candle], atr: float, bars_for_open: int = 4) -> GapContext:
     if len(m15) < bars_for_open + 2:
@@ -448,7 +463,7 @@ def detect_gap_context(m15: List[Candle], atr: float, bars_for_open: int = 4) ->
     if unbalanced_open:
         note = "Mở cửa lệch mạnh và biên độ đầu phiên quá rộng; dễ là giai đoạn quét thanh khoản hai đầu"
     elif has_big_gap:
-        note = "Có GAP đầu phiên; chưa nên xem đây là tín hiệu vào lệnh ngay"
+        note = "Có GAP đầu phiên; chưa nên vội xem đây là tín hiệu vào lệnh ngay"
     elif has_wide_open_range:
         note = "Biên độ đầu phiên đang rộng bất thường; ưu tiên chờ ổn định hơn"
     else:
@@ -470,6 +485,8 @@ def detect_gap_context(m15: List[Candle], atr: float, bars_for_open: int = 4) ->
 # Phase / review / management
 # -----------------------------
 
+
+
 def calc_phase_369(location_pos: float, state_key: str) -> Tuple[str, str]:
     if state_key in ("POST_LIQUIDATION_BOUNCE", "EXHAUSTION"):
         return "3E", "Biến động quá mạnh, ưu tiên chờ"
@@ -478,6 +495,7 @@ def calc_phase_369(location_pos: float, state_key: str) -> Tuple[str, str]:
     if location_pos > 80 or location_pos < 20:
         return "9X", "Giá đang đi xa, dễ muộn nhịp"
     return "3", "Giai đoạn sớm, tín hiệu còn yếu"
+
 
 
 def atr_plan(entry: float, bias_side: str, atr: float) -> Dict[str, float]:
@@ -502,46 +520,23 @@ def atr_plan(entry: float, bias_side: str, atr: float) -> Dict[str, float]:
 
 
 # -----------------------------
-# Core analysis
+# API chính
 # -----------------------------
 
-def _prepare_data_args(
-    data: Optional[Dict[str, List[Any]]] = None,
-    m15: Optional[List[Any]] = None,
-    m30: Optional[List[Any]] = None,
-    h1: Optional[List[Any]] = None,
-    h4: Optional[List[Any]] = None,
-) -> Dict[str, List[Any]]:
-    if isinstance(data, dict) and any(k in data for k in ("m15", "m30", "h1", "h4")):
-        return data
-    return {
-        "m15": m15 or [],
-        "m30": m30 or [],
-        "h1": h1 or [],
-        "h4": h4 or [],
-    }
 
 
-def analyze_pro(
-    symbol: str,
-    m15: Optional[List[Any]] = None,
-    m30: Optional[List[Any]] = None,
-    h1: Optional[List[Any]] = None,
-    h4: Optional[List[Any]] = None,
-    data: Optional[Dict[str, List[Any]]] = None,
-) -> Dict[str, Any]:
-    # FIX: luôn có mặc định để không bị lỗi bias_side
+def analyze_pro(symbol: str, data: Optional[Dict[str, List[Any]]] = None) -> Dict[str, Any]:
+    # FIX: luôn có mặc định để không bị lỗi bias_side chưa gán
     bias_side = "SIDEWAY"
     bias_text = "đi ngang"
 
     try:
-        payload = _prepare_data_args(data=data, m15=m15, m30=m30, h1=h1, h4=h4)
-        m15c = normalize_candles(payload.get("m15"))
-        m30c = normalize_candles(payload.get("m30"))
-        h1c = normalize_candles(payload.get("h1"))
-        h4c = normalize_candles(payload.get("h4"))
+        data = data or {}
+        m15 = normalize_candles(data.get("m15"))
+        h1 = normalize_candles(data.get("h1"))
+        h4 = normalize_candles(data.get("h4"))
 
-        if len(m15c) < 5:
+        if len(m15) < 5:
             return {
                 "symbol": symbol,
                 "bias_side": bias_side,
@@ -550,22 +545,20 @@ def analyze_pro(
                 "message": "Bot chưa đọc đủ dữ liệu M15 để phân tích",
             }
 
-        atr = calc_atr(m15c, 14)
-        bias_side, bias_text, bias_detail = detect_bias(h4c, h1c)
-        location = detect_location(m15c)
-        liquidity = detect_liquidity(m15c, atr)
-        confirmation = detect_confirmation(m15c)
+        atr = calc_atr(m15, 14)
+        bias_side, bias_text, bias_detail = detect_bias(h4, h1)
+        location = detect_location(m15)
+        liquidity = detect_liquidity(m15, atr)
+        confirmation = detect_confirmation(m15)
         flow = detect_flow(symbol, bias_side)
-        state_key, state_text = detect_market_state(bias_side, location, liquidity, confirmation, atr, m15c)
-        gap = detect_gap_context(m15c, atr)
+        state_key, state_text = detect_market_state(bias_side, location, liquidity, confirmation, atr, m15)
+        gap = detect_gap_context(m15, atr)
         phase_code, phase_text = calc_phase_369(location.get("range_pos", 50.0), state_key)
 
-        # GAP chỉ là lớp ngữ cảnh bổ sung, không thay đổi lõi logic cũ
         no_trade_zone = bool(liquidity.get("is_liquidation") or gap.unbalanced_open)
 
         current = safe_float(location.get("current"))
-        plan_side = bias_side if bias_side in ("BUY", "SELL") else "BUY"
-        plan = atr_plan(current, plan_side, atr)
+        plan = atr_plan(current, bias_side if bias_side in ("BUY", "SELL") else "BUY", atr)
 
         main_scenario = "Chờ rõ hơn"
         if bias_side == "SELL":
@@ -581,37 +574,8 @@ def analyze_pro(
         if no_trade_zone:
             caution.append("Hiện tại là vùng nên đứng ngoài hoặc giảm khối lượng")
 
-        # Telegram-compat fields
-        recommendation = "CHỜ"
-        stars = 1
-        if bias_side == "SELL" and confirmation.get("lh"):
-            recommendation = "🔴 SELL"
-            stars = 3 if not no_trade_zone else 2
-        elif bias_side == "BUY" and confirmation.get("hl"):
-            recommendation = "🟢 BUY"
-            stars = 3 if not no_trade_zone else 2
-
-        context_lines = [
-            f"Xu hướng chính: {bias_text}",
-            f"Khung lớn: {bias_detail}",
-            f"Trạng thái thị trường: {state_text}",
-            f"Dòng tiền: {flow.get('flow_text', 'Chưa rõ')}",
-            f"GAP đầu phiên: {gap.note}",
-        ]
-        liquidity_lines = [liquidity.get("liquidity_text", "Chưa rõ thanh khoản")]
-        quality_lines = [
-            location.get("location_text", ""),
-            confirmation.get("confirm_text", ""),
-            f"ATR M15: {round(atr, 2)}",
-            f"Giai đoạn 369: {phase_code} | {phase_text}",
-        ]
-        notes = caution[:]
-        if no_trade_zone:
-            notes.append("Ưu tiên đứng ngoài hoặc giảm rủi ro")
-
         return {
             "symbol": symbol,
-            "tf": "M15",
             "bias_side": bias_side,
             "bias_text": bias_text,
             "bias_detail": bias_detail,
@@ -631,25 +595,6 @@ def analyze_pro(
             "atr_plan": plan,
             "caution": caution,
             "status": "ok",
-            # compat for old main.py style
-            "recommendation": recommendation,
-            "stars": stars,
-            "entry": current if recommendation != "CHỜ" else None,
-            "sl": plan.get("sl") if recommendation != "CHỜ" else None,
-            "tp1": plan.get("tp1") if recommendation != "CHỜ" else None,
-            "tp2": plan.get("tp2") if recommendation != "CHỜ" else None,
-            "trade_mode": "MANUAL",
-            "context_lines": context_lines,
-            "liquidity_lines": liquidity_lines,
-            "quality_lines": [x for x in quality_lines if x],
-            "notes": notes,
-            "meta": {
-                "gap_context": asdict(gap),
-                "state_key": state_key,
-                "state_text": state_text,
-                "bias_side": bias_side,
-                "bias_text": bias_text,
-            },
         }
     except Exception as e:
         return {
@@ -658,19 +603,14 @@ def analyze_pro(
             "bias_text": bias_text,
             "status": "error",
             "message": f"Analysis failed ({symbol}): {e}",
-            "recommendation": "CHỜ",
-            "stars": 1,
-            "context_lines": [f"Bot bị lỗi khi phân tích: {e}"],
-            "liquidity_lines": [],
-            "quality_lines": [],
-            "notes": [],
-            "meta": {},
         }
 
 
 # -----------------------------
 # Review lệnh thủ công
 # -----------------------------
+
+
 
 def review_manual_order(
     symbol: str,
@@ -745,6 +685,8 @@ def review_manual_order(
 # Render output dễ đọc
 # -----------------------------
 
+
+
 def render_analysis_text(result: Dict[str, Any]) -> str:
     if result.get("status") != "ok":
         return result.get("message", "Bot chưa đọc được dữ liệu")
@@ -755,22 +697,27 @@ def render_analysis_text(result: Dict[str, Any]) -> str:
     flow = result["flow"]
     confirmation = result["confirmation"]
     caution = result.get("caution", [])
+    bias_detail = result.get("bias_detail", "")
 
     lines = [
-        f"📌 {result['symbol']} | Xu hướng chính: {result['bias_text']}",
+        f"📌 {result['symbol']} | NOW",
+        f"🧭 Xu hướng chính: {result['bias_text']}",
         f"💵 Giá hiện tại: {result['current_price']}",
-        f"🧭 Giai đoạn: {result['phase_369']} | {result['phase_text']}",
+        f"🪜 Giai đoạn 3-6-9: {result['phase_369']} | {result['phase_text']}",
         f"🌡 Trạng thái thị trường: {result['state_text']}",
-        f"📍 Vị trí giá: {location['range_pos']}% trong biên độ M15 ({location['range_low']} – {location['range_high']})",
+        f"📍 Vị trí giá hiện tại: {location['range_pos']}% trong biên độ M15 ({location['range_low']} – {location['range_high']})",
         f"💧 Thanh khoản: {liquidity['liquidity_text']}",
-        f"✅ Xác nhận: {confirmation['confirm_text']}",
+        f"✅ Xác nhận hiện tại: {confirmation['confirm_text']}",
         f"💰 Dòng tiền: {flow['flow_text']}",
         f"🕳 GAP đầu phiên: {gap['note']}",
         f"🎯 Kịch bản chính: {result['main_scenario']}",
     ]
 
+    if bias_detail:
+        lines.insert(2, f"🧠 Bối cảnh lớn: {bias_detail}")
+
     if result.get("no_trade_zone"):
-        lines.append("⛔ Hiện tại là vùng nên đứng ngoài hoặc chờ rõ hơn")
+        lines.append("⛔ Hiện tại là vùng nên đứng ngoài, hoặc chỉ quan sát thêm")
 
     if caution:
         lines.append("⚠️ Lưu ý: " + " | ".join(caution))
@@ -778,26 +725,33 @@ def render_analysis_text(result: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+
 def render_review_text(review: Dict[str, Any]) -> str:
+    plan = review.get("atr_plan", {}) or {}
     lines = [
-        f"🧠 REVIEW LỆNH | {review['symbol']} | {vn_term(review['side'], review['side'])}",
+        f"🧠 REVIEW LỆNH | {review['symbol']} | {review['side']}",
         f"🎯 Entry: {review['entry']} | TP: {review['tp']} | SL: {review['sl']} | RR≈{review['rr']}",
-        f"🧭 Giai đoạn: {review['phase_369']} | {review['phase_text']}",
-        f"🌡 Trạng thái: {review['state_text']}",
-        f"📍 Vị trí giá: ~{review['range_pos']}% biên độ",
+        f"🧭 Xu hướng chính: {review.get('bias_text', 'chưa rõ')}",
+        f"🪜 Giai đoạn 3-6-9: {review['phase_369']} | {review['phase_text']}",
+        f"🌡 Trạng thái hiện tại: {review['state_text']}",
+        f"📍 Vị trí giá hiện tại: ~{review['range_pos']}% biên độ",
         f"💰 Dòng tiền: {review['flow_text']}",
         f"💧 Thanh khoản: {review['liquidity_text']}",
-        f"✅ Xác nhận: {review['confirm_text']}",
-        f"🕳 GAP: {review['gap_note']}",
+        f"✅ Xác nhận hiện tại: {review['confirm_text']}",
+        f"🕳 GAP đầu phiên: {review['gap_note']}",
         f"📌 Kết luận: {review['verdict']} — {review['note']}",
-        f"⚙️ Hành động: {review['management']}",
+        f"⚙️ Hành động lúc này: {review['management']}",
     ]
+    if plan:
+        lines.extend([
+            "📐 Gợi ý ATR Plan:",
+            f"- SL chuẩn: {plan.get('sl', 0.0)}",
+            f"- TP1: {plan.get('tp1', 0.0)}",
+            f"- TP2: {plan.get('tp2', 0.0)}",
+            f"- +0.8 ATR → dời về hòa vốn quanh: {plan.get('be_at', 0.0)}",
+            f"- +1.2 ATR → bắt đầu trailing quanh: {plan.get('trail_at', 0.0)}",
+        ])
     return "\n".join(lines)
-
-
-# Tương thích với main.py cũ gọi format_signal(sig)
-def format_signal(sig: Dict[str, Any]) -> str:
-    return render_analysis_text(sig)
 
 
 __all__ = [
@@ -805,5 +759,4 @@ __all__ = [
     "review_manual_order",
     "render_analysis_text",
     "render_review_text",
-    "format_signal",
 ]
