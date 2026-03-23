@@ -446,6 +446,10 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     close_confirm_v4 = meta.get("close_confirm_v4", {}) or {}
     macro_v4 = meta.get("macro_v4", {}) or {}
     playbook_v4 = meta.get("playbook_v4", {}) or {}
+    opening_state_v5 = meta.get("opening_state_v5", {}) or {}
+    location_v5 = meta.get("location_v5", {}) or {}
+    late_entry_v5 = meta.get("late_entry_v5", {}) or {}
+    bounce_quality_v5 = meta.get("bounce_quality_v5", {}) or {}
 
     ctx = sig.get("context_lines", []) or []
     liq = sig.get("liquidity_lines", []) or []
@@ -592,6 +596,14 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append(f"💰 Flow: {flow_state.get('state')} | Favored: {flow_state.get('favored_side', 'n/a')}")
     if market_state_v2:
         lines.append(f"🌡 State: {market_state_v2}")
+    if isinstance(opening_state_v5, dict) and opening_state_v5.get("state") and opening_state_v5.get("state") != "NORMAL_OPEN":
+        lines.append(f"🌉 Opening: {opening_state_v5.get('state')} | Sweep risk: {opening_state_v5.get('opening_sweep_risk')}")
+    if isinstance(location_v5, dict) and location_v5.get("label"):
+        lines.append(f"📍 Location verdict: {location_v5.get('label')} | {location_v5.get('note', '')}")
+    if isinstance(late_entry_v5, dict) and late_entry_v5.get("risk"):
+        lines.append(f"⏱ Late-entry risk: {late_entry_v5.get('risk')} | {late_entry_v5.get('note', '')}")
+    if isinstance(bounce_quality_v5, dict) and bounce_quality_v5.get("label") not in (None, "N/A"):
+        lines.append(f"🪃 Bounce quality: {bounce_quality_v5.get('label')} | {bounce_quality_v5.get('note', '')}")
     if isinstance(narrative_v3, dict) and narrative_v3.get("headline"):
         lines.append(f"🧠 Narrative: {narrative_v3.get('headline')} | {narrative_v3.get('summary', '')}".rstrip(" |"))
     if isinstance(liquidation, dict) and liquidation.get("ok"):
@@ -695,6 +707,11 @@ def _force_send(sig: dict) -> bool:
 
     # Post-sweep state
     if "POST-SWEEP" in ctx or "POST-SWEEP" in notes:
+        return True
+
+    # Opening imbalance / late timing warnings
+    hot_words = ("SESSION_IMBALANCE", "ABNORMAL_EXPANSION", "LATE_SELL", "LATE_BUY", "POST_DUMP_LOW", "POST_PUMP_HIGH")
+    if any(w in ctx or w in notes for w in hot_words):
         return True
 
     return False
