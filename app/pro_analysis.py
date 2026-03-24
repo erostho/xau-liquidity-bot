@@ -3007,6 +3007,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if reason_skip:
         verdict_full += f"; {reason_skip}"
     
+    price_now = nf(last_px if last_px is not None else entry)
+    reason = ""
+    if range_pos is not None:
+        rp = float(range_pos)
+        if rp > 0.8:
+            reason = "đang sát vùng cao, không nên SELL đuổi"
+        elif rp < 0.2:
+            reason = "đang sát vùng thấp, không nên BUY đuổi"
+        else:
+            reason = "đang ở giữa biên độ, dễ nhiễu"
+    
+    verdict_full = verdict_quick
+    if reason:
+        verdict_full += f"; {reason}"
+    
     add(lines, f"💵 Giá hiện tại: {price_now}")
     add(lines, f"📌 Kết luận nhanh: {verdict_full}")
     add(lines, f"🧭 Hướng ưu tiên: {rec}")
@@ -3022,14 +3037,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- Giá hiện tại: {nf(last_px)}")
     if range_lo is not None and range_hi is not None:
         add(lines, f"- Biên độ M15: {nf(range_lo)} – {nf(range_hi)}")
-    if range_pos is not None:
+    if range_pos is not None:        
         pos_pct = int(round(float(range_pos) * 100))
         pos_note = ""
         
         if pos_pct > 80:
-            pos_note = "→ đang sát vùng cao, không đẹp để SELL đuổi"
+            pos_note = "→ sát vùng cao, không đẹp để SELL"
         elif pos_pct < 20:
-            pos_note = "→ đang sát vùng thấp, không đẹp để BUY đuổi"
+            pos_note = "→ sát vùng thấp, không đẹp để BUY"
+        else:
+            pos_note = "→ giữa range, dễ nhiễu"
         
         add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
@@ -3066,12 +3083,24 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
-    if scenario.get("base_case"):
-        add(lines, f"- {scenario.get('base_case')}")
-    elif playbook.get("plan"):
-        add(lines, f"- {playbook.get('plan')}")
+    
+    base = str(scenario.get("base_case") or "").strip()
+    
+    if base:
+        base = base.replace("Base case:", "").strip()
+    
+        if "NO TRADE" in base.upper():
+            add(lines, "- Ưu tiên đứng ngoài quan sát, chưa có lợi thế rõ để vào lệnh")
+        else:
+            base = base.replace("hồi để SELL", "chờ hồi để canh bán")
+            base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
+    
+            if playbook.get("zone_low") and playbook.get("zone_high"):
+                base = f"{base} trong vùng {nf(playbook.get('zone_low'))} – {nf(playbook.get('zone_high'))}"
+    
+            add(lines, f"- {base}")
     else:
-        add(lines, "- Chưa có kịch bản chính rõ")
+        add(lines, "- Chưa có kịch bản rõ")
 
     add(lines, "")
     add(lines, "🪄 Kịch bản phụ:")
@@ -3081,7 +3110,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "- Chưa có kịch bản phụ rõ")
 
     add(lines, "")
-    add(lines, "🧯 Điểm sai kịch bản:")
+    add(lines, "🧯 Điểm sai kịch bản:")    
+    hi = k.get("M15_RANGE_HIGH")
+    lo = k.get("M15_RANGE_LOW")  
+    if hi and lo:
+        add(lines, f"- Nếu M15 phá rõ {nf(hi)} và giữ được → bắt đầu xét BUY")
+        add(lines, f"- Nếu M15 thủng {nf(lo)} với lực mạnh → bắt đầu xét SELL")
+    else:
+        add(lines, "- Nếu thị trường thoát khỏi trạng thái nhiễu và có break rõ → bắt đầu trade")
     
     invalid_txt = str(scenario.get("invalid_if") or "").strip()
     
