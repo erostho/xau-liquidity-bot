@@ -693,6 +693,40 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             if gate_obj.get("hl"):
                 return f"Nếu thủng {_f(sl_val)} hoặc mất HL → kịch bản BUY bị yếu đi rõ"
             return f"Nếu thủng {_f(sl_val)} hoặc tiếp tục không giữ được HL → kịch bản BUY chưa đủ mạnh"
+
+    def _htf_summary(htf_obj: dict, side: str) -> str:
+        state = str((htf_obj or {}).get("state") or "")
+        h1 = str((htf_obj or {}).get("h1_close_bias") or "")
+        if "BEARISH" in state and h1 == "UP":
+            return "Khung lớn vẫn nghiêng giảm, nhưng H1 đang hồi lên → lệnh SELL chỉ nên đánh ngắn" if side == "SELL" else "Khung lớn nghiêng giảm, không thuận cho BUY mạnh"
+        if "BULLISH" in state and h1 == "DOWN":
+            return "Khung lớn vẫn nghiêng tăng, nhưng H1 đang điều chỉnh xuống → lệnh BUY chỉ nên đánh ngắn" if side == "BUY" else "Khung lớn nghiêng tăng, không thuận cho SELL mạnh"
+        if "BEARISH" in state:
+            return "Khung lớn đang nghiêng giảm"
+        if "BULLISH" in state:
+            return "Khung lớn đang nghiêng tăng"
+        return "Khung lớn chưa thật sự đồng thuận"
+
+    def _dedupe_action_lines(items: list[str]) -> list[str]:
+        out = []
+        seen_tags = set()
+        for raw in (items or []):
+            s = str(raw).strip()
+            low = s.lower()
+            if not s:
+                continue
+            if "không add" in low or "không nên add" in low or "không mở rộng rủi ro" in low:
+                tag = "no_add"
+            elif "giữ ngắn" in low or "chỉ giữ" in low or "có thể giữ ngắn hạn" in low:
+                tag = "hold_short"
+            elif "chờ break" in low or "chờ xác nhận" in low:
+                tag = "wait_confirm"
+            else:
+                tag = s
+            if tag not in seen_tags:
+                seen_tags.add(tag)
+                out.append(s)
+        return out
     def _extract_gap_lines(ctx_lines, note_lines):
         out = []
         seen = set()
@@ -712,18 +746,6 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines = []
     lines.append(f"🧠 REVIEW LỆNH | {symbol} | {side_vn}")
     lines.append("")
-    v = str(verdict or "").upper()
-    if "CHƯA RÕ" in v:
-        if side == "SELL":
-            verdict_txt = "Tạm ổn — cùng bối cảnh giảm nhưng chưa có LH xác nhận"
-        else:
-            verdict_txt = "Tạm ổn — cùng bối cảnh tăng nhưng chưa có HL xác nhận"
-    elif "ĐÚNG" in v:
-        verdict_txt = "Ổn — đang đi cùng hướng chính"
-    elif "SAI" in v or "NGUY HIỂM" in v:
-        verdict_txt = "Không ổn — lệnh đang ở trạng thái rủi ro cao"
-    else:
-        verdict_txt = str(verdict or "").strip()
     v = str(verdict or "").upper()
     if "CHƯA RÕ" in v:
         if side == "SELL":
@@ -833,12 +855,8 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     else:
         lines.append("- Ưu tiên giảm rủi ro và quan sát thêm")
     
-    seen = set()
-    for s in actions:
-        ss = str(s).strip()
-        if ss and ss not in seen:
-            seen.add(ss)
-            lines.append(f"- {ss}")
+    for s in _dedupe_action_lines(actions):
+        lines.append(f"- {s}")
 
     lines.append("")
     lines.append("🪜 Quản trị 5-10-15:")
@@ -868,6 +886,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
         if htf_pressure_v4.get("state"):
             lines.append(f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
+            lines.append(f"- {_htf_summary(htf_pressure_v4, side)}")
         if close_confirm_v4.get("strength") not in (None, "N/A"):
             lines.append(f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}")
         if macro_v4.get("headline"):
