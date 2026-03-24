@@ -3035,60 +3035,80 @@ def format_signal(sig: Dict[str, Any]) -> str:
         return "đang ở giữa biên độ"
 
     def no_trade_reason(range_pos_val, ntz_obj: dict, state: str) -> str:
-        reasons = []
-        if ntz_obj.get("active"):
-            for r in (ntz_obj.get("reasons") or []):
-                rs = str(r).strip()
-                if rs and rs not in reasons:
-                    reasons.append(rs)
-
+        tags = set()
+    
+        # từ no-trade zone
+        for r in (ntz_obj.get("reasons") or []):
+            rs = str(r).lower()
+            if "mid" in rs:
+                tags.add("mid")
+            elif "nhiễu" in rs or "chop" in rs or "transition" in rs:
+                tags.add("chop")
+            elif "confirm" in rs:
+                tags.add("no_confirm")
+            else:
+                tags.add(rs)
+    
+        # từ state
+        st = str(state or "").upper()
+        if st in ("CHOP", "TRANSITION"):
+            tags.add("chop")
+    
+        # từ range
         try:
             rp = float(range_pos_val)
-            if 0.30 <= rp <= 0.70 and "mid-range" not in reasons:
-                reasons.append("giữa biên độ")
-        except Exception:
+            if 0.3 <= rp <= 0.7:
+                tags.add("mid")
+        except:
             pass
-
-        st = str(state or "").upper()
-        if st in ("CHOP", "TRANSITION") and "trạng thái nhiễu" not in reasons:
-            reasons.append("thị trường đang nhiễu / chuyển pha")
-
-        if not reasons:
-            return "chưa có xác nhận đủ mạnh"
-
+    
+        # mapping ra câu chuẩn
         mapping = {
-            "mid-range": "đang ở giữa biên độ",
-            "market state nhiễu": "thị trường đang nhiễu",
-            "liquidity warning": "đang gần vùng dễ bị quét",
-            "vừa có liquidation": "vừa có cú quét mạnh",
-            "bias chưa rõ": "hướng ưu tiên chưa rõ",
-            "chưa có confirm": "chưa có xác nhận rõ",
+            "chop": "thị trường đang nhiễu",
+            "mid": "đang ở giữa biên độ",
+            "no_confirm": "chưa có xác nhận rõ",
         }
-        pretty = [mapping.get(x, x) for x in reasons]
-        return "; ".join(pretty)
+    
+        out = []
+        for t in ["chop", "mid", "no_confirm"]:
+            if t in tags:
+                out.append(mapping[t])
+    
+        if not out:
+            return "chưa có xác nhận đủ mạnh"
+    
+        return "; ".join(out)
 
-    def trigger_lines(rec_text: str, key_levels: dict, range_pos_val, ntz_obj: dict) -> tuple[str, str]:
+    def trigger_lines_v2(rec_text: str, key_levels: dict, playbook_obj: dict):
         hi = key_levels.get("M15_RANGE_HIGH")
         lo = key_levels.get("M15_RANGE_LOW")
         bos = key_levels.get("M15_BOS")
-
-        buy_trigger = "Chưa có mốc BUY rõ"
-        sell_trigger = "Chưa có mốc SELL rõ"
-
-        if hi is not None:
-            buy_trigger = f"Chỉ xét BUY nếu M15 đóng trên {nf(hi)} và giữ được"
-        if lo is not None:
-            sell_trigger = f"Chỉ xét SELL nếu M15 đóng dưới {nf(lo)} với follow-through"
-
-        # nếu đang ưu tiên SELL/BÁN thì nhấn mạnh SELL trigger, BUY là trigger đảo trạng thái
-        if rec_text == "BÁN" and hi is not None and lo is not None:
-            buy_trigger = f"Nếu M15 vượt {nf(hi)} và giữ được → kịch bản SELL yếu đi, bắt đầu xét BUY"
-            sell_trigger = f"SELL mạnh hơn nếu M15 đóng dưới {nf(lo)}"
-        elif rec_text == "MUA" and hi is not None and lo is not None:
-            buy_trigger = f"BUY mạnh hơn nếu M15 đóng trên {nf(hi)}"
-            sell_trigger = f"Nếu M15 thủng {nf(lo)} với lực mạnh → kịch bản BUY yếu đi, bắt đầu xét SELL"
-
-        return buy_trigger, sell_trigger
+    
+        zone_lo = playbook_obj.get("zone_low")
+        zone_hi = playbook_obj.get("zone_high")
+    
+        # ===== trigger gần =====
+        buy_near = "Chưa có trigger BUY gần"
+        sell_near = "Chưa có trigger SELL gần"
+    
+        if bos:
+            buy_near = f"BUY gần: nếu reclaim {nf(bos)} và giữ được"
+            sell_near = f"SELL gần: nếu bị từ chối dưới {nf(bos)}"
+    
+        if zone_lo and zone_hi:
+            buy_near = f"BUY gần: nếu giữ được vùng {nf(zone_lo)} – {nf(zone_hi)}"
+            sell_near = f"SELL gần: nếu bị từ chối tại vùng {nf(zone_lo)} – {nf(zone_hi)}"
+    
+        # ===== trigger mạnh =====
+        buy_strong = "Chưa có trigger BUY mạnh"
+        sell_strong = "Chưa có trigger SELL mạnh"
+    
+        if hi:
+            buy_strong = f"BUY mạnh: M15 đóng trên {nf(hi)} và giữ được"
+        if lo:
+            sell_strong = f"SELL mạnh: M15 đóng dưới {nf(lo)} với follow-through"
+    
+        return buy_near, sell_near, buy_strong, sell_strong
     def grade_from_mode(mode: str, stars_val: int) -> str:
         mode = str(mode or "").upper()
         if mode == "FULL":
@@ -3258,7 +3278,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- {s}")
     else:
         add(lines, "- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
-    buy_trigger, sell_trigger = trigger_lines(rec, k, range_pos, ntz)
+    buy_near, sell_near, buy_strong, sell_strong = trigger_lines_v2(rec, k, playbook)
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
     base = str(scenario.get("base_case") or "").strip()
@@ -3347,8 +3367,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Không BUY đuổi ở vùng thấp")
     except Exception:
         pass
-    add(lines, f"- BUY trigger: {buy_trigger}")
-    add(lines, f"- SELL trigger: {sell_trigger}")
+    add(lines, "")
+    add(lines, "🧯 Trigger quan trọng:")
+    add(lines, f"- {buy_near}")
+    add(lines, f"- {sell_near}")
+    add(lines, f"- {buy_strong}")
+    add(lines, f"- {sell_strong}")
 
     if q_lines:
         add(lines, "")
