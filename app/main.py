@@ -683,7 +683,18 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         verdict_text = "Ổn — đang đi cùng hướng chính"
     elif "SAI" in verdict_text.upper() or "NGUY HIỂM" in verdict_text.upper():
         verdict_text = "Không ổn — lệnh đang ở trạng thái rủi ro cao"
-    lines.append(f"📌 Kết luận: {verdict_text}")
+    v = str(verdict or "").upper()
+    if "CHƯA RÕ" in v:
+        if side == "SELL":
+            verdict_txt = "Tạm ổn — cùng bối cảnh giảm nhưng chưa có LH xác nhận"
+        else:
+            verdict_txt = "Tạm ổn — cùng bối cảnh tăng nhưng chưa có HL xác nhận"
+    elif "ĐÚNG" in v:
+        verdict_txt = "Ổn — đang đi cùng hướng chính"
+    else:
+        verdict_txt = verdict
+    
+    lines.append(f"📌 Kết luận: {verdict_txt}")
 
     if phase369:
         lines.append(f"🧭 Giai đoạn: {phase369.get('phase', 'n/a')} | {_vn_phase_label(phase369)}")
@@ -710,8 +721,6 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append("")
     lines.append("✅ Xác nhận:")
     lines.append(f"- HL={'✅' if gate.get('hl') else '❌'} | LH={'✅' if gate.get('lh') else '❌'} | BreakUp={'✅' if gate.get('break_up') else '❌'} | BreakDn={'✅' if gate.get('break_dn') else '❌'}")
-    lines.append(f"- {gate.get('txt') or 'Chưa đọc được gate cấu trúc.'}")
-    
     # thêm 1 câu dịch nghĩa cho trader
     if side == "SELL":
         if not gate.get("lh"):
@@ -727,7 +736,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append("- Đã có HL nhưng chưa phá đỉnh → BUY đúng hướng nhưng chưa xác nhận mạnh")
         elif gate.get("hl") and gate.get("break_up"):
             lines.append("- Đã có HL và phá đỉnh → tín hiệu BUY đang mạnh hơn")
-
+    lines.append(f"- {gate.get('txt') or 'Chưa đọc được gate cấu trúc.'}") 
     lines.append("")
     lines.append("🕳 GAP:")
     if gap_lines:
@@ -784,8 +793,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     
     invalid_text = str((scenario_v3 or {}).get("invalid_if") or "").strip()
     invalid_text = invalid_text.replace("Invalid if:", "").strip()
-    invalid_text = invalid_text.replace("Mất cấu trúc hiện tại", "").strip()
-    
+    invalid_text = invalid_text.replace("Mất cấu trúc hiện tại", "").strip()   
     if side == "SELL":
         if _f(sl, 2, 'n/a') != "n/a":
             if gate.get("lh"):
