@@ -3082,10 +3082,30 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     add(lines, "")
     add(lines, "🧯 Điểm sai kịch bản:")
-    if scenario.get("invalid_if"):
-        add(lines, f"- {scenario.get('invalid_if')}")
+    
+    invalid_txt = str(scenario.get("invalid_if") or "").strip()
+    
+    # chuẩn hoá câu chữ cho dễ hiểu hơn
+    if invalid_txt:
+        invalid_txt = invalid_txt.replace("Invalid if:", "").strip()
+        invalid_txt = invalid_txt.replace("market state thoát khỏi CHOP/TRANSITION", "nếu thị trường thoát khỏi vùng nhiễu và bắt đầu chạy rõ")
+        invalid_txt = invalid_txt.replace("Mất cấu trúc hiện tại", "nếu cấu trúc hiện tại bị phá")
+        invalid_txt = invalid_txt.replace("reversal candidate", "nguy cơ đổi hướng")
+        invalid_txt = invalid_txt.replace("breakdown risk", "nguy cơ giảm mạnh")
+    
+        # nếu đang là NO TRADE / SKIP thì nói kiểu trader hiểu hơn
+        if "NO TRADE" in str(scenario.get("base_case") or "").upper() or trade_mode == "WAIT":
+            add(lines, f"- Nếu thị trường thoát khỏi trạng thái nhiễu và có break rõ kèm follow-through, khi đó không còn nên đứng ngoài nữa")
+        else:
+            add(lines, f"- {invalid_txt}")
     else:
-        add(lines, "- Nếu mất cấu trúc gần nhất thì bỏ kịch bản")
+        # fallback theo cấu trúc/giá
+        if rec == "MUA" and k.get("M15_RANGE_LOW") is not None:
+            add(lines, f"- Nếu thủng {nf(k.get('M15_RANGE_LOW'))} hoặc mất cấu trúc tăng gần nhất thì bỏ kịch bản")
+        elif rec == "BÁN" and k.get("M15_RANGE_HIGH") is not None:
+            add(lines, f"- Nếu vượt {nf(k.get('M15_RANGE_HIGH'))} hoặc mất cấu trúc giảm gần nhất thì bỏ kịch bản")
+        else:
+            add(lines, "- Nếu thị trường đi ngược hẳn hướng đang ưu tiên thì bỏ kịch bản")
 
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
