@@ -523,6 +523,13 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if tp is not None:
             tp_atr = abs(float(tp) - entry) / a
             actions.append((f"⚠️ TP hơi ngắn: ~{tp_atr:.2f} ATR.") if tp_atr < 0.70 else f"✅ TP khoảng ~{tp_atr:.2f} ATR.")
+        if sl is not None and tp is not None:
+            try:
+                rr_now = abs(float(tp) - entry) / max(abs(entry - float(sl)), 1e-9)
+                if sl_atr < 0.70 and rr_now >= 3.0:
+                    actions.append("⚠️ RR đẹp nhưng SL khá sát → vẫn dễ bị quét trước khi đi đúng hướng")
+            except Exception:
+                pass
 
     verdict = "TRUNG TÍNH"
     if cur is not None and a > 0:
@@ -660,29 +667,6 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines = []
     lines.append(f"🧠 REVIEW LỆNH | {symbol} | {side_vn}")
     lines.append("")
-    lines.append(f"🎯 Entry: {_f(entry)}")
-    lines.append(f"🎯 TP: {_f(tp, 2, '...')} | 🛑 SL: {_f(sl, 2, '...')} | {rr_txt}")
-    lines.append("")
-    verdict_text = verdict
-    if "CHƯA RÕ" in verdict:
-        verdict_text = "Chưa rõ — cùng hướng nhưng chưa đủ xác nhận rõ"
-    
-    elif "ĐÚNG" in verdict:
-        verdict_text = "Ổn — đang đi đúng hướng chính"
-    
-    elif "SAI" in verdict:
-        verdict_text = "Không ổn — đang ngược cấu trúc"
-    
-    verdict_text = str(verdict or "").strip()
-    if "CHƯA RÕ" in verdict_text.upper():
-        if side == "SELL":
-            verdict_text = "Tạm ổn — cùng bối cảnh giảm nhưng tín hiệu SELL chưa rõ"
-        else:
-            verdict_text = "Tạm ổn — cùng bối cảnh tăng nhưng tín hiệu BUY chưa rõ"
-    elif "ĐÚNG" in verdict_text.upper():
-        verdict_text = "Ổn — đang đi cùng hướng chính"
-    elif "SAI" in verdict_text.upper() or "NGUY HIỂM" in verdict_text.upper():
-        verdict_text = "Không ổn — lệnh đang ở trạng thái rủi ro cao"
     v = str(verdict or "").upper()
     if "CHƯA RÕ" in v:
         if side == "SELL":
@@ -691,9 +675,11 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             verdict_txt = "Tạm ổn — cùng bối cảnh tăng nhưng chưa có HL xác nhận"
     elif "ĐÚNG" in v:
         verdict_txt = "Ổn — đang đi cùng hướng chính"
+    elif "SAI" in v or "NGUY HIỂM" in v:
+        verdict_txt = "Không ổn — lệnh đang ở trạng thái rủi ro cao"
     else:
-        verdict_txt = verdict
-    
+        verdict_txt = str(verdict or "").strip()
+
     lines.append(f"📌 Kết luận: {verdict_txt}")
 
     if phase369:
@@ -755,7 +741,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
         base = base.replace("NO TRADE / đứng ngoài", "ưu tiên đứng ngoài quan sát")
         if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
-            base = f"{base} trong vùng {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
+            zone_txt = f"{_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
+            if zone_txt not in base:
+                base = f"{base} trong vùng {zone_txt}"
         lines.append(f"- {base}")
     elif playbook.get("plan"):
         plan_txt = str(playbook.get("plan") or "")
@@ -783,6 +771,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         alt = alt.replace("Alt case:", "").strip()
         alt = alt.replace("break đỉnh mạnh", "vượt đỉnh mạnh")
         alt = alt.replace("breakdown risk", "nguy cơ giảm mạnh")
+        alt = alt.replace("reversal candidate", "nguy cơ đổi hướng")
     
         lines.append(f"- {alt}")
     else:
