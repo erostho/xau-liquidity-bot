@@ -3023,7 +3023,72 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if favored == "SELL":
             return f"{base} | Ưu tiên SELL"
         return f"{base} | Ưu tiên NONE"
+    def position_note_from_range(range_pos_val) -> str:
+        try:
+            rp = float(range_pos_val)
+        except Exception:
+            return "chưa xác định rõ vị trí"
+        if rp >= 0.80:
+            return "đang sát vùng cao"
+        if rp <= 0.20:
+            return "đang sát vùng thấp"
+        return "đang ở giữa biên độ"
 
+    def no_trade_reason(range_pos_val, ntz_obj: dict, state: str) -> str:
+        reasons = []
+        if ntz_obj.get("active"):
+            for r in (ntz_obj.get("reasons") or []):
+                rs = str(r).strip()
+                if rs and rs not in reasons:
+                    reasons.append(rs)
+
+        try:
+            rp = float(range_pos_val)
+            if 0.30 <= rp <= 0.70 and "mid-range" not in reasons:
+                reasons.append("giữa biên độ")
+        except Exception:
+            pass
+
+        st = str(state or "").upper()
+        if st in ("CHOP", "TRANSITION") and "trạng thái nhiễu" not in reasons:
+            reasons.append("thị trường đang nhiễu / chuyển pha")
+
+        if not reasons:
+            return "chưa có xác nhận đủ mạnh"
+
+        mapping = {
+            "mid-range": "đang ở giữa biên độ",
+            "market state nhiễu": "thị trường đang nhiễu",
+            "liquidity warning": "đang gần vùng dễ bị quét",
+            "vừa có liquidation": "vừa có cú quét mạnh",
+            "bias chưa rõ": "hướng ưu tiên chưa rõ",
+            "chưa có confirm": "chưa có xác nhận rõ",
+        }
+        pretty = [mapping.get(x, x) for x in reasons]
+        return "; ".join(pretty)
+
+    def trigger_lines(rec_text: str, key_levels: dict, range_pos_val, ntz_obj: dict) -> tuple[str, str]:
+        hi = key_levels.get("M15_RANGE_HIGH")
+        lo = key_levels.get("M15_RANGE_LOW")
+        bos = key_levels.get("M15_BOS")
+
+        buy_trigger = "Chưa có mốc BUY rõ"
+        sell_trigger = "Chưa có mốc SELL rõ"
+
+        if hi is not None:
+            buy_trigger = f"Chỉ xét BUY nếu M15 đóng trên {nf(hi)} và giữ được"
+        if lo is not None:
+            sell_trigger = f"Chỉ xét SELL nếu M15 đóng dưới {nf(lo)} với follow-through"
+
+        # nếu đang ưu tiên SELL/BÁN thì nhấn mạnh SELL trigger, BUY là trigger đảo trạng thái
+        if rec_text == "BÁN" and hi is not None and lo is not None:
+            buy_trigger = f"Nếu M15 vượt {nf(hi)} và giữ được → kịch bản SELL yếu đi, bắt đầu xét BUY"
+            sell_trigger = f"SELL mạnh hơn nếu M15 đóng dưới {nf(lo)}"
+        elif rec_text == "MUA" and hi is not None and lo is not None:
+            buy_trigger = f"BUY mạnh hơn nếu M15 đóng trên {nf(hi)}"
+            sell_trigger = f"Nếu M15 thủng {nf(lo)} với lực mạnh → kịch bản BUY yếu đi, bắt đầu xét SELL"
+
+        return buy_trigger, sell_trigger
     def grade_from_mode(mode: str, stars_val: int) -> str:
         mode = str(mode or "").upper()
         if mode == "FULL":
@@ -3073,12 +3138,17 @@ def format_signal(sig: Dict[str, Any]) -> str:
     sweep_grade_v6 = str(meta.get("sweep_grade_v6") or "NONE")
 
     verdict_quick = "Chưa đẹp để vào ngay"
+    reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
+
     if trade_mode == "FULL":
-        verdict_quick = "Có thể theo kịch bản chính nếu giá vào đúng vùng"
+        verdict_quick = "Có thể theo kịch bản chính"
     elif trade_mode == "HALF":
-        verdict_quick = "Có thể canh, nhưng nên giảm độ quyết liệt"
+        verdict_quick = "Có thể canh nhưng chưa nên quá quyết liệt"
     elif ntz.get("active"):
-        verdict_quick = "Đang là vùng dễ nhiễu, nên đứng ngoài"
+        verdict_quick = "Ưu tiên đứng ngoài"
+
+    if trade_mode == "WAIT":
+        verdict_quick = f"{verdict_quick}; {reason_text}"
 
     lines: List[str] = []
     head = f"📌 {symbol} NOW"
@@ -3136,19 +3206,24 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, "📍 Vị trí giá:")
     if last_px is not None:
         add(lines, f"- Giá hiện tại: {nf(last_px)}")
+    
     if range_lo is not None and range_hi is not None:
         add(lines, f"- Biên độ M15: {nf(range_lo)} – {nf(range_hi)}")
-    if range_pos is not None:        
+    
+    if range_pos is not None:
         pos_pct = int(round(float(range_pos) * 100))
-        pos_note = ""
-        
-        if pos_pct > 80:
-            pos_note = "→ sát vùng cao, không đẹp để SELL"
-        elif pos_pct < 20:
-            pos_note = "→ sát vùng thấp, không đẹp để BUY"
+    
+        if pos_pct >= 80:
+            pos_note = "→ sát vùng cao, không nên SELL đuổi"
+        elif pos_pct >= 60:
+            pos_note = "→ vùng cao, ưu tiên chờ tín hiệu SELL"
+        elif pos_pct >= 40:
+            pos_note = "→ giữa biên độ, dễ nhiễu, nên đứng ngoài"
+        elif pos_pct >= 20:
+            pos_note = "→ vùng thấp, ưu tiên chờ tín hiệu BUY"
         else:
-            pos_note = "→ giữa range, dễ nhiễu"
-        
+            pos_note = "→ sát vùng thấp, không nên BUY đuổi"
+    
         add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
     add(lines, "")
@@ -3183,48 +3258,41 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- {s}")
     else:
         add(lines, "- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
-
+        
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
-    
     base = str(scenario.get("base_case") or "").strip()
-    
-    if base:
-        base = base.replace("Base case:", "").strip()
-    
-        if "NO TRADE" in base.upper():
-            add(lines, "- Ưu tiên đứng ngoài quan sát, chưa có lợi thế rõ để vào lệnh")
-        else:
-            base = base.replace("hồi để SELL", "chờ hồi để canh bán")
-            base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
-    
-            if playbook.get("zone_low") and playbook.get("zone_high"):
-                base = f"{base} trong vùng {nf(playbook.get('zone_low'))} – {nf(playbook.get('zone_high'))}"
-    
-            add(lines, f"- {base}")
+
+    if "NO TRADE" in base.upper() or trade_mode == "WAIT":
+        add(lines, "- Ưu tiên đứng ngoài quan sát, chưa có lợi thế rõ để mở lệnh mới")
     else:
-        add(lines, "- Chưa có kịch bản rõ")
+        base = base.replace("Base case:", "").strip()
+        base = base.replace("hồi để SELL", "chờ hồi để canh bán")
+        base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
+        if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
+            zlo = nf(playbook.get("zone_low"))
+            zhi = nf(playbook.get("zone_high"))
+            if zlo not in base and zhi not in base:
+                base = f"{base} trong vùng {zlo} – {zhi}"
+        add(lines, f"- {base}")
 
     add(lines, "")
     add(lines, "🪄 Kịch bản phụ:")
-    if scenario.get("alt_case"):
-        add(lines, f"- {scenario.get('alt_case')}")
+    alt = str(scenario.get("alt_case") or "").strip()
+    if alt:
+        alt = alt.replace("Alt case:", "").strip()
+        alt = alt.replace("reversal candidate", "nguy cơ đổi hướng")
+        alt = alt.replace("breakdown risk", "nguy cơ giảm mạnh")
+        alt = alt.replace("break đỉnh mạnh", "vượt đỉnh mạnh")
+        add(lines, f"- {alt}")
     else:
         add(lines, "- Chưa có kịch bản phụ rõ")
 
     add(lines, "")
-    add(lines, "🧯 Điểm sai kịch bản:")    
-    hi = k.get("M15_RANGE_HIGH")
-    lo = k.get("M15_RANGE_LOW")  
-    if hi and lo:
-        add(lines, f"- Nếu M15 phá rõ {nf(hi)} và giữ được → bắt đầu xét BUY")
-        add(lines, f"- Nếu M15 thủng {nf(lo)} với lực mạnh → bắt đầu xét SELL")
-    else:
-        add(lines, "- Nếu thị trường thoát khỏi trạng thái nhiễu và có break rõ → bắt đầu trade")
-    
+    add(lines, "🧯 Điểm sai kịch bản:")
     invalid_txt = str(scenario.get("invalid_if") or "").strip()
     
-    # chuẩn hoá câu chữ cho dễ hiểu hơn
+    # chuẩn hoá câu chữ
     if invalid_txt:
         invalid_txt = invalid_txt.replace("Invalid if:", "").strip()
         invalid_txt = invalid_txt.replace("market state thoát khỏi CHOP/TRANSITION", "nếu thị trường thoát khỏi vùng nhiễu và bắt đầu chạy rõ")
@@ -3232,19 +3300,20 @@ def format_signal(sig: Dict[str, Any]) -> str:
         invalid_txt = invalid_txt.replace("reversal candidate", "nguy cơ đổi hướng")
         invalid_txt = invalid_txt.replace("breakdown risk", "nguy cơ giảm mạnh")
     
-        # nếu đang là NO TRADE / SKIP thì nói kiểu trader hiểu hơn
-        if "NO TRADE" in str(scenario.get("base_case") or "").upper() or trade_mode == "WAIT":
-            add(lines, f"- Nếu thị trường thoát khỏi trạng thái nhiễu và có break rõ kèm follow-through, khi đó không còn nên đứng ngoài nữa")
-        else:
-            add(lines, f"- {invalid_txt}")
+    # ưu tiên logic theo market nếu đang WAIT
+    if "NO TRADE" in str(scenario.get("base_case") or "").upper() or trade_mode == "WAIT":
+        add(lines, "- Nếu thị trường thoát khỏi trạng thái nhiễu và có break rõ kèm follow-through → bắt đầu xét vào lệnh")
     else:
-        # fallback theo cấu trúc/giá
-        if rec == "MUA" and k.get("M15_RANGE_LOW") is not None:
-            add(lines, f"- Nếu thủng {nf(k.get('M15_RANGE_LOW'))} hoặc mất cấu trúc tăng gần nhất thì bỏ kịch bản")
-        elif rec == "BÁN" and k.get("M15_RANGE_HIGH") is not None:
-            add(lines, f"- Nếu vượt {nf(k.get('M15_RANGE_HIGH'))} hoặc mất cấu trúc giảm gần nhất thì bỏ kịch bản")
+        if invalid_txt:
+            add(lines, f"- {invalid_txt}")
         else:
-            add(lines, "- Nếu thị trường đi ngược hẳn hướng đang ưu tiên thì bỏ kịch bản")
+            # fallback theo giá
+            if rec == "MUA" and k.get("M15_RANGE_LOW") is not None:
+                add(lines, f"- Nếu thủng {nf(k.get('M15_RANGE_LOW'))} → kịch bản BUY không còn hiệu lực")
+            elif rec == "BÁN" and k.get("M15_RANGE_HIGH") is not None:
+                add(lines, f"- Nếu vượt {nf(k.get('M15_RANGE_HIGH'))} → kịch bản SELL không còn hiệu lực")
+            else:
+                add(lines, "- Nếu thị trường đi ngược hướng ưu tiên → bỏ kịch bản")
 
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
@@ -3263,33 +3332,33 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, "")
     add(lines, "⚙️ Hành động:")
     if trade_mode == "FULL":
-        add(lines, "- Có thể vào lệnh nếu giá vào đúng vùng và có xác nhận rõ")
+        add(lines, "- Có thể mở lệnh nếu giá vào đúng vùng và có xác nhận rõ")
     elif trade_mode == "HALF":
         add(lines, "- Có thể canh nhưng không nên đuổi giá")
     else:
-        add(lines, "- Chưa nên vào lệnh")
-    
-    # thêm hành động cụ thể
-    if range_pos is not None:
-        if float(range_pos) > 0.85:
+        add(lines, "- Chưa nên mở lệnh mới")
+    try:
+        rp = float(range_pos)
+        if 0.30 <= rp <= 0.70:
+            add(lines, "- Tránh trade ở giữa biên độ")
+        elif rp > 0.80:
             add(lines, "- Không SELL đuổi ở vùng cao")
-        elif float(range_pos) < 0.15:
+        elif rp < 0.20:
             add(lines, "- Không BUY đuổi ở vùng thấp")
-    
-    if k.get("M15_BOS"):
-        add(lines, f"- Chờ M15 đóng qua {nf(k.get('M15_BOS'))} để xác nhận")
-    if entry is not None or sl is not None or tp1 is not None:
-        add(lines, f"- Entry: {nf(entry)} | SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
+    except Exception:
+        pass
+    add(lines, f"- BUY trigger: {buy_trigger}")
+    add(lines, f"- SELL trigger: {sell_trigger}")
 
     if q_lines:
         add(lines, "")
         add(lines, "🧪 Chi tiết bổ sung:")
         for s in q_lines[:5]:
             add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
-
+            
     if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
         add(lines, "")
-        add(lines, "🧩 V4 / V5 nền:")
+        add(lines, "🧩 Toàn Cảnh Thị Trường:")
         if session_v4.get("session_tag"):
             add(lines, f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
         if htf_pressure_v4.get("state"):
