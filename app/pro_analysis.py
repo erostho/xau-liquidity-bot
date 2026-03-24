@@ -3262,7 +3262,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         pos_pct = int(round(float(range_pos) * 100))
     
         if pos_pct >= 80:
-            pos_note = "→ sát vùng cao, không nên BUY đuổi"
+            pos_note = "→ sát vùng cao, không nên BUY đuổi, chờ phản ứng rồi quyết định theo xu hướng"
         elif pos_pct >= 60:
             pos_note = "→ vùng cao, ưu tiên chờ tín hiệu SELL"
         elif pos_pct >= 40:
@@ -3270,7 +3270,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         elif pos_pct >= 20:
             pos_note = "→ vùng thấp, ưu tiên chờ tín hiệu BUY"
         else:
-            pos_note = "→ sát vùng thấp, không nên SELL đuổi"
+            pos_note = "→ sát vùng thấp, không nên SELL đuổi, chờ phản ứng rồi quyết định theo xu hướng"
     
         add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
@@ -3390,9 +3390,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if 0.30 <= rp <= 0.70:
             add(lines, "- Tránh trade ở giữa biên độ")
         elif rp > 0.80:
-            add(lines, "- Không SELL đuổi ở vùng cao")
+            add(lines, "- Không BUY đuổi ở vùng cao, ưu tiên chờ điều chỉnh theo xu hướng")
         elif rp < 0.20:
-            add(lines, "- Không BUY đuổi ở vùng thấp")
+            add(lines, "- Không SELL đuổi ở vùng thấp, ưu tiên chờ phản ứng hồi theo xu hướng")
     except Exception:
         pass
     add(lines, "")
