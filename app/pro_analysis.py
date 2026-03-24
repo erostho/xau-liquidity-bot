@@ -1065,6 +1065,8 @@ def _inject_meta_structure_and_levels(base: dict, m15, m30, h1, h4):
         m30 = m30 or []
         h1  = h1  or []
         h4  = h4  or []
+        base["last_price"] = float(last_close_15)
+        base["current_price"] = float(last_close_15)
         return base
     base["meta"] = meta
 
@@ -3006,24 +3008,47 @@ def format_signal(sig: Dict[str, Any]) -> str:
         }
         return mapping.get(label, label or "Chưa rõ")
 
-    def state_text(state: str, narrative_obj: dict) -> str:
+    def state_text(state: str, narrative_obj: dict, struct: dict, htf_pressure_v4: dict) -> str:
         state = str(state or "").upper()
         summary = str((narrative_obj or {}).get("summary") or "").strip()
+    
+        # ===== Lấy structure =====
+        m15_struct = str(struct.get("M15") or "").upper()
+        h1_struct = str(struct.get("H1") or "").upper()
+        htf_state = str(htf_pressure_v4.get("state") or "").upper()
+    
+        # ===== Xác định hướng chính =====
+        is_bear = (
+            "BEARISH" in htf_state
+            or m15_struct in ("LL-LH", "DOWN")
+            or h1_struct in ("LL-LH", "DOWN")
+        )
+    
+        is_bull = (
+            "BULLISH" in htf_state
+            or m15_struct in ("HH-HL", "UP")
+            or h1_struct in ("HH-HL", "UP")
+        )
+    
+        # ===== Ưu tiên structure trước =====
+        if is_bear and not is_bull:
+            return "Đang hồi kỹ thuật trong xu hướng giảm; ưu tiên sell-the-rally, tránh sell đuổi."
+    
+        if is_bull and not is_bear:
+            return "Đang điều chỉnh trong xu hướng tăng; ưu tiên buy-the-dip, tránh buy đuổi."
+    
+        # ===== Nếu không rõ (chuyển pha / nhiễu) =====
         mapping = {
-            "TREND_DOWN": "Xu hướng giảm đang chiếm ưu thế",
-            "PULLBACK_DOWN": "Đang hồi trong xu hướng giảm",
-            "BOUNCE_TO_SELL": "Đang hồi lên trong bối cảnh giảm; ưu tiên chờ hồi yếu để canh bán",
-            "TREND_UP": "Xu hướng tăng đang chiếm ưu thế",
-            "PULLBACK_UP": "Đang điều chỉnh trong xu hướng tăng",
-            "DIP_TO_BUY": "Đang điều chỉnh trong bối cảnh tăng; ưu tiên chờ giữ đáy để canh mua",
             "CHOP": "Thị trường nhiễu, dễ quét hai đầu",
             "TRANSITION": "Thị trường đang chuyển trạng thái, chưa nên vội vào lệnh",
             "POST_LIQUIDATION_BOUNCE": "Sau cú quét mạnh, thị trường dễ hồi kỹ thuật",
             "POST_SHORT_COVER": "Sau cú ép thoát lệnh bán, thị trường dễ hồi mạnh",
-            "EXHAUSTION_DOWN": "Đà giảm đang có dấu hiệu yếu dần",
-            "EXHAUSTION_UP": "Đà tăng đang có dấu hiệu yếu dần",
+            "EXHAUSTION_DOWN": "Đà giảm có dấu hiệu yếu dần",
+            "EXHAUSTION_UP": "Đà tăng có dấu hiệu yếu dần",
         }
-        return summary or mapping.get(state, state or "Chưa rõ")
+    
+        # fallback cuối
+        return summary or mapping.get(state, "Thị trường chưa rõ hướng ưu tiên")
 
     def flow_text(flow_obj: dict) -> str:
         st = str((flow_obj or {}).get("state") or "").upper()
@@ -3053,49 +3078,36 @@ def format_signal(sig: Dict[str, Any]) -> str:
         return "đang ở giữa biên độ"
 
     def no_trade_reason(range_pos_val, ntz_obj: dict, state: str) -> str:
-        tags = set()
+        tags = []
     
-        # từ no-trade zone
         for r in (ntz_obj.get("reasons") or []):
             rs = str(r).lower()
-            if "mid" in rs:
-                tags.add("mid")
-            elif "nhiễu" in rs or "chop" in rs or "transition" in rs:
-                tags.add("chop")
-            elif "confirm" in rs:
-                tags.add("no_confirm")
-            else:
-                tags.add(rs)
+            if "mid" in rs and "mid" not in tags:
+                tags.append("mid")
+            elif ("nhiễu" in rs or "chop" in rs or "transition" in rs) and "chop" not in tags:
+                tags.append("chop")
+            elif "confirm" in rs and "confirm" not in tags:
+                tags.append("confirm")
     
-        # từ state
         st = str(state or "").upper()
-        if st in ("CHOP", "TRANSITION"):
-            tags.add("chop")
+        if st in ("CHOP", "TRANSITION") and "chop" not in tags:
+            tags.append("chop")
     
-        # từ range
         try:
             rp = float(range_pos_val)
-            if 0.3 <= rp <= 0.7:
-                tags.add("mid")
-        except:
+            if 0.30 <= rp <= 0.70 and "mid" not in tags:
+                tags.append("mid")
+        except Exception:
             pass
     
-        # mapping ra câu chuẩn
         mapping = {
             "chop": "thị trường đang nhiễu",
             "mid": "đang ở giữa biên độ",
-            "no_confirm": "chưa có xác nhận rõ",
+            "confirm": "chưa có xác nhận rõ",
         }
     
-        out = []
-        for t in ["chop", "mid", "no_confirm"]:
-            if t in tags:
-                out.append(mapping[t])
-    
-        if not out:
-            return "chưa có xác nhận đủ mạnh"
-    
-        return "; ".join(out)
+        reasons = [mapping[t] for t in tags if t in mapping]
+        return "; ".join(reasons) if reasons else "chưa có xác nhận đủ mạnh"
 
     def trigger_lines_v2(rec_text: str, key_levels: dict, playbook_obj: dict):
         hi = key_levels.get("M15_RANGE_HIGH")
@@ -3166,7 +3178,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     range_lo = k.get("M15_RANGE_LOW")
     range_hi = k.get("M15_RANGE_HIGH")
-    last_px = k.get("M15_LAST")
     range_pos = playbook.get("range_pos")
     if range_pos is None and range_lo is not None and range_hi is not None and last_px is not None:
         lo_v = sf(range_lo)
@@ -3202,37 +3213,32 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if data_source:
         add(lines, f"📡 Dữ liệu: {data_source}")
 
-    add(lines, "")
-    price_now = nf(last_px if last_px is not None else entry)
-    reason_skip = ""
-    if trade_mode == "WAIT":
-        if range_pos is not None:
-            if float(range_pos) > 0.8:
-                reason_skip = "đang sát vùng cao của biên độ, không nên SELL đuổi"
-            elif float(range_pos) < 0.2:
-                reason_skip = "đang sát vùng thấp, không nên BUY đuổi"
-            else:
-                reason_skip = "đang giữa biên độ, dễ nhiễu"
-        else:
-            reason_skip = "chưa đủ xác nhận rõ"
-    
-    verdict_full = verdict_quick
-    if reason_skip:
-        verdict_full += f"; {reason_skip}"
-    
-    price_now = nf(last_px if last_px is not None else entry)
+    add(lines, "")   
+    # ===== Giá hiện tại: fallback nhiều lớp =====
+    last_px = k.get("M15_LAST")
+    if last_px is None:
+        last_px = sig.get("last_price")
+    if last_px is None:
+        last_px = sig.get("current_price")
+    if last_px is None:
+        last_px = sig.get("entry")
+    price_now = nf(last_px)
+    # ===== Kết luận nhanh: lý do ngắn gọn, không lặp =====
     reason = ""
     if range_pos is not None:
-        rp = float(range_pos)
-        if rp > 0.8:
-            reason = "đang sát vùng cao, không nên SELL đuổi"
-        elif rp < 0.2:
-            reason = "đang sát vùng thấp, không nên BUY đuổi"
-        else:
-            reason = "đang ở giữa biên độ, dễ nhiễu"
+        try:
+            rp = float(range_pos)
+            if rp > 0.8:
+                reason = "đang sát vùng cao, không nên BUY đuổi"
+            elif rp < 0.2:
+                reason = "đang sát vùng thấp, không nên SELL đuổi"
+            else:
+                reason = "đang ở giữa biên độ, dễ nhiễu"
+        except Exception:
+            reason = ""
     
     verdict_full = verdict_quick
-    if reason:
+    if reason and reason not in verdict_quick:
         verdict_full += f"; {reason}"
     
     add(lines, f"💵 Giá hiện tại: {price_now}")
@@ -3240,7 +3246,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"🧭 Hướng ưu tiên: {rec}")
     if phase:
         add(lines, f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase_text(phase)}")
-    add(lines, f"🌡 Trạng thái: {state_text(meta.get('market_state_v2'), narrative)}")
+    add(lines, f"🌡 Trạng thái: {state_text(meta.get('market_state_v2'), narrative, struct, htf_pressure_v4)}")
     if flow:
         add(lines, f"💰 Dòng tiền: {flow_text(flow)}")
 
@@ -3256,7 +3262,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         pos_pct = int(round(float(range_pos) * 100))
     
         if pos_pct >= 80:
-            pos_note = "→ sát vùng cao, không nên SELL đuổi"
+            pos_note = "→ sát vùng cao, không nên BUY đuổi"
         elif pos_pct >= 60:
             pos_note = "→ vùng cao, ưu tiên chờ tín hiệu SELL"
         elif pos_pct >= 40:
@@ -3264,7 +3270,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         elif pos_pct >= 20:
             pos_note = "→ vùng thấp, ưu tiên chờ tín hiệu BUY"
         else:
-            pos_note = "→ sát vùng thấp, không nên BUY đuổi"
+            pos_note = "→ sát vùng thấp, không nên SELL đuổi"
     
         add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
