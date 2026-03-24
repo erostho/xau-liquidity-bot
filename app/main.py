@@ -1,16 +1,13 @@
+# app/main.py
 from __future__ import annotations
-
-import asyncio
 import json
-import logging
 import os
-import re
 import time
+import asyncio
+import logging
 from typing import Any, Dict, List, Optional
-
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
-
 from app.data_source import get_candles, ingest_mt5_candles
 from app.pro_analysis import analyze_pro, format_signal
 
@@ -25,31 +22,29 @@ LAST_CRON_TS = 0
 MIN_CRON_GAP_SEC = int(os.getenv("MIN_CRON_GAP_SEC", "25"))
 
 # Default symbols (override by env SYMBOLS="XAU/USD,BTC/USD")
-DEFAULT_SYMBOLS = [
-    s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD").split(",") if s.strip()
-]
+DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD").split(",") if s.strip()]
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # default chat for cron
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", TELEGRAM_CHAT_ID)
 
-REGIME_ALERT_ENABLED = 1
-REGIME_CHOP_THRESHOLD = 6.8
-REGIME_ALERT_COOLDOWN_MIN = 120
+REGIME_ALERT_ENABLED=1
+REGIME_CHOP_THRESHOLD=6.8
+REGIME_ALERT_COOLDOWN_MIN=120
 REGIME_ALERT_STATE_PATH = os.getenv("REGIME_ALERT_STATE_PATH", "regime_alert_state.json")
 
+
 CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+# Send both symbols always by default (you can override)
 MIN_STARS = int(os.getenv("MIN_STARS", "1"))
 
 # Telegram hard limit is 4096; keep safe chunk size
 TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
 
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
 def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
     token = TELEGRAM_TOKEN
     cid = chat_id or TELEGRAM_CHAT_ID
@@ -69,17 +64,16 @@ def _send_telegram(text: str, chat_id: Optional[str] = None) -> None:
         logger.info("[TG] send status=%s body=%s", resp.status_code, resp.text)
     except Exception as e:
         logger.exception("[TG] send failed: %s", e)
-
-
-def _send_long_telegram(text: str, chat_id: str, chunk_size: int = TG_CHUNK, parse_mode=None):
+        
+def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_mode=None):
     text = str(text or "")
     if not text.strip():
         return
 
-    parts: List[str] = []
+    parts = []
     buf = ""
 
-    for line in text.splitlines(True):
+    for line in text.splitlines(True):  # giữ newline
         if len(buf) + len(line) <= chunk_size:
             buf += line
         else:
@@ -88,6 +82,7 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = TG_CHUNK, par
             if len(line) <= chunk_size:
                 buf = line
             else:
+                # line quá dài thì cắt cứng
                 for i in range(0, len(line), chunk_size):
                     parts.append(line[i:i + chunk_size])
                 buf = ""
@@ -100,25 +95,28 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = TG_CHUNK, par
         header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
         _send_telegram(header + part, chat_id=chat_id)
 
-
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
 
     if "xag" in t or "silver" in t:
         return "XAG/USD"
+
     if "xau" in t or "gold" in t:
         return "XAU/USD"
+
     if "btc" in t:
         return "BTC/USD"
 
     return DEFAULT_SYMBOLS[0] if DEFAULT_SYMBOLS else "XAU/USD"
 
 
+import re
+
 # 1) Chuẩn hoá symbol người dùng gõ -> symbol hệ thống dùng để get_candles()
 def normalize_symbol(user_sym: str) -> str:
     s = (user_sym or "").strip().upper()
     s = s.replace("-", "/").replace("_", "/").replace(" ", "")
-
+    # cho phép: BTC, BTCUSD, BTC/USD, BTCUSDT...
     if s in ("BTC", "BTCUSD", "BTC/USD", "BTCUSDT", "BTC/USDT"):
         return "BTC/USD"
     if s in ("XAU", "XAUUSD", "XAU/USD"):
@@ -126,6 +124,7 @@ def normalize_symbol(user_sym: str) -> str:
     if s in ("XAG", "XAGUSD", "XAG/USD"):
         return "XAG/USD"
 
+    # fallback: nếu user gõ kiểu BTC/USDT -> BTC/USD (mày đang dùng USD)
     if s.endswith("/USDT"):
         s = s.replace("/USDT", "/USD")
     if s.endswith("USDT"):
@@ -144,9 +143,8 @@ _MANUAL_RE = re.compile(
     r"(?:\s+(?:TP|TP1|TARGET)\s*[:=\s]+(?P<tp>\d+(\.\d+)?))?"
     r"(?:\s+(?:SL|STOP)\s*[:=\s]+(?P<sl>\d+(\.\d+)?))?"
     r"\s*$",
-    re.IGNORECASE,
+    re.IGNORECASE
 )
-
 
 def parse_manual_trade(text: str):
     m = _MANUAL_RE.match((text or "").strip())
@@ -173,14 +171,20 @@ def parse_manual_trade(text: str):
         "sl": sl,
     }
 
-
 def _as_list_from_get_candles(res):
+    """
+    get_candles() của mày có lúc trả:
+      - list
+      - (list, meta)
+    -> normalize về list
+    """
     if isinstance(res, tuple) and len(res) >= 1:
         return res[0] or []
     return res or []
 
 
 def _as_list_and_source_from_get_candles(res):
+    """Unwrap return of get_candles(): (candles, source) or candles."""
     source = None
     candles = res
     if isinstance(res, tuple) and len(res) == 2:
@@ -192,7 +196,6 @@ def _as_list_and_source_from_get_candles(res):
     except Exception:
         return [], source
 
-
 def _cget(c, k, default=0.0):
     if isinstance(c, dict):
         v = c.get(k, default)
@@ -203,14 +206,17 @@ def _cget(c, k, default=0.0):
     except Exception:
         return float(default)
 
-
 def _m15_closed(candles):
+    # bỏ nến đang chạy (nếu có)
     if not candles:
         return []
     return candles[:-1] if len(candles) > 1 else candles
 
-
 def _atr14_simple(candles):
+    """
+    ATR(14) đơn giản (Wilder) để review lệnh.
+    candles: list dict/object OHLC (đã đóng là tốt nhất)
+    """
     cs = candles or []
     if len(cs) < 16:
         return None
@@ -218,7 +224,7 @@ def _atr14_simple(candles):
     for i in range(1, len(cs)):
         h = _cget(cs[i], "high")
         l = _cget(cs[i], "low")
-        pc = _cget(cs[i - 1], "close")
+        pc = _cget(cs[i-1], "close")
         tr = max(h - l, abs(h - pc), abs(l - pc))
         trs.append(tr)
     if len(trs) < 14:
@@ -227,7 +233,6 @@ def _atr14_simple(candles):
     for j in range(14, len(trs)):
         atr = (atr * 13.0 + trs[j]) / 14.0
     return atr
-
 
 def _range30_info_m15(m15):
     closed = _m15_closed(m15)
@@ -238,21 +243,20 @@ def _range30_info_m15(m15):
     hi = max(_cget(x, "high") for x in use)
     cur = _cget(use[-1], "close")
     rng = max(1e-9, hi - lo)
-    pos = (cur - lo) / rng
+    pos = (cur - lo) / rng  # 0..1
     return {"lo": lo, "hi": hi, "cur": cur, "pos": pos, "use": use}
 
-
 def _hl_lh_gate(m15, atr_val):
+    """
+    “CHỜ CẤU TRÚC” nghĩa là gì? -> trả text rõ:
+    - BUY: M15 tạo Higher-Low (HL) + sau đó đóng vượt đỉnh gần (break high gần)
+    - SELL: M15 tạo Lower-High (LH) + sau đó đóng thủng đáy gần (break low gần)
+    """
     closed = _m15_closed(m15)
     if len(closed) < 22:
-        return {
-            "hl": False,
-            "lh": False,
-            "break_up": False,
-            "break_dn": False,
-            "txt": "Chưa đủ dữ liệu M15 để xác nhận cấu trúc.",
-        }
+        return {"hl": False, "lh": False, "break_up": False, "break_dn": False, "txt": "Chưa đủ dữ liệu M15 để xác nhận cấu trúc."}
 
+    # cushion theo ATR để tránh nhiễu
     a = float(atr_val or 0.0)
     cushion = max(1e-9, 0.12 * a) if a > 0 else 0.0
 
@@ -267,6 +271,7 @@ def _hl_lh_gate(m15, atr_val):
     high_prev5 = max(_cget(x, "high") for x in prev5)
     lh = high_last5 < (high_prev5 - cushion)
 
+    # “break” mốc gần: dùng high/low của 10 nến trước đó (không tính 1-2 nến cuối)
     ref = closed[-12:-2]
     ref_hi = max(_cget(x, "high") for x in ref)
     ref_lo = min(_cget(x, "low") for x in ref)
@@ -280,16 +285,7 @@ def _hl_lh_gate(m15, atr_val):
         f"- BUY chỉ mạnh khi: HL=True và M15 đóng > đỉnh gần ({ref_hi:.2f}).\n"
         f"- SELL chỉ mạnh khi: LH=True và M15 đóng < đáy gần ({ref_lo:.2f})."
     )
-    return {
-        "hl": hl,
-        "lh": lh,
-        "break_up": break_up,
-        "break_dn": break_dn,
-        "ref_hi": ref_hi,
-        "ref_lo": ref_lo,
-        "txt": txt,
-    }
-
+    return {"hl": hl, "lh": lh, "break_up": break_up, "break_dn": break_dn, "ref_hi": ref_hi, "ref_lo": ref_lo, "txt": txt}
 
 def _trade_management_5_10_15(
     side: str,
@@ -316,15 +312,17 @@ def _trade_management_5_10_15(
             "label": "Validation",
             "lines": [
                 "Chưa đủ dữ liệu giá hiện tại / ATR để tính 5-10-15.",
-                "Tạm coi đang ở pha kiểm tra ban đầu, ưu tiên giữ nhỏ và không add.",
+                "Tạm coi đang ở pha kiểm tra ban đầu, ưu tiên giữ nhỏ và không add."
             ],
         }
 
-    move = (float(cur) - float(entry)) if side == "BUY" else (float(entry) - float(cur))
+    move = (float(cur) - float(entry)) if side == "BUY" else (float(entry) - float(cur)
+)
     r_mult = move / max(a, 1e-9)
 
     lines = []
 
+    # ===== Stage 5: Validation =====
     if r_mult < 0.8:
         lines.append("5: Lệnh còn ở pha kiểm tra → chỉ giữ ngắn hạn, chưa add.")
         if volq.get("state") == "LOW":
@@ -335,6 +333,7 @@ def _trade_management_5_10_15(
             lines.append("Có bullish divergence chống SELL → tránh gồng.")
         return {"stage": "5", "label": "Validation", "lines": lines}
 
+    # ===== Stage 10: Expansion =====
     if r_mult < 1.2:
         lines.append("10: Lệnh bắt đầu có lợi thế → cân nhắc dời SL về BE.")
         if side == "BUY":
@@ -349,6 +348,7 @@ def _trade_management_5_10_15(
                 lines.append("SELL chưa có break_dn rõ → vẫn không add.")
         return {"stage": "10", "label": "Expansion", "lines": lines}
 
+    # ===== Stage 15: Harvest / Continuation =====
     lines.append("15: Lệnh đã chạy đủ xa → ưu tiên bảo vệ lợi nhuận.")
     lines.append("Nên trailing theo high/low 3 nến M15 hoặc chốt từng phần.")
     if tp is not None:
@@ -358,7 +358,6 @@ def _trade_management_5_10_15(
     if cpat.get("rejection") in ("UPPER", "LOWER"):
         lines.append("Có rejection candle gần đây → cân nhắc harvest bớt vị thế.")
     return {"stage": "15", "label": "Harvest", "lines": lines}
-
 
 def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float, tp: float | None, sl: float | None) -> str:
     symbol = str(symbol or "").strip().upper()
@@ -405,32 +404,18 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         sig = analyze_pro(symbol, m15, m30, h1, h4)
         if not isinstance(sig, dict):
             sig = {
-                "symbol": symbol,
-                "tf": "M30",
-                "session": "",
-                "recommendation": "CHỜ",
-                "stars": 1,
-                "trade_mode": "MANUAL",
-                "meta": {},
+                "symbol": symbol, "tf": "M30", "session": "", "recommendation": "CHỜ",
+                "stars": 1, "trade_mode": "MANUAL", "meta": {},
                 "context_lines": ["Hệ phân tích chưa trả đủ signal → fallback review."],
-                "liquidity_lines": [],
-                "quality_lines": [],
-                "notes": [],
+                "liquidity_lines": [], "quality_lines": [], "notes": [],
             }
     except Exception as e:
         logger.exception("analyze_pro failed for %s: %s", symbol, e)
         sig = {
-            "symbol": symbol,
-            "tf": "M30",
-            "session": "",
-            "recommendation": "CHỜ",
-            "stars": 1,
-            "trade_mode": "MANUAL",
-            "meta": {},
+            "symbol": symbol, "tf": "M30", "session": "", "recommendation": "CHỜ",
+            "stars": 1, "trade_mode": "MANUAL", "meta": {},
             "context_lines": [f"Hệ phân tích lỗi → fallback review ({e})."],
-            "liquidity_lines": [],
-            "quality_lines": [],
-            "notes": [],
+            "liquidity_lines": [], "quality_lines": [], "notes": [],
         }
 
     try:
@@ -498,13 +483,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     try:
         gate = _hl_lh_gate(m15, atr_val) or {}
     except Exception:
-        gate = {
-            "txt": "Không đọc được gate cấu trúc.",
-            "hl": False,
-            "lh": False,
-            "break_up": False,
-            "break_dn": False,
-        }
+        gate = {"txt": "Không đọc được gate cấu trúc.", "hl": False, "lh": False, "break_up": False, "break_dn": False}
 
     actions = []
     vol_state = str((volq or {}).get("state") or "").upper()
@@ -540,18 +519,10 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     if a > 0:
         if sl is not None:
             sl_atr = abs(entry - float(sl)) / a
-            actions.append(
-                (f"⚠️ SL hơi sát: ~{sl_atr:.2f} ATR → dễ dính quét.")
-                if sl_atr < 0.70
-                else f"✅ SL khoảng ~{sl_atr:.2f} ATR → tạm ổn."
-            )
+            actions.append((f"⚠️ SL hơi sát: ~{sl_atr:.2f} ATR → dễ dính quét.") if sl_atr < 0.70 else f"✅ SL khoảng ~{sl_atr:.2f} ATR → tạm ổn.")
         if tp is not None:
             tp_atr = abs(float(tp) - entry) / a
-            actions.append(
-                (f"⚠️ TP hơi ngắn: ~{tp_atr:.2f} ATR.")
-                if tp_atr < 0.70
-                else f"✅ TP khoảng ~{tp_atr:.2f} ATR."
-            )
+            actions.append((f"⚠️ TP hơi ngắn: ~{tp_atr:.2f} ATR.") if tp_atr < 0.70 else f"✅ TP khoảng ~{tp_atr:.2f} ATR.")
 
     verdict = "TRUNG TÍNH"
     if cur is not None and a > 0:
@@ -604,9 +575,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append(f"🎯 Entry: {_f(entry)}")
     lines.append(f"🎯 TP: {_f(tp, 2, '...')} | 🛑 SL: {_f(sl, 2, '...')} | {rr_txt}")
     if phase369:
-        lines.append(
-            f"🧭 Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')} | {phase369.get('reason') or phase369.get('note') or ''}".rstrip(" |")
-        )
+        lines.append(f"🧭 Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')} | {phase369.get('reason') or phase369.get('note') or ''}".rstrip(" |"))
     if playbook.get("plan"):
         plan = f"🗺 Plan: {playbook.get('plan')}"
         if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
@@ -625,21 +594,10 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append(f"🌡 State: {market_state_v2}")
     if isinstance(narrative_v3, dict) and narrative_v3.get("headline"):
         lines.append(f"🧠 Narrative: {narrative_v3.get('headline')} | {narrative_v3.get('summary', '')}".rstrip(" |"))
-    gap_lines = []
-    for s in (ctx or []):
-        ss = str(s).lower()
-        if "gap" in ss or "mở cửa" in ss or "biên độ đầu phiên" in ss:
-            gap_lines.append(str(s))
-    if gap_lines:
-        lines.append("🕳 GAP:")
-        for s in gap_lines[:3]:
-            lines.append(f"- {s}")
     if isinstance(liquidation, dict) and liquidation.get("ok"):
-        lines.append(
-            f"⚠️ Liquidation: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR"
-        )
+        lines.append(f"⚠️ Liquidation: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR")
     if isinstance(no_trade_zone, dict) and no_trade_zone.get("active"):
-        reasons = "; ".join(str(x) for x in (no_trade_zone.get("reasons") or []) if x)
+        reasons = '; '.join(str(x) for x in (no_trade_zone.get('reasons') or []) if x)
         lines.append(f"⛔ No-trade zone: {reasons or 'active'}")
     if a > 0:
         lines.append(f"📐 ATR(14) M15: {_f(a)}")
@@ -665,9 +623,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append("🏗 Structure:")
-    lines.append(
-        f"- HL={'✅' if gate.get('hl') else '❌'} | LH={'✅' if gate.get('lh') else '❌'} | BreakUp={'✅' if gate.get('break_up') else '❌'} | BreakDn={'✅' if gate.get('break_dn') else '❌'}"
-    )
+    lines.append(f"- HL={'✅' if gate.get('hl') else '❌'} | LH={'✅' if gate.get('lh') else '❌'} | BreakUp={'✅' if gate.get('break_up') else '❌'} | BreakDn={'✅' if gate.get('break_dn') else '❌'}")
     lines.append(f"- {gate.get('txt') or 'Chưa đọc được gate cấu trúc.'}")
 
     lines.append("")
@@ -685,7 +641,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append("")
     lines.append("🪜 Quản trị 5-10-15:")
     lines.append(f"- Stage: {mgmt.get('stage', 'n/a')} | {mgmt.get('label', 'n/a')}")
-    for s in (mgmt.get("lines", []) or [])[:4]:
+    for s in (mgmt.get('lines', []) or [])[:4]:
         lines.append(f"- {s}")
 
     if a > 0:
@@ -701,29 +657,27 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append("")
         lines.append("🧪 V4 Modules:")
         if session_v4.get("session_tag"):
-            lines.append(
-                f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}"
-            )
+            lines.append(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
         if htf_pressure_v4.get("state"):
-            lines.append(
-                f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}"
-            )
+            lines.append(f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
         if close_confirm_v4.get("strength") not in (None, "N/A"):
-            lines.append(
-                f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}"
-            )
+            lines.append(f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}")
         if macro_v4.get("headline"):
             lines.append(f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
         if playbook_v4.get("quality"):
             trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-            lines.append(
-                f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else "")
-            )
+            lines.append(f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
 
     return "\n".join(lines)
 
-
+#def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
+    # M15, M30, H1
+    #m15, _ = get_candles(symbol, "15min", limit)
+    #m30, _ = get_candles(symbol, "30min", limit)
+    #h1, _ = get_candles(symbol, "1h", limit)
+    #return {"m15": m15, "m30": m30, "h1": h1}
 def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, Any]:
+    # M15, M30, H1, H4 (H1+H4 confluence for Bias)
     sym = normalize_symbol(symbol)
     m15, src15 = _as_list_and_source_from_get_candles(get_candles(sym, "15min", limit=220))
     m30, src30 = _as_list_and_source_from_get_candles(get_candles(sym, "30min", limit=220))
@@ -731,21 +685,26 @@ def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, Any]:
     h4, src4h = _as_list_and_source_from_get_candles(get_candles(sym, "4h", limit=220))
     return {"m15": m15, "m30": m30, "h1": h1, "h4": h4, "data_source": (src30 or src15 or src1h or src4h)}
 
-
 def _force_send(sig: dict) -> bool:
     ctx = " | ".join(sig.get("context_lines", []) or [])
     notes = " | ".join(sig.get("notes", []) or [])
 
+    # Liquidity warning
     if "Liquidity WARNING" in ctx:
         return True
+
+    # Post-sweep state
     if "POST-SWEEP" in ctx or "POST-SWEEP" in notes:
         return True
-    return False
 
+    return False
+# =========================
+# REGIME ALERT (CHOP / STOP-HUNT) - independent of stars
+# =========================
 
 REGIME_ALERT_STATE_PATH = os.getenv("REGIME_ALERT_STATE_PATH", "regime_alert_state.json")
-REGIME_ALERT_COOLDOWN_MIN = int(os.getenv("REGIME_ALERT_COOLDOWN_MIN", "120"))
-REGIME_CHOP_THRESHOLD = float(os.getenv("REGIME_CHOP_THRESHOLD", "6.8"))
+REGIME_ALERT_COOLDOWN_MIN = int(os.getenv("REGIME_ALERT_COOLDOWN_MIN", "120"))  # 2h
+REGIME_CHOP_THRESHOLD = float(os.getenv("REGIME_CHOP_THRESHOLD", "6.8"))        # 0..10
 REGIME_ALERT_ENABLED = os.getenv("REGIME_ALERT_ENABLED", "1").strip() != "0"
 
 
@@ -770,25 +729,21 @@ def _wick_stats(o: float, h: float, l: float, c: float):
     lower = min(o, c) - l
     rng = max(h - l, 1e-9)
     wick_total = max(upper + lower, 0.0)
-    wick_body = wick_total / max(body, 1e-9)
-    wick_rng = wick_total / rng
+    wick_body = wick_total / max(body, 1e-9)   # wick/body (rất lớn => nhiễu)
+    wick_rng = wick_total / rng                # wick/range (0.6+ => wick chiếm ưu thế)
     return wick_body, wick_rng
 
 
 def _avg_wickiness(candles, bars: int):
-    cs = _m15_closed(candles)
+    cs = _m15_closed(candles)  # bỏ nến đang chạy (nếu có)
     if not cs or len(cs) < bars:
         return None
     w = cs[-bars:]
     wb, wr = [], []
     for x in w:
-        o = _cget(x, "open")
-        h = _cget(x, "high")
-        l = _cget(x, "low")
-        c = _cget(x, "close")
+        o = _cget(x, "open"); h = _cget(x, "high"); l = _cget(x, "low"); c = _cget(x, "close")
         a, b = _wick_stats(o, h, l, c)
-        wb.append(a)
-        wr.append(b)
+        wb.append(a); wr.append(b)
     return (sum(wb) / len(wb), sum(wr) / len(wr))
 
 
@@ -801,7 +756,7 @@ def _netmove_pct(candles, bars: int):
     hi = max(_cget(x, "high") for x in w)
     lo = min(_cget(x, "low") for x in w)
     rng = max(hi - lo, 1e-9)
-    return net / rng
+    return net / rng  # càng nhỏ => đi nhiều nhưng không tiến => chop
 
 
 def _count_false_breaks(candles, lookback: int, level_lookback: int, eps: float = 0.0):
@@ -818,12 +773,15 @@ def _count_false_breaks(candles, lookback: int, level_lookback: int, eps: float 
         hi_lvl = max(_cget(x, "high") for x in window)
         lo_lvl = min(_cget(x, "low") for x in window)
 
+        o = _cget(cs[i], "open")
         h = _cget(cs[i], "high")
         l = _cget(cs[i], "low")
         c = _cget(cs[i], "close")
 
+        # break high rồi đóng lại dưới level => false break up
         if h > hi_lvl + eps and c < hi_lvl:
             fb += 1
+        # break low rồi đóng lại trên level => false break down
         if l < lo_lvl - eps and c > lo_lvl:
             fb += 1
 
@@ -831,14 +789,18 @@ def _count_false_breaks(candles, lookback: int, level_lookback: int, eps: float 
 
 
 def score_chop_regime(m15, h1, h2=None):
+    """
+    Score 0..10: càng cao => càng giống chop/stop-hunt.
+    Dùng dữ liệu ~2-3h đầu phiên cũng bắt được.
+    """
     details = {}
 
     fb15 = _count_false_breaks(m15, lookback=24, level_lookback=48)
-    fb1h = _count_false_breaks(h1, lookback=12, level_lookback=36)
+    fb1h = _count_false_breaks(h1,  lookback=12, level_lookback=36)
     details["false_breaks_15m"] = fb15
     details["false_breaks_1h"] = fb1h
 
-    w15 = _avg_wickiness(m15, bars=12)
+    w15 = _avg_wickiness(m15, bars=12)  # ~3h
     if w15:
         wick_body, wick_rng = w15
     else:
@@ -847,7 +809,7 @@ def score_chop_regime(m15, h1, h2=None):
     details["wick_range_avg_15m"] = wick_rng
 
     nm15 = _netmove_pct(m15, bars=12)
-    nm1h = _netmove_pct(h1, bars=6)
+    nm1h = _netmove_pct(h1,  bars=6)
     details["netmove_pct_15m"] = nm15
     details["netmove_pct_1h"] = nm1h
 
@@ -861,28 +823,26 @@ def score_chop_regime(m15, h1, h2=None):
     details["netmove_pct_2h"] = nm2h
 
     score = 0.0
-    score += min(fb15, 6) * 0.8
-    score += min(fb1h, 4) * 0.7
 
+    # False breaks là dấu hiệu “quét 2 đầu”
+    score += min(fb15, 6) * 0.8   # max ~4.8
+    score += min(fb1h, 4) * 0.7   # max ~2.8
+
+    # Wick dominance
     if wick_rng is not None:
-        if wick_rng >= 0.75:
-            score += 2.2
-        elif wick_rng >= 0.65:
-            score += 1.6
-        elif wick_rng >= 0.55:
-            score += 1.0
+        if wick_rng >= 0.75: score += 2.2
+        elif wick_rng >= 0.65: score += 1.6
+        elif wick_rng >= 0.55: score += 1.0
 
+    # Net move nhỏ => chop
     if nm15 is not None:
-        if nm15 <= 0.22:
-            score += 1.8
-        elif nm15 <= 0.30:
-            score += 1.2
+        if nm15 <= 0.22: score += 1.8
+        elif nm15 <= 0.30: score += 1.2
     if nm1h is not None:
-        if nm1h <= 0.25:
-            score += 1.2
-        elif nm1h <= 0.35:
-            score += 0.8
+        if nm1h <= 0.25: score += 1.2
+        elif nm1h <= 0.35: score += 0.8
 
+    # 2H (nếu có) tăng độ chắc
     if nm2h is not None and wr2h is not None:
         if nm2h <= 0.30 and wr2h >= 0.60:
             score += 0.8
@@ -892,6 +852,11 @@ def score_chop_regime(m15, h1, h2=None):
 
 
 def maybe_send_regime_alert(symbol: str, m15, h1, h2=None, chat_id: Optional[str] = None):
+    """
+    Gửi cảnh báo nếu score >= threshold.
+    Không phụ thuộc MIN_STARS.
+    Có cooldown để không spam.
+    """
     if not REGIME_ALERT_ENABLED:
         return False, 0.0, {}
 
@@ -902,9 +867,7 @@ def maybe_send_regime_alert(symbol: str, m15, h1, h2=None, chat_id: Optional[str
     key = f"{symbol}_CHOP"
     last_ts = int(st.get(key, 0))
 
-    should_send = (score >= REGIME_CHOP_THRESHOLD) and (
-        now - last_ts >= REGIME_ALERT_COOLDOWN_MIN * 60
-    )
+    should_send = (score >= REGIME_CHOP_THRESHOLD) and (now - last_ts >= REGIME_ALERT_COOLDOWN_MIN * 60)
     if not should_send:
         return False, score, details
 
@@ -924,9 +887,18 @@ def maybe_send_regime_alert(symbol: str, m15, h1, h2=None, chat_id: Optional[str
 
     return True, score, details
 
-
 def _ingest_mt5_payload(payload: Dict[str, Any]) -> None:
+    """
+    payload shape from bridge:
+      { "symbol": "...", "tf": "M15"/"M30"/"H1" (or "15"/"30"/"1h"), "candles": [ {ts/open/high/low/close/volume}, ... ] }
+
+    Your app.data_source.ingest_mt5_candles signature varies by version.
+    We'll support both:
+      ingest_mt5_candles(payload)
+      ingest_mt5_candles(symbol, tf, candles)
+    """
     try:
+        # try old signature (payload)
         ingest_mt5_candles(payload)  # type: ignore
         return
     except TypeError:
@@ -946,6 +918,7 @@ def root():
     return "OK"
 
 
+# Accept MT5 push bridge
 @app.post("/data/mt5", response_class=PlainTextResponse)
 async def data_mt5(token: str = "", request: Request = None):
     secret = os.getenv("MT5_PUSH_SECRET", "")
@@ -960,6 +933,7 @@ async def data_mt5(token: str = "", request: Request = None):
     return "OK"
 
 
+# Telegram webhook handler
 @app.post("/telegram/webhook", response_class=PlainTextResponse)
 async def telegram_webhook(request: Request):
     try:
@@ -975,6 +949,7 @@ async def telegram_webhook(request: Request):
     if not text:
         return "OK"
 
+    # 0) ƯU TIÊN: Manual trade review (không cần "now")
     parsed = parse_manual_trade(text)
     if parsed:
         logger.info("[TG][REVIEW] matched manual trade: text=%r parsed=%s", text, parsed)
@@ -985,24 +960,24 @@ async def telegram_webhook(request: Request):
         except Exception as e:
             logger.exception("manual review failed: text=%r err=%s", text, e)
             reply = f"❌ REVIEW lỗi: {e}"
-
+    
         try:
             _send_long_telegram(reply, chat_id=chat_id)
         except Exception as send_err:
             logger.exception(
                 "send long telegram failed for manual review: chat_id=%s err=%s",
-                chat_id,
-                send_err,
+                chat_id, send_err
             )
             try:
                 _send_telegram("❌ REVIEW lỗi: không gửi được tin nhắn dài. Xem logs.", chat_id=chat_id)
             except Exception:
                 pass
-
+    
         return "OK"
 
     low = text.lower()
 
+    # 1) "now/scan" -> mới chạy analyze_pro
     if "now" in low or "scan" in low or "all" in low:
         if "scan" in low or "all" in low:
             symbols = DEFAULT_SYMBOLS or ["XAU/USD", "BTC/USD", "XAG/USD"]
@@ -1012,14 +987,17 @@ async def telegram_webhook(request: Request):
         for sym in symbols:
             try:
                 data = _fetch_triplet(sym, limit=260)
+                # (optional) lấy thêm 2H cho regime radar (nếu get_candles hỗ trợ)
                 try:
                     h2 = _as_list_from_get_candles(get_candles(sym, "2h", limit=220))
                 except Exception:
                     h2 = []
-
+                
+                # ✅ Regime alert: independent of stars
                 maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
                 session = ""
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+                # --- Guard: analyze_pro phải trả dict, nếu không thì fallback để khỏi crash
                 if not isinstance(sig, dict):
                     sig = {
                         "symbol": sym,
@@ -1028,12 +1006,15 @@ async def telegram_webhook(request: Request):
                         "recommendation": "CHỜ",
                         "stars": 1,
                         "trade_mode": "MANUAL",
-                        "meta": {"data_source": data.get("data_source") if isinstance(data, dict) else None},
+                        "meta": {
+                            "data_source": data.get("data_source") if isinstance(data, dict) else None
+                        },
                         "context_lines": ["- Context: n/a"],
                         "liquidity_lines": ["- n/a"],
                         "quality_lines": ["- n/a"],
-                        "notes": ["⚠️ analyze_pro returned None → fallback signal"],
+                        "note_lines": ["⚠️ analyze_pro returned None → fallback signal"],
                     }
+                # attach data source for Telegram
                 try:
                     ds = data.get("data_source")
                     if ds:
@@ -1046,9 +1027,11 @@ async def telegram_webhook(request: Request):
                 force_send = _force_send(sig)
 
                 if force_send:
-                    prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\n\n"
+                    prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\\n\\n"
                     _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
                 elif stars < MIN_STARS:
+                    # Manual 'NOW/SCAN': always send full analysis, but hide trade plan when under the star gate
+                    #sig["show_trade_plan"] = False
                     prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\n\n"
                     _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
                 else:
@@ -1061,6 +1044,8 @@ async def telegram_webhook(request: Request):
     return "OK"
 
 
+
+# Cron endpoint
 @app.get("/cron/run", response_class=PlainTextResponse)
 @app.head("/cron/run", response_class=PlainTextResponse)
 async def cron_run(token: str = "", request: Request = None):
@@ -1070,8 +1055,11 @@ async def cron_run(token: str = "", request: Request = None):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     now = int(time.time())
+
+    # cooldown: return 200 to avoid external retries storm
     if now - LAST_CRON_TS < MIN_CRON_GAP_SEC:
         return "OK cooldown"
+
     if CRON_LOCK.locked():
         return "OK overlap"
 
@@ -1087,6 +1075,7 @@ async def cron_run(token: str = "", request: Request = None):
                 data = _fetch_triplet(sym, limit=260)
                 session = ""
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+                # --- Guard: analyze_pro phải trả dict, nếu không thì fallback để khỏi crash
                 if not isinstance(sig, dict):
                     sig = {
                         "symbol": sym,
@@ -1095,12 +1084,15 @@ async def cron_run(token: str = "", request: Request = None):
                         "recommendation": "CHỜ",
                         "stars": 1,
                         "trade_mode": "MANUAL",
-                        "meta": {"data_source": data.get("data_source") if isinstance(data, dict) else None},
+                        "meta": {
+                            "data_source": data.get("data_source") if isinstance(data, dict) else None
+                        },
                         "context_lines": ["- Context: n/a"],
                         "liquidity_lines": ["- n/a"],
                         "quality_lines": ["- n/a"],
-                        "notes": ["⚠️ analyze_pro returned None → fallback signal"],
+                        "note_lines": ["⚠️ analyze_pro returned None → fallback signal"],
                     }
+                # attach data source for Telegram
                 try:
                     ds = data.get("data_source")
                     if ds:
@@ -1108,12 +1100,20 @@ async def cron_run(token: str = "", request: Request = None):
                         sig.setdefault("meta", {})["data_source"] = ds
                 except Exception:
                     pass
-
                 stars = int(sig.get("stars", 0) or 0)
+                short_hint = sig.get("short_hint") or []
+                entry = sig.get("entry")
+                sl = sig.get("sl")
+                tp1 = sig.get("tp1")
                 rec = sig.get("recommendation", "")
-
+                
+                # ----- LUỒNG A: KÈO CHÍNH -----
                 if stars >= MIN_STARS and rec != "CHỜ":
                     _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
+                # ----- LUỒNG B (DISABLED): KÈO NGẮN HẠN / SCALE / SCALP -----
+                # Đã tắt theo cấu hình chiến lược: chỉ gửi kèo theo scoring engine FULL/HALF.
+
+                # ----- CÒN LẠI: KHÔNG GỬI -----
                 else:
                     logger.info("[CRON] %s: only observation, no trade", sym)
             except Exception as e:
