@@ -610,6 +610,85 @@ def detect_spring(
             "need": float(need),
         }
 
+
+
+def _sweep_grade(sw: Dict[str, Any]) -> str:
+    """Classify sweep/spring strength for V6 rendering."""
+    if not isinstance(sw, dict) or not sw.get("ok"):
+        return "NONE"
+    score = int(sw.get("score") or 0)
+    vol_ok = bool(sw.get("vol_ok"))
+    if score >= 5 and vol_ok:
+        return "STRONG"
+    if score >= 4:
+        return "MEDIUM"
+    if score >= 3:
+        return "WEAK"
+    return "NONE"
+
+
+def _entry_zone_v6(side: str, k: Dict[str, Any], atr15: float) -> Tuple[Optional[float], Optional[float]]:
+    """Refine entry zone around BOS + pullback extreme / wick area."""
+    bos = _safe_float((k or {}).get("M15_BOS"))
+    pbx = _safe_float((k or {}).get("M15_PB_EXT"))
+    hi = _safe_float((k or {}).get("M15_RANGE_HIGH"))
+    lo = _safe_float((k or {}).get("M15_RANGE_LOW"))
+    a = max(float(atr15 or 0.0), 1e-9)
+    pad = 0.18 * a
+
+    side = str(side or "").upper()
+    if side == "SELL":
+        anchors = [x for x in [bos, pbx, hi] if x is not None]
+        if not anchors:
+            return None, None
+        zl = min(anchors) - pad
+        zh = max(anchors) + pad
+        return float(zl), float(zh)
+
+    if side == "BUY":
+        anchors = [x for x in [bos, pbx, lo] if x is not None]
+        if not anchors:
+            return None, None
+        zl = min(anchors) - pad
+        zh = max(anchors) + pad
+        return float(zl), float(zh)
+
+    return None, None
+
+
+def _grade_v6(meta: Dict[str, Any], trade_mode: str, sweep_grade: str, close_confirm: Dict[str, Any]) -> str:
+    """Translate current engine state to A/B/C/SKIP real-edge grading."""
+    meta = meta or {}
+    sd = meta.get("score_detail", {}) or {}
+    spread = meta.get("spread", {}) or {}
+    revs = meta.get("reversal_warnings", []) or []
+    playbook_v4 = meta.get("playbook_v4", {}) or {}
+
+    if spread.get("state") == "BLOCK":
+        return "SKIP"
+    if str(playbook_v4.get("quality") or "").upper() == "LOW" and str(trade_mode or "").upper() == "WAIT":
+        return "SKIP"
+
+    mode = str(trade_mode or "").upper()
+    sweep_grade = str(sweep_grade or "NONE").upper()
+    cc_strength = str((close_confirm or {}).get("strength") or "NO").upper()
+
+    if mode == "FULL":
+        if sweep_grade == "STRONG" or cc_strength == "STRONG":
+            return "A"
+        return "A-"
+
+    if mode == "HALF":
+        if revs:
+            return "C"
+        if sweep_grade in ("MEDIUM", "STRONG") or cc_strength in ("WEAK", "STRONG"):
+            return "B"
+        return "B-"
+
+    if sd.get("bias_ok") and not sd.get("momentum_ok"):
+        return "C"
+    return "SKIP"
+
 def _build_short_hint_m15(m15: list[Candle], h1_trend: str, m30_trend: str) -> list[str]:
     """
     GỢI Ý NGẮN HẠN (M15):
@@ -1861,28 +1940,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     spring_buy  = detect_spring(m15c, side="BUY",  range_low=float(range15_low),  range_high=float(range15_high), atr=atr15, symbol=symbol)
     spring_sell = detect_spring(m15c, side="SELL", range_low=float(range15_low),  range_high=float(range15_high), atr=atr15, symbol=symbol)
 
+    sweep_buy["grade"] = _sweep_grade(sweep_buy)
+    sweep_sell["grade"] = _sweep_grade(sweep_sell)
+    spring_buy["grade"] = "STRONG" if spring_buy.get("ok") else "NONE"
+    spring_sell["grade"] = "STRONG" if spring_sell.get("ok") else "NONE"
+
     liq_sell = bool(sweep_sell.get("ok")) or bool(spring_sell.get("ok"))
     liq_buy  = bool(sweep_buy.get("ok"))  or bool(spring_buy.get("ok"))
 
     liquidity_lines = []
     if sweep_sell.get("ok"):
         vtxt = " +VOL" if sweep_sell.get("vol_ok") else ""
-        liquidity_lines.append(f"🔴 Sweep HIGH (quét đỉnh){vtxt}: chọc {_fmt(sweep_sell['level'])} rồi đóng xuống lại.")
+        liquidity_lines.append(f"🔴 Sweep HIGH (quét đỉnh){vtxt}: chọc {_fmt(sweep_sell['level'])} rồi đóng xuống lại | lực={sweep_sell.get('grade','NONE')}")
         score += 1
 
     if sweep_buy.get("ok"):
         vtxt = " +VOL" if sweep_buy.get("vol_ok") else ""
-        liquidity_lines.append(f"🟢 Sweep LOW (quét đáy){vtxt}: chọc {_fmt(sweep_buy['level'])} rồi đóng lên lại.")
+        liquidity_lines.append(f"🟢 Sweep LOW (quét đáy){vtxt}: chọc {_fmt(sweep_buy['level'])} rồi đóng lên lại | lực={sweep_buy.get('grade','NONE')}")
         score += 1
 
     if spring_buy.get("ok"):
         vtxt = " +VOL" if spring_buy.get("vol_ok") else ""
-        liquidity_lines.append("🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through.")
+        liquidity_lines.append(f"🟢 SPRING (false break đáy){vtxt}: phá range_low rồi kéo lên + follow-through | lực={spring_buy.get('grade','NONE')}")
         score += 1
 
     if spring_sell.get("ok"):
         vtxt = " +VOL" if spring_sell.get("vol_ok") else ""
-        liquidity_lines.append("🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through.")
+        liquidity_lines.append(f"🔴 UPTHRUST (false break đỉnh){vtxt}: phá range_high rồi kéo xuống + follow-through | lực={spring_sell.get('grade','NONE')}")
         score += 1
 
     if not liquidity_lines:
@@ -2349,6 +2433,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "M15_LAST": float(m15c[-1].close) if m15c else None,
     }
 
+    ez_low_v6, ez_high_v6 = _entry_zone_v6(bias_side, base["meta"]["key_levels"], atr15)
+    base["meta"]["entry_zone_v6"] = {
+        "low": ez_low_v6,
+        "high": ez_high_v6,
+        "side": bias_side,
+    }
+
     # build levels_info list for rendering (2 decimals)
     levels_info = []
     kh = base["meta"]["key_levels"]
@@ -2769,6 +2860,14 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
 
+    sweep_grade_v6 = "NONE"
+    if bias_side == "BUY":
+        sweep_grade_v6 = spring_buy.get("grade") if spring_buy.get("ok") else sweep_buy.get("grade")
+    elif bias_side == "SELL":
+        sweep_grade_v6 = spring_sell.get("grade") if spring_sell.get("ok") else sweep_sell.get("grade")
+    base.setdefault("meta", {})["grade_v6"] = _grade_v6(base.get("meta", {}), trade_mode, sweep_grade_v6, close_confirm_v4)
+    base["meta"]["sweep_grade_v6"] = sweep_grade_v6
+
     base.update({
         "context_lines": context_lines,
         "position_lines": position_lines,
@@ -2969,7 +3068,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if lo_v is not None and hi_v is not None and cur_v is not None and hi_v > lo_v:
             range_pos = (cur_v - lo_v) / max(1e-9, hi_v - lo_v)
 
-    grade = grade_from_mode(trade_mode, stars)
+    grade = str(meta.get("grade_v6") or grade_from_mode(trade_mode, stars))
+    ez_v6 = meta.get("entry_zone_v6") if isinstance(meta.get("entry_zone_v6"), dict) else {}
+    sweep_grade_v6 = str(meta.get("sweep_grade_v6") or "NONE")
 
     verdict_quick = "Chưa đẹp để vào ngay"
     if trade_mode == "FULL":
@@ -3059,6 +3160,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "- Chưa thấy vùng quét thanh khoản rõ")
     if liq_evt.get("ok"):
         add(lines, f"- Vừa có quét mạnh: {liq_evt.get('side')} | {liq_evt.get('kind')}")
+    if sweep_grade_v6 and sweep_grade_v6 != "NONE":
+        add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")
 
     add(lines, "")
     add(lines, "✅ Xác nhận:")
@@ -3145,6 +3248,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
+    if grade == "A":
+        add(lines, "- Edge mạnh: có thể theo nếu giá vào đúng vùng")
+    elif grade in ("A-", "B", "B-"):
+        add(lines, "- Có edge nhưng cần chọn điểm vào kỹ, không đuổi giá")
+    elif grade == "C":
+        add(lines, "- Ý tưởng có thể đúng nhưng rủi ro còn cao")
     if playbook_v4.get("quality"):
         add(lines, f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
     if ntz.get("active"):
