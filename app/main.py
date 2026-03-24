@@ -580,9 +580,17 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             "DIP_TO_BUY": "Hồi để mua",
         }.get(p, p or "Chưa rõ")
 
-    def _vn_state_text(state: str, narrative_obj: dict, order_side: str) -> str:
+    def _vn_state_text(state, narrative, side):
         state = str(state or "").upper()
-        summary = str((narrative_obj or {}).get("summary") or "").strip()
+    
+        # QUAN TRỌNG: gắn với lệnh
+        if side == "SELL" and state in ["TREND_UP", "PULLBACK_UP", "DIP_TO_BUY"]:
+            return "Thị trường đang nghiêng tăng → lệnh SELL đang ngược xu hướng, chỉ nên đánh ngắn"
+    
+        if side == "BUY" and state in ["TREND_DOWN", "PULLBACK_DOWN", "BOUNCE_TO_SELL"]:
+            return "Thị trường đang nghiêng giảm → lệnh BUY đang ngược xu hướng, chỉ nên đánh ngắn"
+    
+        return narrative.get("summary") or state
 
         # REVIEW ưu tiên ngữ cảnh của lệnh đang cầm, không chỉ copy narrative thị trường
         if order_side == "SELL" and state in ("TREND_UP", "PULLBACK_UP", "DIP_TO_BUY"):
@@ -655,7 +663,17 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append(f"🎯 Entry: {_f(entry)}")
     lines.append(f"🎯 TP: {_f(tp, 2, '...')} | 🛑 SL: {_f(sl, 2, '...')} | {rr_txt}")
     lines.append("")
-    lines.append(f"📌 Kết luận: {verdict}")
+    verdict_text = verdict
+    if "CHƯA RÕ" in verdict:
+        verdict_text = "Chưa rõ — cùng hướng nhưng chưa đủ xác nhận rõ"
+    
+    elif "ĐÚNG" in verdict:
+        verdict_text = "Ổn — đang đi đúng hướng chính"
+    
+    elif "SAI" in verdict:
+        verdict_text = "Không ổn — đang ngược cấu trúc"
+    
+    lines.append(f"📌 Kết luận: {verdict_text}")
 
     if phase369:
         lines.append(f"🧭 Giai đoạn: {phase369.get('phase', 'n/a')} | {_vn_phase_label(phase369)}")
@@ -695,19 +713,55 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append("")
     lines.append("🗺 Kịch bản chính:")
     if isinstance(scenario_v3, dict) and scenario_v3.get("base_case"):
-        lines.append(f"- {scenario_v3.get('base_case')}")
-    elif playbook.get("plan"):
-        plan_txt = f"{playbook.get('plan')}"
+        base = scenario_v3.get("base_case")
+    
+        # bỏ raw label
+        base = base.replace("Base case:", "").strip()
+    
+        # dịch sang ngôn ngữ trade
+        base = base.replace("hồi để SELL", "chờ hồi để canh bán")
+        base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
+    
+        # nếu có zone thì làm rõ hơn
         if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
-            plan_txt += f" | Zone: {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
-        lines.append(f"- {plan_txt}")
+            zone_low = _f(playbook.get("zone_low"))
+            zone_high = _f(playbook.get("zone_high"))
+            base = f"{base} trong vùng {zone_low} – {zone_high}"
+    
+        lines.append(f"- {base}")
+    
+    elif playbook.get("plan"):
+        plan = str(playbook.get("plan") or "")
+    
+        # dịch plan machine → người đọc hiểu
+        mapping = {
+            "WAIT_PULLBACK_TO_BUY": "Chờ điều chỉnh về vùng thấp rồi canh mua",
+            "WAIT_BOUNCE_TO_SELL": "Chờ hồi lên vùng cao rồi canh bán",
+            "BUY_BREAKOUT": "Chờ phá vỡ lên rồi canh mua",
+            "SELL_BREAKDOWN": "Chờ phá vỡ xuống rồi canh bán",
+        }
+    
+        plan_text = mapping.get(plan, plan)
+    
+        if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
+            zone_low = _f(playbook.get("zone_low"))
+            zone_high = _f(playbook.get("zone_high"))
+            plan_text += f" trong vùng {zone_low} – {zone_high}"
+    
+        lines.append(f"- {plan_text}")
+    
     else:
-        lines.append("- Chưa có kịch bản chính rõ")
+        lines.append("- Chưa có kịch bản rõ, nên đứng ngoài quan sát")
 
     lines.append("")
     lines.append("🪄 Kịch bản phụ:")
     if isinstance(scenario_v3, dict) and scenario_v3.get("alt_case"):
-        lines.append(f"- {scenario_v3.get('alt_case')}")
+        alt = scenario_v3.get("alt_case")
+        alt = alt.replace("Alt case:", "").strip()
+        alt = alt.replace("break đỉnh mạnh", "vượt đỉnh mạnh")
+        alt = alt.replace("breakdown risk", "nguy cơ giảm mạnh")
+    
+        lines.append(f"- {alt}")
     else:
         lines.append("- Chưa có kịch bản phụ rõ")
 
