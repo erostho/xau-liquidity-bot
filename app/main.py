@@ -673,6 +673,16 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     elif "SAI" in verdict:
         verdict_text = "Không ổn — đang ngược cấu trúc"
     
+    verdict_text = str(verdict or "").strip()
+    if "CHƯA RÕ" in verdict_text.upper():
+        if side == "SELL":
+            verdict_text = "Tạm ổn — cùng bối cảnh giảm nhưng tín hiệu SELL chưa rõ"
+        else:
+            verdict_text = "Tạm ổn — cùng bối cảnh tăng nhưng tín hiệu BUY chưa rõ"
+    elif "ĐÚNG" in verdict_text.upper():
+        verdict_text = "Ổn — đang đi cùng hướng chính"
+    elif "SAI" in verdict_text.upper() or "NGUY HIỂM" in verdict_text.upper():
+        verdict_text = "Không ổn — lệnh đang ở trạng thái rủi ro cao"
     lines.append(f"📌 Kết luận: {verdict_text}")
 
     if phase369:
@@ -701,6 +711,22 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append("✅ Xác nhận:")
     lines.append(f"- HL={'✅' if gate.get('hl') else '❌'} | LH={'✅' if gate.get('lh') else '❌'} | BreakUp={'✅' if gate.get('break_up') else '❌'} | BreakDn={'✅' if gate.get('break_dn') else '❌'}")
     lines.append(f"- {gate.get('txt') or 'Chưa đọc được gate cấu trúc.'}")
+    
+    # thêm 1 câu dịch nghĩa cho trader
+    if side == "SELL":
+        if not gate.get("lh"):
+            lines.append("- Chưa có LH → tín hiệu SELL chưa đủ mạnh, chỉ nên giữ ngắn hạn")
+        elif gate.get("lh") and not gate.get("break_dn"):
+            lines.append("- Đã có LH nhưng chưa phá đáy → SELL đúng hướng nhưng chưa xác nhận mạnh")
+        elif gate.get("lh") and gate.get("break_dn"):
+            lines.append("- Đã có LH và phá đáy → tín hiệu SELL đang mạnh hơn")
+    elif side == "BUY":
+        if not gate.get("hl"):
+            lines.append("- Chưa có HL → tín hiệu BUY chưa đủ mạnh, chỉ nên giữ ngắn hạn")
+        elif gate.get("hl") and not gate.get("break_up"):
+            lines.append("- Đã có HL nhưng chưa phá đỉnh → BUY đúng hướng nhưng chưa xác nhận mạnh")
+        elif gate.get("hl") and gate.get("break_up"):
+            lines.append("- Đã có HL và phá đỉnh → tín hiệu BUY đang mạnh hơn")
 
     lines.append("")
     lines.append("🕳 GAP:")
@@ -712,46 +738,34 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append("🗺 Kịch bản chính:")
+    
     if isinstance(scenario_v3, dict) and scenario_v3.get("base_case"):
-        base = scenario_v3.get("base_case")
-    
-        # bỏ raw label
+        base = str(scenario_v3.get("base_case") or "").strip()
         base = base.replace("Base case:", "").strip()
-    
-        # dịch sang ngôn ngữ trade
         base = base.replace("hồi để SELL", "chờ hồi để canh bán")
         base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
-    
-        # nếu có zone thì làm rõ hơn
+        base = base.replace("NO TRADE / đứng ngoài", "ưu tiên đứng ngoài quan sát")
         if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
-            zone_low = _f(playbook.get("zone_low"))
-            zone_high = _f(playbook.get("zone_high"))
-            base = f"{base} trong vùng {zone_low} – {zone_high}"
-    
+            base = f"{base} trong vùng {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
         lines.append(f"- {base}")
-    
     elif playbook.get("plan"):
-        plan = str(playbook.get("plan") or "")
-    
-        # dịch plan machine → người đọc hiểu
-        mapping = {
+        plan_txt = str(playbook.get("plan") or "")
+        plan_map = {
             "WAIT_PULLBACK_TO_BUY": "Chờ điều chỉnh về vùng thấp rồi canh mua",
             "WAIT_BOUNCE_TO_SELL": "Chờ hồi lên vùng cao rồi canh bán",
-            "BUY_BREAKOUT": "Chờ phá vỡ lên rồi canh mua",
-            "SELL_BREAKDOWN": "Chờ phá vỡ xuống rồi canh bán",
+            "BUY_DIP": "Chờ giá điều chỉnh rồi canh mua",
+            "SELL_RALLY": "Chờ giá hồi rồi canh bán",
+            "BOUNCE_TO_SELL": "Chờ hồi để canh bán",
+            "DIP_TO_BUY": "Chờ điều chỉnh để canh mua",
+            "NO_TRADE": "Ưu tiên đứng ngoài quan sát",
+            "RANGE_WAIT": "Đứng ngoài chờ thị trường rõ hơn",
         }
-    
-        plan_text = mapping.get(plan, plan)
-    
+        plan_txt = plan_map.get(plan_txt, plan_txt)
         if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
-            zone_low = _f(playbook.get("zone_low"))
-            zone_high = _f(playbook.get("zone_high"))
-            plan_text += f" trong vùng {zone_low} – {zone_high}"
-    
-        lines.append(f"- {plan_text}")
-    
+            plan_txt += f" trong vùng {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
+        lines.append(f"- {plan_txt}")
     else:
-        lines.append("- Chưa có kịch bản rõ, nên đứng ngoài quan sát")
+        lines.append("- Chưa có kịch bản chính rõ")
 
     lines.append("")
     lines.append("🪄 Kịch bản phụ:")
@@ -767,14 +781,43 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append("🧯 Điểm sai kịch bản:")
-    if isinstance(scenario_v3, dict) and scenario_v3.get("invalid_if"):
-        lines.append(f"- {scenario_v3.get('invalid_if')}")
+    
+    invalid_text = str((scenario_v3 or {}).get("invalid_if") or "").strip()
+    invalid_text = invalid_text.replace("Invalid if:", "").strip()
+    invalid_text = invalid_text.replace("Mất cấu trúc hiện tại", "").strip()
+    
+    if side == "SELL":
+        if _f(sl, 2, 'n/a') != "n/a":
+            if gate.get("lh"):
+                lines.append(f"- Nếu vượt {_f(sl, 2)} hoặc mất LH → kịch bản SELL bị yếu đi rõ")
+            else:
+                lines.append(f"- Nếu vượt {_f(sl, 2)} hoặc tiếp tục không tạo được LH → kịch bản SELL chưa đủ mạnh")
+        elif invalid_text:
+            lines.append(f"- {invalid_text}")
+        else:
+            lines.append("- Nếu giá vượt vùng kháng cự gần nhất hoặc không tạo được LH thì bỏ kịch bản SELL")
     else:
-        lines.append(f"- {'vượt' if side == 'SELL' else 'thủng'} {_f(sl, 2, 'n/a')} hoặc mất {'LH' if side == 'SELL' else 'HL'}")
+        if _f(sl, 2, 'n/a') != "n/a":
+            if gate.get("hl"):
+                lines.append(f"- Nếu thủng {_f(sl, 2)} hoặc mất HL → kịch bản BUY bị yếu đi rõ")
+            else:
+                lines.append(f"- Nếu thủng {_f(sl, 2)} hoặc tiếp tục không giữ được HL → kịch bản BUY chưa đủ mạnh")
+        elif invalid_text:
+            lines.append(f"- {invalid_text}")
+        else:
+            lines.append("- Nếu giá thủng vùng hỗ trợ gần nhất hoặc không giữ được HL thì bỏ kịch bản BUY")
 
     lines.append("")
     lines.append(f"📊 Chất lượng hiện tại: {grade}")
-
+    # cảnh báo nếu lệnh đang đi ngược HTF
+    if side == "SELL" and isinstance(htf_pressure_v4, dict):
+        htf_state = str(htf_pressure_v4.get("state") or "")
+        if "BULLISH" in htf_state:
+            lines.append("- ⚠️ Lệnh SELL này chưa được khung lớn ủng hộ hoàn toàn → không nên gồng, tránh add")
+    if side == "BUY" and isinstance(htf_pressure_v4, dict):
+        htf_state = str(htf_pressure_v4.get("state") or "")
+        if "BEARISH" in htf_state:
+            lines.append("- ⚠️ Lệnh BUY này chưa được khung lớn ủng hộ hoàn toàn → không nên gồng, tránh add")
     lines.append("")
     lines.append("⚙️ Hành động:")
     seen = set()
