@@ -3258,7 +3258,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- {s}")
     else:
         add(lines, "- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
-        
+    buy_trigger, sell_trigger = trigger_lines(rec, k, range_pos, ntz)
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
     base = str(scenario.get("base_case") or "").strip()
