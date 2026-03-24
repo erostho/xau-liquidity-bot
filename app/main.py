@@ -724,7 +724,18 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         verdict_txt = "Không ổn — lệnh đang ở trạng thái rủi ro cao"
     else:
         verdict_txt = str(verdict or "").strip()
-
+    v = str(verdict or "").upper()
+    if "CHƯA RÕ" in v:
+        if side == "SELL":
+            verdict_text = "Tạm ổn — cùng bối cảnh giảm nhưng chưa có LH xác nhận"
+        else:
+            verdict_text = "Tạm ổn — cùng bối cảnh tăng nhưng chưa có HL xác nhận"
+    elif "ĐÚNG" in v:
+        verdict_text = "Ổn — đang đi cùng hướng chính"
+    elif "SAI" in v or "NGUY HIỂM" in v:
+        verdict_text = "Không ổn — lệnh đang ở trạng thái rủi ro cao"
+    else:
+        verdict_text = str(verdict or "").strip()
     summary_text = _review_market_vs_position(side, verdict_text, grade, no_trade_zone if isinstance(no_trade_zone, dict) else {})
     lines.append(f"📌 Kết luận: {verdict_text}")
     lines.append(f"- {summary_text}")
