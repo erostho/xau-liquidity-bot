@@ -647,7 +647,52 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if "SAI" in vv or "NGUY HIỂM" in vv:
             return "C"
         return "B"
+    def _review_market_vs_position(side: str, verdict_text: str, grade_text: str, ntz_obj: dict) -> str:
+        """
+        REVIEW phải trả lời cho lệnh đang cầm, không bê nguyên playbook NOW.
+        """
+        if grade_text == "A":
+            return "Lệnh hiện tại vẫn có thể giữ theo kế hoạch, nhưng không nên mở thêm rủi ro mới"
+        if grade_text == "B":
+            return "Có thể giữ ngắn hạn nếu vẫn đúng cấu trúc, nhưng không nên add"
+        if ntz_obj.get("active"):
+            return "Thị trường chưa đẹp để mở mới; nếu đang có lệnh thì chỉ quản trị chặt"
+        return "Ưu tiên giảm rủi ro và chờ cấu trúc rõ hơn"
 
+    def _review_main_plan(side: str, scenario_obj: dict, playbook_obj: dict, grade_text: str, verdict_text: str, ntz_obj: dict) -> str:
+        base = str((scenario_obj or {}).get("base_case") or "").strip()
+        base_upper = base.upper()
+
+        if "NO TRADE" in base_upper or "ĐỨNG NGOÀI" in base_upper:
+            if grade_text == "A":
+                return "Không nên mở lệnh mới, nhưng lệnh hiện tại vẫn có thể giữ ngắn hạn nếu tiếp tục đúng cấu trúc"
+            if grade_text == "B":
+                return "Không nên mở lệnh mới; nếu đang có lệnh thì chỉ giữ nhỏ và không add"
+            return "Ưu tiên đứng ngoài, không nên giữ thêm nếu lệnh đang yếu"
+
+        base = base.replace("Base case:", "").strip()
+        base = base.replace("hồi để SELL", "chờ hồi để canh bán")
+        base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
+
+        zlo = playbook_obj.get("zone_low")
+        zhi = playbook_obj.get("zone_high")
+        if zlo is not None and zhi is not None:
+            zlo_txt = _f(zlo)
+            zhi_txt = _f(zhi)
+            if zlo_txt not in base and zhi_txt not in base:
+                base = f"{base} trong vùng {zlo_txt} – {zhi_txt}"
+
+        return base or "Chưa có kịch bản chính rõ"
+
+    def _review_invalidation(side: str, sl_val, gate_obj: dict) -> str:
+        if side == "SELL":
+            if gate_obj.get("lh"):
+                return f"Nếu vượt {_f(sl_val)} hoặc mất LH → kịch bản SELL bị yếu đi rõ"
+            return f"Nếu vượt {_f(sl_val)} hoặc tiếp tục không tạo được LH → kịch bản SELL chưa đủ mạnh"
+        else:
+            if gate_obj.get("hl"):
+                return f"Nếu thủng {_f(sl_val)} hoặc mất HL → kịch bản BUY bị yếu đi rõ"
+            return f"Nếu thủng {_f(sl_val)} hoặc tiếp tục không giữ được HL → kịch bản BUY chưa đủ mạnh"
     def _extract_gap_lines(ctx_lines, note_lines):
         out = []
         seen = set()
@@ -680,7 +725,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     else:
         verdict_txt = str(verdict or "").strip()
 
-    lines.append(f"📌 Kết luận: {verdict_txt}")
+    summary_text = _review_market_vs_position(side, verdict_text, grade, no_trade_zone if isinstance(no_trade_zone, dict) else {})
+    lines.append(f"📌 Kết luận: {verdict_text}")
+    lines.append(f"- {summary_text}")
 
     if phase369:
         lines.append(f"🧭 Giai đoạn: {phase369.get('phase', 'n/a')} | {_vn_phase_label(phase369)}")
@@ -733,37 +780,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append("🗺 Kịch bản chính:")
+    main_plan_text = _review_main_plan(side, scenario_v3 if isinstance(scenario_v3, dict) else {}, playbook if isinstance(playbook, dict) else {}, grade, verdict_text, no_trade_zone if isinstance(no_trade_zone, dict) else {})
+    lines.append(f"- {main_plan_text}")
     
-    if isinstance(scenario_v3, dict) and scenario_v3.get("base_case"):
-        base = str(scenario_v3.get("base_case") or "").strip()
-        base = base.replace("Base case:", "").strip()
-        base = base.replace("hồi để SELL", "chờ hồi để canh bán")
-        base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
-        base = base.replace("NO TRADE / đứng ngoài", "ưu tiên đứng ngoài quan sát")
-        if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
-            zone_txt = f"{_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
-            if zone_txt not in base:
-                base = f"{base} trong vùng {zone_txt}"
-        lines.append(f"- {base}")
-    elif playbook.get("plan"):
-        plan_txt = str(playbook.get("plan") or "")
-        plan_map = {
-            "WAIT_PULLBACK_TO_BUY": "Chờ điều chỉnh về vùng thấp rồi canh mua",
-            "WAIT_BOUNCE_TO_SELL": "Chờ hồi lên vùng cao rồi canh bán",
-            "BUY_DIP": "Chờ giá điều chỉnh rồi canh mua",
-            "SELL_RALLY": "Chờ giá hồi rồi canh bán",
-            "BOUNCE_TO_SELL": "Chờ hồi để canh bán",
-            "DIP_TO_BUY": "Chờ điều chỉnh để canh mua",
-            "NO_TRADE": "Ưu tiên đứng ngoài quan sát",
-            "RANGE_WAIT": "Đứng ngoài chờ thị trường rõ hơn",
-        }
-        plan_txt = plan_map.get(plan_txt, plan_txt)
-        if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
-            plan_txt += f" trong vùng {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
-        lines.append(f"- {plan_txt}")
-    else:
-        lines.append("- Chưa có kịch bản chính rõ")
-
     lines.append("")
     lines.append("🪄 Kịch bản phụ:")
     if isinstance(scenario_v3, dict) and scenario_v3.get("alt_case"):
@@ -779,44 +798,30 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append("🧯 Điểm sai kịch bản:")
-    
-    invalid_text = str((scenario_v3 or {}).get("invalid_if") or "").strip()
-    invalid_text = invalid_text.replace("Invalid if:", "").strip()
-    invalid_text = invalid_text.replace("Mất cấu trúc hiện tại", "").strip()   
-    if side == "SELL":
-        if _f(sl, 2, 'n/a') != "n/a":
-            if gate.get("lh"):
-                lines.append(f"- Nếu vượt {_f(sl, 2)} hoặc mất LH → kịch bản SELL bị yếu đi rõ")
-            else:
-                lines.append(f"- Nếu vượt {_f(sl, 2)} hoặc tiếp tục không tạo được LH → kịch bản SELL chưa đủ mạnh")
-        elif invalid_text:
-            lines.append(f"- {invalid_text}")
-        else:
-            lines.append("- Nếu giá vượt vùng kháng cự gần nhất hoặc không tạo được LH thì bỏ kịch bản SELL")
-    else:
-        if _f(sl, 2, 'n/a') != "n/a":
-            if gate.get("hl"):
-                lines.append(f"- Nếu thủng {_f(sl, 2)} hoặc mất HL → kịch bản BUY bị yếu đi rõ")
-            else:
-                lines.append(f"- Nếu thủng {_f(sl, 2)} hoặc tiếp tục không giữ được HL → kịch bản BUY chưa đủ mạnh")
-        elif invalid_text:
-            lines.append(f"- {invalid_text}")
-        else:
-            lines.append("- Nếu giá thủng vùng hỗ trợ gần nhất hoặc không giữ được HL thì bỏ kịch bản BUY")
+    lines.append(f"- {_review_invalidation(side, sl, gate)}")
 
     lines.append("")
     lines.append(f"📊 Chất lượng hiện tại: {grade}")
-    # cảnh báo nếu lệnh đang đi ngược HTF
     if side == "SELL" and isinstance(htf_pressure_v4, dict):
         htf_state = str(htf_pressure_v4.get("state") or "")
         if "BULLISH" in htf_state:
-            lines.append("- ⚠️ Lệnh SELL này chưa được khung lớn ủng hộ hoàn toàn → không nên gồng, tránh add")
+            lines.append("- ⚠️ SELL chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
+    
     if side == "BUY" and isinstance(htf_pressure_v4, dict):
         htf_state = str(htf_pressure_v4.get("state") or "")
         if "BEARISH" in htf_state:
-            lines.append("- ⚠️ Lệnh BUY này chưa được khung lớn ủng hộ hoàn toàn → không nên gồng, tránh add")
+            lines.append("- ⚠️ BUY chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
     lines.append("")
     lines.append("⚙️ Hành động:")
+    
+    # câu chốt trước, để action không còn mâu thuẫn với market playbook
+    if grade == "A":
+        lines.append("- Có thể giữ lệnh hiện tại, nhưng không nên mở thêm lệnh mới")
+    elif grade == "B":
+        lines.append("- Có thể giữ ngắn hạn nếu cấu trúc chưa hỏng, nhưng không nên add")
+    else:
+        lines.append("- Ưu tiên giảm rủi ro và quan sát thêm")
+    
     seen = set()
     for s in actions:
         ss = str(s).strip()
@@ -847,7 +852,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
         lines.append("")
-        lines.append("🧪 V4 Modules:")
+        lines.append("🧪 Tổng Quan Thị Trường:")
         if session_v4.get("session_tag"):
             lines.append(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
         if htf_pressure_v4.get("state"):
