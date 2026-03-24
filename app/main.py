@@ -844,18 +844,59 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         htf_state = str(htf_pressure_v4.get("state") or "")
         if "BEARISH" in htf_state:
             lines.append("- ⚠️ BUY chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
+
     lines.append("")
     lines.append("⚙️ Hành động:")
     
-    # câu chốt trước, để action không còn mâu thuẫn với market playbook
+    # ===== câu chốt chính =====
     if grade == "A":
-        lines.append("- Có thể giữ lệnh hiện tại, nhưng không nên mở thêm lệnh mới")
+        lines.append("- Có thể giữ lệnh theo kế hoạch, nhưng không nên mở thêm lệnh mới")
     elif grade == "B":
         lines.append("- Có thể giữ ngắn hạn nếu cấu trúc chưa hỏng, nhưng không nên add")
     else:
         lines.append("- Ưu tiên giảm rủi ro và quan sát thêm")
     
-    for s in _dedupe_action_lines(actions):
+    # ===== CLEAN ACTION =====
+    def _clean_conflict_lines(actions, htf_state):
+        out = []
+        for s in actions:
+            txt = str(s)
+    
+            if "H1 bullish" in txt and "BEARISH" in htf_state:
+                continue
+            if "H1 bearish" in txt and "BULLISH" in htf_state:
+                continue
+    
+            out.append(txt)
+        return out
+    
+    
+    def _dedupe_actions(actions):
+        out = []
+        seen = set()
+    
+        for s in actions:
+            t = str(s).lower()
+    
+            if "không add" in t or "không nên add" in t or "không mở rộng" in t:
+                key = "no_add"
+            elif "giữ ngắn" in t:
+                key = "hold_short"
+            else:
+                key = s
+    
+            if key not in seen:
+                seen.add(key)
+                out.append(s)
+    
+        return out
+    
+    
+    # ===== APPLY =====
+    actions = _clean_conflict_lines(actions, str(htf_pressure_v4.get("state")))
+    actions = _dedupe_actions(actions)
+    
+    for s in actions:
         lines.append(f"- {s}")
 
     lines.append("")
