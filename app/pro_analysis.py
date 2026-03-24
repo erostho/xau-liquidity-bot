@@ -2818,7 +2818,7 @@ def _safe_float(x):
         return None
 
 def format_signal(sig: Dict[str, Any]) -> str:
-    """Telegram formatter GD3: desk-note style, no raw HTML, concise and readable."""
+    """Telegram formatter V5: dễ đọc hơn, giữ nguyên logic/meta hiện có."""
     def sf(x):
         try:
             return _safe_float(x)
@@ -2834,6 +2834,90 @@ def format_signal(sig: Dict[str, Any]) -> str:
             return default
         return f"{v:.{nd}f}"
 
+    def add_line(buf: list[str], x: str = ""):
+        if x is None:
+            return
+        s = str(x).rstrip()
+        if s:
+            buf.append(s)
+        elif buf and buf[-1] != "":
+            buf.append("")
+
+    def vn_phase_label(phase: dict) -> str:
+        p = str(phase.get("label") or "").upper()
+        mapping = {
+            "EARLY": "Giai đoạn sớm",
+            "READY": "Có thể chuẩn bị",
+            "LATE": "Đang ở đoạn muộn",
+            "EXTREME": "Biến động quá mạnh",
+            "BOUNCE_TO_SELL": "Hồi để bán",
+            "DIP_TO_BUY": "Hồi để mua",
+        }
+        return mapping.get(p, p or "Chưa rõ")
+
+    def vn_state_text(state: str, narrative: dict) -> str:
+        state = str(state or "").upper()
+        summary = str(narrative.get("summary") or "").strip()
+        mapping = {
+            "TREND_DOWN": "Xu hướng giảm đang chiếm ưu thế",
+            "PULLBACK_DOWN": "Đang hồi trong xu hướng giảm",
+            "BOUNCE_TO_SELL": "Đang hồi lên trong bối cảnh giảm; ưu tiên chờ hồi yếu để canh bán",
+            "TREND_UP": "Xu hướng tăng đang chiếm ưu thế",
+            "PULLBACK_UP": "Đang điều chỉnh trong xu hướng tăng",
+            "DIP_TO_BUY": "Đang điều chỉnh trong bối cảnh tăng; ưu tiên chờ giữ đáy để canh mua",
+            "CHOP": "Thị trường nhiễu, dễ quét hai đầu",
+            "TRANSITION": "Thị trường đang chuyển trạng thái, chưa nên vội vào lệnh",
+            "POST_LIQUIDATION_BOUNCE": "Sau cú quét mạnh, thị trường dễ hồi kỹ thuật",
+            "POST_SHORT_COVER": "Sau cú ép thoát lệnh bán, thị trường dễ hồi mạnh",
+            "EXHAUSTION_DOWN": "Đà giảm đang có dấu hiệu yếu dần",
+            "EXHAUSTION_UP": "Đà tăng đang có dấu hiệu yếu dần",
+        }
+        return summary or mapping.get(state, state or "Chưa rõ")
+
+    def vn_flow_text(flow: dict) -> str:
+        state = str(flow.get("state") or "").upper()
+        favored = str(flow.get("favored_side") or "").upper()
+        mapping = {
+            "INFLOW": "Dòng tiền đang vào",
+            "OUTFLOW": "Dòng tiền đang ra",
+            "RISK_ON": "Dòng tiền đang nghiêng về tài sản rủi ro",
+            "RISK_OFF": "Dòng tiền đang rời tài sản rủi ro",
+            "NEUTRAL": "Dòng tiền trung tính",
+        }
+        base = mapping.get(state, state or "Chưa rõ")
+        if favored == "BUY":
+            return f"{base} | Ưu tiên BUY"
+        if favored == "SELL":
+            return f"{base} | Ưu tiên SELL"
+        return f"{base} | Ưu tiên NONE"
+
+    def grade_from_mode(mode: str, stars: int) -> str:
+        mode = str(mode or "").upper()
+        if mode == "FULL":
+            return "A"
+        if mode == "HALF":
+            return "B"
+        if stars >= 4:
+            return "A-"
+        if stars == 3:
+            return "B"
+        if stars == 2:
+            return "C"
+        return "SKIP"
+
+    def extract_gap_lines(ctx_lines: list[str], notes: list[str]) -> list[str]:
+        out = []
+        seen = set()
+        pool = list(ctx_lines or []) + list(notes or [])
+        for raw in pool:
+            s = str(raw or "").strip()
+            low = s.lower()
+            if any(k in low for k in ["gap", "mở cửa", "biên độ đầu phiên", "đầu phiên", "mất cân bằng"]):
+                if s not in seen:
+                    seen.add(s)
+                    out.append(s)
+        return out[:3]
+
     if not isinstance(sig, dict):
         return "❌ Invalid signal payload."
 
@@ -2844,33 +2928,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
     data_source = sig.get("data_source") or meta.get("data_source") or ""
     trade_mode = str(sig.get("trade_mode") or "MANUAL").upper()
     stars = max(0, min(5, int(sig.get("stars", 0) or 0)))
-    stars_txt = "⭐" * max(1, stars)
     rec_raw = str(sig.get("recommendation") or "CHỜ")
-    rec = "BUY" if "BUY" in rec_raw.upper() else ("SELL" if "SELL" in rec_raw.upper() else "CHỜ")
-
-    lines: List[str] = []
-    def add(x: str = ""):
-        if x is None:
-            return
-        s = str(x).rstrip()
-        if s:
-            lines.append(s)
-        elif lines and lines[-1] != "":
-            lines.append("")
-
-    head = f"📊 {symbol} | {tf}"
-    if session:
-        head += f" | {session}"
-    add(head)
-    if data_source:
-        add(f"📡 Data: {data_source}")
-    add(f"{stars_txt} {rec} | Mode: {trade_mode}")
+    rec = "MUA" if "BUY" in rec_raw.upper() else ("BÁN" if "SELL" in rec_raw.upper() else "CHỜ")
 
     narrative = meta.get("narrative_v3") if isinstance(meta.get("narrative_v3"), dict) else {}
     scenario = meta.get("scenario_v3") if isinstance(meta.get("scenario_v3"), dict) else {}
     phase = meta.get("phase_369") if isinstance(meta.get("phase_369"), dict) else {}
     flow = meta.get("flow_state") if isinstance(meta.get("flow_state"), dict) else {}
-    liq = meta.get("liquidation") if isinstance(meta.get("liquidation"), dict) else {}
+    liq_evt = meta.get("liquidation") if isinstance(meta.get("liquidation"), dict) else {}
     ntz = meta.get("no_trade_zone") if isinstance(meta.get("no_trade_zone"), dict) else {}
     playbook = meta.get("playbook_v2") if isinstance(meta.get("playbook_v2"), dict) else {}
     k = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
@@ -2882,111 +2947,157 @@ def format_signal(sig: Dict[str, Any]) -> str:
     macro_v4 = meta.get("macro_v4") if isinstance(meta.get("macro_v4"), dict) else {}
     playbook_v4 = meta.get("playbook_v4") if isinstance(meta.get("playbook_v4"), dict) else {}
 
-    if narrative.get("headline"):
-        add(f"🧠 {narrative.get('headline')}")
-    if narrative.get("summary"):
-        add(f"- {narrative.get('summary')}")
-
-    state = meta.get("market_state_v2")
-    if state:
-        add(f"🌡 State: {state}")
-    if phase:
-        extra = f" | {phase.get('reason')}" if phase.get("reason") else ""
-        add(f"🧭 Phase 369: {phase.get('phase', 'n/a')} | {phase.get('label', 'n/a')}{extra}")
-    if flow.get("state"):
-        note = f" | {flow.get('note')}" if flow.get("note") else ""
-        add(f"💰 Flow: {flow.get('state')} | Favored: {flow.get('favored_side', 'n/a')}{note}")
-    if liq.get("ok"):
-        add(f"⚠️ Liquidation: {liq.get('side')} | {liq.get('kind')} | body~{float(liq.get('body_atr', 0) or 0):.1f} ATR")
-    if ntz.get("active"):
-        add("⛔ No-trade: " + ("; ".join(str(x) for x in (ntz.get("reasons") or []) if x) or "active"))
-
-    add("")
-    add("🗺 Plan:")
-    if playbook.get("plan"):
-        zone_txt = ""
-        zl = sf(playbook.get("zone_low")); zh = sf(playbook.get("zone_high"))
-        if zl is not None and zh is not None:
-            zone_txt = f" | Zone: {nf(zl)} – {nf(zh)}"
-        add(f"- {playbook.get('plan')}{zone_txt}")
-    if scenario.get("base_case"):
-        add(f"- {scenario.get('base_case')}")
-    if scenario.get("alt_case"):
-        add(f"- {scenario.get('alt_case')}")
-    if scenario.get("invalid_if"):
-        add(f"- {scenario.get('invalid_if')}")
-
-    add("")
-    add("🏗 Structure:")
-    add(f"- Major: H4 {struct.get('H4', 'n/a')} | H1 {struct.get('H1', 'n/a')}")
-    add(f"- Minor: M15 {struct.get('M15', 'n/a')}")
-    if k.get("M15_RANGE_LOW") is not None and k.get("M15_RANGE_HIGH") is not None:
-        add(f"- M15 Range: {nf(k.get('M15_RANGE_LOW'))} – {nf(k.get('M15_RANGE_HIGH'))}")
-    if k.get("M15_BOS") is not None:
-        add(f"- BOS level: {nf(k.get('M15_BOS'))}")
-    if k.get("H1_HL") is not None or k.get("H1_LH") is not None:
-        keep = nf(k.get('H1_HL')) if rec == 'BUY' else nf(k.get('H1_LH'))
-        add(f"- Trend keep level: {keep}")
-
-    entry = sig.get("entry"); sl = sig.get("sl"); tp1 = sig.get("tp1"); tp2 = sig.get("tp2")
-    add("")
-    add("🎯 Trade map:")
-    add(f"- Entry: {nf(entry)}")
-    add(f"- SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
-
     ctx_lines = sig.get("context_lines") or []
-    if ctx_lines:
-        add("")
-        add("🧩 Context:")
-        for s in ctx_lines[:5]:
-            s = str(s).replace('\n', ' ').strip()
-            if s:
-                add(f"- {s}")
-
     liq_lines = sig.get("liquidity_lines") or []
+    q_lines = sig.get("quality_lines") or []
+    notes = sig.get("notes") or sig.get("note_lines") or []
+    gap_lines = extract_gap_lines(ctx_lines, notes)
+
+    entry = sig.get("entry")
+    sl = sig.get("sl")
+    tp1 = sig.get("tp1")
+    tp2 = sig.get("tp2")
+
+    range_lo = k.get("M15_RANGE_LOW")
+    range_hi = k.get("M15_RANGE_HIGH")
+    last_px = k.get("M15_LAST")
+    range_pos = playbook.get("range_pos")
+    if range_pos is None and range_lo is not None and range_hi is not None and last_px is not None and sf(range_hi) and sf(range_lo):
+        lo_v = sf(range_lo)
+        hi_v = sf(range_hi)
+        cur_v = sf(last_px)
+        if lo_v is not None and hi_v is not None and cur_v is not None and hi_v > lo_v:
+            range_pos = (cur_v - lo_v) / max(1e-9, hi_v - lo_v)
+
+    grade = grade_from_mode(trade_mode, stars)
+
+    verdict_quick = "Chưa đẹp để vào ngay"
+    if trade_mode == "FULL":
+        verdict_quick = "Có thể theo kịch bản chính nếu giá vào đúng vùng"
+    elif trade_mode == "HALF":
+        verdict_quick = "Có thể canh, nhưng nên giảm độ quyết liệt"
+    elif ntz.get("active"):
+        verdict_quick = "Đang là vùng dễ nhiễu, nên đứng ngoài"
+
+    lines: List[str] = []
+    head = f"📌 {symbol} NOW"
+    if tf:
+        head += f" | {tf}"
+    if session:
+        head += f" | {session}"
+    add_line(lines, head)
+    if data_source:
+        add_line(lines, f"📡 Dữ liệu: {data_source}")
+
+    add_line(lines, "")
+    add_line(lines, f"💵 Giá hiện tại: {nf(last_px if last_px is not None else entry)}")
+    add_line(lines, f"📌 Kết luận nhanh: {verdict_quick}")
+    add_line(lines, f"🧭 Xu hướng / hướng ưu tiên: {rec}")
+    if phase:
+        add_line(lines, f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {vn_phase_label(phase)}")
+    add_line(lines, f"🌡 Trạng thái: {vn_state_text(meta.get('market_state_v2'), narrative)}")
+    if flow:
+        add_line(lines, f"💰 Dòng tiền: {vn_flow_text(flow)}")
+
+    add_line(lines, "")
+    add_line(lines, "📍 Vị trí giá:")
+    if last_px is not None:
+        add_line(lines, f"- Giá hiện tại: {nf(last_px)}")
+    if range_lo is not None and range_hi is not None:
+        add_line(lines, f"- Biên độ M15: {nf(range_lo)} – {nf(range_hi)}")
+    if range_pos is not None:
+        add_line(lines, f"- Vị trí trong biên độ: ~{int(round(float(range_pos) * 100))}%")
+
+    add_line(lines, "")
+    add_line(lines, "💧 Thanh khoản:")
     if liq_lines:
-        add("")
-        add("💧 Liquidity:")
         for s in liq_lines[:4]:
-            s = str(s).replace('\n', ' ').strip()
-            if s:
-                add(f"- {s}")
+            add_line(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
+    else:
+        add_line(lines, "- Chưa thấy vùng quét thanh khoản rõ")
 
-    q = sig.get("quality_lines") or []
-    if q:
-        add("")
-        add("⚙️ Quality:")
-        for s in q[:5]:
-            s = str(s).replace('\n', ' ').strip()
-            if s:
-                add(f"- {s}")
+    if liq_evt.get("ok"):
+        add_line(lines, f"- Vừa có quét mạnh: {liq_evt.get('side')} | {liq_evt.get('kind')}")
 
+    add_line(lines, "")
+    add_line(lines, "✅ Xác nhận:")
+    if struct:
+        add_line(lines, f"- Cấu trúc lớn: H4 {struct.get('H4', 'n/a')} | H1 {struct.get('H1', 'n/a')}")
+        add_line(lines, f"- Cấu trúc ngắn hạn: M15 {struct.get('M15', 'n/a')}")
+    bos = k.get("M15_BOS")
+    if bos is not None:
+        add_line(lines, f"- Mốc xác nhận gần: {nf(bos)}")
+    if close_confirm_v4 and close_confirm_v4.get("strength") not in (None, "N/A"):
+        cc_text = "đã có giữ mốc" if close_confirm_v4.get("hold") == "YES" else "chưa giữ mốc rõ"
+        add_line(lines, f"- Đóng nến xác nhận: {close_confirm_v4.get('strength')} | {cc_text}")
 
-    if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
-        add("")
-        add("🧪 V4 Modules:")
+    add_line(lines, "")
+    add_line(lines, "🕳 GAP:")
+    if gap_lines:
+        for s in gap_lines:
+            add_line(lines, f"- {s}")
+    else:
+        add_line(lines, "- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
+
+    add_line(lines, "")
+    add_line(lines, "🎯 Kịch bản chính:")
+    if scenario.get("base_case"):
+        add_line(lines, f"- {scenario.get('base_case')}")
+    elif playbook.get("plan"):
+        add_line(lines, f"- {playbook.get('plan')}")
+
+    add_line(lines, "")
+    add_line(lines, "🪄 Kịch bản phụ:")
+    if scenario.get("alt_case"):
+        add_line(lines, f"- {scenario.get('alt_case')}")
+    else:
+        add_line(lines, "- Chưa có kịch bản phụ rõ")
+
+    add_line(lines, "")
+    add_line(lines, "🧯 Điểm sai kịch bản:")
+    if scenario.get("invalid_if"):
+        add_line(lines, f"- {scenario.get('invalid_if')}")
+    else:
+        add_line(lines, "- Nếu mất cấu trúc gần nhất thì bỏ kịch bản")
+
+    add_line(lines, "")
+    add_line(lines, f"📊 Chất lượng cơ hội: {grade}")
+    if playbook_v4.get("quality"):
+        add_line(lines, f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
+    if ntz.get("active"):
+        rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
+        add_line(lines, f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
+
+    add_line(lines, "")
+    add_line(lines, "⚙️ Hành động:")
+    if trade_mode == "FULL":
+        add_line(lines, "- Có thể theo kịch bản nếu giá vào đúng vùng và có xác nhận")
+    elif trade_mode == "HALF":
+        add_line(lines, "- Có thể canh nhưng không nên đuổi giá, giảm độ quyết liệt")
+    else:
+        add_line(lines, "- Chưa nên vào lệnh mới, ưu tiên quan sát thêm")
+    if entry is not None or sl is not None or tp1 is not None:
+        add_line(lines, f"- Entry: {nf(entry)} | SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
+
+    if q_lines:
+        add_line(lines, "")
+        add_line(lines, "🧪 Chi tiết bổ sung:")
+        for s in q_lines[:5]:
+            add_line(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
+
+    if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
+        add_line(lines, "")
+        add_line(lines, "🧩 V4 / V5 nền:")
         if session_v4.get("session_tag"):
-            add(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
+            add_line(lines, f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
         if htf_pressure_v4.get("state"):
-            add(f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-        if close_confirm_v4.get("strength") not in (None, "N/A"):
-            add(f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}")
+            add_line(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
         if macro_v4.get("headline"):
-            add(f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
+            add_line(lines, f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
         if playbook_v4.get("quality"):
             trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-            add(f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
+            add_line(lines, f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
 
-    notes = sig.get("notes") or sig.get("note_lines") or []
-    if notes:
-        add("")
-        add("📌 Notes:")
-        for s in notes[:6]:
-            s = str(s).replace('\n', ' ').strip()
-            if s:
-                add(f"- {s}")
-
-    # clean duplicate blank lines
     out = []
     for line in lines:
         if line == "" and (not out or out[-1] == ""):
