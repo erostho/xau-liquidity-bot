@@ -568,75 +568,161 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             tp2_s = entry - 1.80 * a
             sl_s = entry + 1.10 * a
 
+    def _vn_phase_label(pobj: dict) -> str:
+        p = str((pobj or {}).get("label") or "").upper()
+        return {
+            "EARLY": "Giai đoạn sớm",
+            "READY": "Có thể chuẩn bị",
+            "LATE": "Đang ở đoạn muộn",
+            "EXTREME": "Biến động quá mạnh",
+            "BOUNCE_TO_SELL": "Hồi để bán",
+            "DIP_TO_BUY": "Hồi để mua",
+        }.get(p, p or "Chưa rõ")
+
+    def _vn_state_text(state: str, narrative: dict) -> str:
+        state = str(state or "").upper()
+        summary = str((narrative or {}).get("summary") or "").strip()
+        mapping = {
+            "TREND_DOWN": "Xu hướng giảm đang chiếm ưu thế",
+            "PULLBACK_DOWN": "Đang hồi trong xu hướng giảm",
+            "BOUNCE_TO_SELL": "Đang hồi lên trong bối cảnh giảm; ưu tiên chờ hồi yếu để canh bán",
+            "TREND_UP": "Xu hướng tăng đang chiếm ưu thế",
+            "PULLBACK_UP": "Đang điều chỉnh trong xu hướng tăng",
+            "DIP_TO_BUY": "Đang điều chỉnh trong bối cảnh tăng; ưu tiên chờ giữ đáy để canh mua",
+            "CHOP": "Thị trường nhiễu, dễ quét hai đầu",
+            "TRANSITION": "Thị trường đang chuyển trạng thái, chưa nên vội vào lệnh",
+            "POST_LIQUIDATION_BOUNCE": "Sau cú quét mạnh, thị trường dễ hồi kỹ thuật",
+            "POST_SHORT_COVER": "Sau cú ép thoát lệnh bán, thị trường dễ hồi mạnh",
+            "EXHAUSTION_DOWN": "Đà giảm đang có dấu hiệu yếu dần",
+            "EXHAUSTION_UP": "Đà tăng đang có dấu hiệu yếu dần",
+        }
+        return summary or mapping.get(state, state or "Chưa rõ")
+
+    def _vn_flow_text(flow_obj: dict) -> str:
+        state = str((flow_obj or {}).get("state") or "").upper()
+        favored = str((flow_obj or {}).get("favored_side") or "").upper()
+        mapping = {
+            "INFLOW": "Dòng tiền đang vào",
+            "OUTFLOW": "Dòng tiền đang ra",
+            "RISK_ON": "Dòng tiền đang nghiêng về tài sản rủi ro",
+            "RISK_OFF": "Dòng tiền đang rời tài sản rủi ro",
+            "NEUTRAL": "Dòng tiền trung tính",
+        }
+        base = mapping.get(state, state or "Chưa rõ")
+        if favored == "BUY":
+            return f"{base} | Ưu tiên BUY"
+        if favored == "SELL":
+            return f"{base} | Ưu tiên SELL"
+        return f"{base} | Ưu tiên NONE"
+
+    def _grade_from_verdict(v: str) -> str:
+        vv = str(v or "").upper()
+        if "ĐÚNG" in vv:
+            return "A"
+        if "CHƯA RÕ" in vv:
+            return "B"
+        if "SAI" in vv or "NGUY HIỂM" in vv:
+            return "C"
+        return "B"
+
+    def _extract_gap_lines(ctx_lines, note_lines):
+        out = []
+        seen = set()
+        pool = list(ctx_lines or []) + list(note_lines or [])
+        for raw in pool:
+            s = str(raw or "").strip()
+            low = s.lower()
+            if any(k in low for k in ["gap", "mở cửa", "biên độ đầu phiên", "đầu phiên", "mất cân bằng"]):
+                if s not in seen:
+                    seen.add(s)
+                    out.append(s)
+        return out[:3]
+
+    gap_lines = _extract_gap_lines(ctx, notes)
+    grade = _grade_from_verdict(verdict)
+    side_vn = "MUA" if side == "BUY" else "BÁN"
+
     lines = []
-    lines.append("🧠 REVIEW LỆNH (Manual)")
+    lines.append(f"🧠 REVIEW LỆNH | {symbol} | {side_vn}")
     lines.append("")
-    lines.append(f"📌 {symbol} | {side} | Kết luận: {verdict}")
     lines.append(f"🎯 Entry: {_f(entry)}")
     lines.append(f"🎯 TP: {_f(tp, 2, '...')} | 🛑 SL: {_f(sl, 2, '...')} | {rr_txt}")
+    lines.append("")
+    lines.append(f"📌 Kết luận: {verdict}")
+
     if phase369:
-        lines.append(f"🧭 Phase 369: {phase369.get('phase', 'n/a')} | {phase369.get('label', 'n/a')} | {phase369.get('reason') or phase369.get('note') or ''}".rstrip(" |"))
-    if playbook.get("plan"):
-        plan = f"🗺 Plan: {playbook.get('plan')}"
-        if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
-            plan += f" | Zone: {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
-        lines.append(plan)
-    if isinstance(scenario_v3, dict):
-        if scenario_v3.get("base_case"):
-            lines.append(f"🎯 {scenario_v3.get('base_case')}")
-        if scenario_v3.get("alt_case"):
-            lines.append(f"🪄 {scenario_v3.get('alt_case')}")
-        if scenario_v3.get("invalid_if"):
-            lines.append(f"🧯 {scenario_v3.get('invalid_if')}")
+        lines.append(f"🧭 Giai đoạn: {phase369.get('phase', 'n/a')} | {_vn_phase_label(phase369)}")
+    lines.append(f"🌡 Trạng thái: {_vn_state_text(market_state_v2, narrative_v3 if isinstance(narrative_v3, dict) else {})}")
     if isinstance(flow_state, dict) and flow_state.get("state"):
-        lines.append(f"💰 Flow: {flow_state.get('state')} | Favored: {flow_state.get('favored_side', 'n/a')}")
-    if market_state_v2:
-        lines.append(f"🌡 State: {market_state_v2}")
-    if isinstance(narrative_v3, dict) and narrative_v3.get("headline"):
-        lines.append(f"🧠 Narrative: {narrative_v3.get('headline')} | {narrative_v3.get('summary', '')}".rstrip(" |"))
-    if isinstance(liquidation, dict) and liquidation.get("ok"):
-        lines.append(f"⚠️ Liquidation: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR")
-    if isinstance(no_trade_zone, dict) and no_trade_zone.get("active"):
-        reasons = '; '.join(str(x) for x in (no_trade_zone.get('reasons') or []) if x)
-        lines.append(f"⛔ No-trade zone: {reasons or 'active'}")
-    if a > 0:
-        lines.append(f"📐 ATR(14) M15: {_f(a)}")
+        lines.append(f"💰 Dòng tiền: {_vn_flow_text(flow_state)}")
 
+    lines.append("")
+    lines.append("📍 Vị trí giá:")
+    if cur is not None:
+        lines.append(f"- Giá hiện tại: {_f(cur)}")
     if isinstance(rinfo, dict):
-        lines.append("")
-        lines.append("📏 Range M15:")
-        lines.append(f"- {_f(lo)} – {_f(hi)}")
-        cur_txt = _f(cur)
+        lines.append(f"- Biên độ M15: {_f(lo)} – {_f(hi)}")
         if pos is not None:
-            cur_txt += f" (~{_pct(pos)})"
-        lines.append(f"- Current: {cur_txt}")
+            lines.append(f"- Vị trí trong biên độ: ~{_pct(pos)}")
 
     lines.append("")
-    lines.append("🧠 Context:")
-    for s in (ctx[:4] if ctx else ["n/a"]):
+    lines.append("💧 Thanh khoản:")
+    for s in (liq[:4] if liq else ["Chưa thấy quét/spring rõ"]):
         lines.append(f"- {s}")
 
-    lines.append("")
-    lines.append("💧 Liquidity:")
-    for s in (liq[:4] if liq else ["Chưa thấy sweep/spring rõ"]):
-        lines.append(f"- {s}")
+    if isinstance(liquidation, dict) and liquidation.get("ok"):
+        lines.append(f"- Vừa có quét mạnh: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR")
 
     lines.append("")
-    lines.append("🏗 Structure:")
+    lines.append("✅ Xác nhận:")
     lines.append(f"- HL={'✅' if gate.get('hl') else '❌'} | LH={'✅' if gate.get('lh') else '❌'} | BreakUp={'✅' if gate.get('break_up') else '❌'} | BreakDn={'✅' if gate.get('break_dn') else '❌'}")
     lines.append(f"- {gate.get('txt') or 'Chưa đọc được gate cấu trúc.'}")
 
     lines.append("")
-    lines.append("⚙️ Action:")
+    lines.append("🕳 GAP:")
+    if gap_lines:
+        for s in gap_lines:
+            lines.append(f"- {s}")
+    else:
+        lines.append("- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
+
+    lines.append("")
+    lines.append("🗺 Kịch bản chính:")
+    if isinstance(scenario_v3, dict) and scenario_v3.get("base_case"):
+        lines.append(f"- {scenario_v3.get('base_case')}")
+    elif playbook.get("plan"):
+        plan_txt = f"{playbook.get('plan')}"
+        if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
+            plan_txt += f" | Zone: {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}"
+        lines.append(f"- {plan_txt}")
+    else:
+        lines.append("- Chưa có kịch bản chính rõ")
+
+    lines.append("")
+    lines.append("🪄 Kịch bản phụ:")
+    if isinstance(scenario_v3, dict) and scenario_v3.get("alt_case"):
+        lines.append(f"- {scenario_v3.get('alt_case')}")
+    else:
+        lines.append("- Chưa có kịch bản phụ rõ")
+
+    lines.append("")
+    lines.append("🧯 Điểm sai kịch bản:")
+    if isinstance(scenario_v3, dict) and scenario_v3.get("invalid_if"):
+        lines.append(f"- {scenario_v3.get('invalid_if')}")
+    else:
+        lines.append(f"- {'vượt' if side == 'SELL' else 'thủng'} {_f(sl, 2, 'n/a')} hoặc mất {'LH' if side == 'SELL' else 'HL'}")
+
+    lines.append("")
+    lines.append(f"📊 Chất lượng hiện tại: {grade}")
+
+    lines.append("")
+    lines.append("⚙️ Hành động:")
     seen = set()
     for s in actions:
         ss = str(s).strip()
         if ss and ss not in seen:
             seen.add(ss)
             lines.append(f"- {ss}")
-
-    lines.append("")
-    lines.append(f"🛑 Invalidation: {'thủng' if side == 'BUY' else 'vượt'} {_f(sl, 2, 'n/a')} hoặc mất {'HL' if side == 'BUY' else 'LH'} → ưu tiên thoát")
 
     lines.append("")
     lines.append("🪜 Quản trị 5-10-15:")
