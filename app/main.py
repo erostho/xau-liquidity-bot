@@ -568,6 +568,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             tp2_s = entry - 1.80 * a
             sl_s = entry + 1.10 * a
 
+
     def _vn_phase_label(pobj: dict) -> str:
         p = str((pobj or {}).get("label") or "").upper()
         return {
@@ -579,9 +580,16 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             "DIP_TO_BUY": "Hồi để mua",
         }.get(p, p or "Chưa rõ")
 
-    def _vn_state_text(state: str, narrative: dict) -> str:
+    def _vn_state_text(state: str, narrative_obj: dict, order_side: str) -> str:
         state = str(state or "").upper()
-        summary = str((narrative or {}).get("summary") or "").strip()
+        summary = str((narrative_obj or {}).get("summary") or "").strip()
+
+        # REVIEW ưu tiên ngữ cảnh của lệnh đang cầm, không chỉ copy narrative thị trường
+        if order_side == "SELL" and state in ("TREND_UP", "PULLBACK_UP", "DIP_TO_BUY"):
+            return "Bối cảnh lớn vẫn nghiêng tăng; lệnh SELL hiện đang ngược hướng chính, chỉ nên đánh ngắn."
+        if order_side == "BUY" and state in ("TREND_DOWN", "PULLBACK_DOWN", "BOUNCE_TO_SELL"):
+            return "Bối cảnh lớn vẫn nghiêng giảm; lệnh BUY hiện đang ngược hướng chính, chỉ nên đánh ngắn."
+
         mapping = {
             "TREND_DOWN": "Xu hướng giảm đang chiếm ưu thế",
             "PULLBACK_DOWN": "Đang hồi trong xu hướng giảm",
@@ -628,8 +636,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     def _extract_gap_lines(ctx_lines, note_lines):
         out = []
         seen = set()
-        pool = list(ctx_lines or []) + list(note_lines or [])
-        for raw in pool:
+        for raw in list(ctx_lines or []) + list(note_lines or []):
             s = str(raw or "").strip()
             low = s.lower()
             if any(k in low for k in ["gap", "mở cửa", "biên độ đầu phiên", "đầu phiên", "mất cân bằng"]):
@@ -652,7 +659,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     if phase369:
         lines.append(f"🧭 Giai đoạn: {phase369.get('phase', 'n/a')} | {_vn_phase_label(phase369)}")
-    lines.append(f"🌡 Trạng thái: {_vn_state_text(market_state_v2, narrative_v3 if isinstance(narrative_v3, dict) else {})}")
+    lines.append(f"🌡 Trạng thái: {_vn_state_text(market_state_v2, narrative_v3 if isinstance(narrative_v3, dict) else {}, side)}")
     if isinstance(flow_state, dict) and flow_state.get("state"):
         lines.append(f"💰 Dòng tiền: {_vn_flow_text(flow_state)}")
 
@@ -669,7 +676,6 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append("💧 Thanh khoản:")
     for s in (liq[:4] if liq else ["Chưa thấy quét/spring rõ"]):
         lines.append(f"- {s}")
-
     if isinstance(liquidation, dict) and liquidation.get("ok"):
         lines.append(f"- Vừa có quét mạnh: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR")
 
@@ -726,7 +732,13 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append("🪜 Quản trị 5-10-15:")
-    lines.append(f"- Stage: {mgmt.get('stage', 'n/a')} | {mgmt.get('label', 'n/a')}")
+    stage_label_map = {
+        "Validation": "Pha kiểm tra",
+        "Expansion": "Pha mở rộng",
+        "Harvest": "Pha thu lợi nhuận",
+    }
+    stage_label_vn = stage_label_map.get(str(mgmt.get('label', 'n/a')), str(mgmt.get('label', 'n/a')))
+    lines.append(f"- Stage: {mgmt.get('stage', 'n/a')} | {stage_label_vn}")
     for s in (mgmt.get('lines', []) or [])[:4]:
         lines.append(f"- {s}")
 
