@@ -1741,6 +1741,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        base["last_price"] = float(last_close_15)
+        base["current_price"] = float(last_close_15)
         return base
 
     # derive major_bearish for gating logic
@@ -1749,6 +1751,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         major_bearish = str(h1_tag) in ("LL-LH", "LH–LL", "LH-LL")
     except Exception:
         major_bearish = False
+        base["last_price"] = float(last_close_15)
+        base["current_price"] = float(last_close_15)
         return base
 
     m15c = _safe_candles(m15)
@@ -2076,6 +2080,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     "notes": notes + ["➡️ Khi HL + BOS xuất hiện (trạng thái OK/OK) → mới canh BUY theo H1 + chờ M30 confirm."],
                 })
                 _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+                base["last_price"] = float(last_close_15)
+                base["current_price"] = float(last_close_15)
                 return base
 
         if post_sweep_sell:
@@ -2092,6 +2098,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     "notes": notes + ["➡️ Khi LH + BOS xuất hiện (trạng thái OK/OK) → mới canh SELL theo H1 + chờ M30 confirm."],
                 })
                 _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+                base["last_price"] = float(last_close_15)
+                base["current_price"] = float(last_close_15)
                 return base
 
     # ===== Quality =====
@@ -2218,6 +2226,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "notes": ["Chưa đủ điều kiện vào kèo. Chờ thêm nến xác nhận/retest."],
         })
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        base["last_price"] = float(last_close_15)
+        base["current_price"] = float(last_close_15)
         return base
 
     # ---- H1 confirm (hard filter)
@@ -2234,6 +2244,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 "notes": ["H1 chưa bullish → không BUY. Chờ H1 confirm hoặc kèo rõ hơn."],
             })
             _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+            base["last_price"] = float(last_close_15)
+            base["current_price"] = float(last_close_15)
             return base
         if bias == "SELL" and h1_trend != "bearish":
             base.update({
@@ -2246,6 +2258,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 "notes": ["H1 chưa bearish → không SELL. Chờ H1 confirm hoặc kèo rõ hơn."],
             })
             _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+            base["last_price"] = float(last_close_15)
+            base["current_price"] = float(last_close_15)
             return base
 
     recommendation = "🔴 SELL" if bias == "SELL" else "🟢 BUY"
@@ -2303,6 +2317,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "notes": notes + ["Chờ nến M30 đóng xác nhận rồi mới vào lệnh."],
         })
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        base["last_price"] = float(last_close_15)
+        base["current_price"] = float(last_close_15)
         return base
     # ===== PRO adjustments: divergence/candle/volume affect confidence & management =====
     # 1) Divergence: nếu đánh ngược divergence → warn mạnh
@@ -2883,6 +2899,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "notes": notes,
     })
     _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+    base["last_price"] = float(last_close_15)
+    base["current_price"] = float(last_close_15)
     return base
 
     # =========================
@@ -3096,8 +3114,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
             sell_near = f"SELL gần: nếu bị từ chối dưới {nf(bos)}"
     
         if zone_lo and zone_hi:
-            buy_near = f"BUY gần: nếu giữ được vùng {nf(zone_lo)} – {nf(zone_hi)}"
-            sell_near = f"SELL gần: nếu bị từ chối tại vùng {nf(zone_lo)} – {nf(zone_hi)}"
+            if rec_text == "BÁN":
+                sell_near = f"SELL gần: nếu bị từ chối tại vùng {nf(zone_lo)} – {nf(zone_hi)}"
+                buy_near = f"BUY sớm: nếu phá lên và giữ trên vùng {nf(zone_hi)}"
+            else:
+                buy_near = f"BUY gần: nếu giữ được vùng {nf(zone_lo)} – {nf(zone_hi)}"
+                sell_near = f"SELL sớm: nếu thủng vùng {nf(zone_lo)}"
     
         # ===== trigger mạnh =====
         buy_strong = "Chưa có trigger BUY mạnh"
@@ -3387,6 +3409,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
         if htf_pressure_v4.get("state"):
             add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
+            htf_state = str(htf_pressure.get("state") or "")
+            if "BULLISH" in htf_state and rec == "BÁN":
+                add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+            if "BEARISH" in htf_state and rec == "MUA":
+                add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
         if macro_v4.get("headline"):
             add(lines, f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
         if playbook_v4.get("quality"):
