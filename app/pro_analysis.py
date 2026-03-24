@@ -2990,8 +2990,25 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"📡 Dữ liệu: {data_source}")
 
     add(lines, "")
-    add(lines, f"💵 Giá hiện tại: {nf(last_px if last_px is not None else entry)}")
-    add(lines, f"📌 Kết luận nhanh: {verdict_quick}")
+    price_now = nf(last_px if last_px is not None else entry)
+    reason_skip = ""
+    if trade_mode == "WAIT":
+        if range_pos is not None:
+            if float(range_pos) > 0.8:
+                reason_skip = "đang sát vùng cao của biên độ, không nên SELL đuổi"
+            elif float(range_pos) < 0.2:
+                reason_skip = "đang sát vùng thấp, không nên BUY đuổi"
+            else:
+                reason_skip = "đang giữa biên độ, dễ nhiễu"
+        else:
+            reason_skip = "chưa đủ xác nhận rõ"
+    
+    verdict_full = verdict_quick
+    if reason_skip:
+        verdict_full += f"; {reason_skip}"
+    
+    add(lines, f"💵 Giá hiện tại: {price_now}")
+    add(lines, f"📌 Kết luận nhanh: {verdict_full}")
     add(lines, f"🧭 Hướng ưu tiên: {rec}")
     if phase:
         add(lines, f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase_text(phase)}")
@@ -3006,7 +3023,15 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if range_lo is not None and range_hi is not None:
         add(lines, f"- Biên độ M15: {nf(range_lo)} – {nf(range_hi)}")
     if range_pos is not None:
-        add(lines, f"- Vị trí trong biên độ: ~{int(round(float(range_pos) * 100))}%")
+        pos_pct = int(round(float(range_pos) * 100))
+        pos_note = ""
+        
+        if pos_pct > 80:
+            pos_note = "→ đang sát vùng cao, không đẹp để SELL đuổi"
+        elif pos_pct < 20:
+            pos_note = "→ đang sát vùng thấp, không đẹp để BUY đuổi"
+        
+        add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
     add(lines, "")
     add(lines, "💧 Thanh khoản:")
@@ -3029,7 +3054,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if close_confirm_v4 and close_confirm_v4.get("strength") not in (None, "N/A"):
         hold_txt = "đã giữ được mốc" if close_confirm_v4.get("hold") == "YES" else "chưa giữ mốc rõ"
         add(lines, f"- Đóng nến xác nhận: {close_confirm_v4.get('strength')} | {hold_txt}")
-
+    if k.get("M15_BOS"):
+        add(lines, f"- Mốc xác nhận gần: {nf(k.get('M15_BOS'))}")
     add(lines, "")
     add(lines, "🕳 GAP:")
     if gap_lines:
@@ -3072,11 +3098,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, "")
     add(lines, "⚙️ Hành động:")
     if trade_mode == "FULL":
-        add(lines, "- Có thể theo kịch bản nếu giá vào đúng vùng và có xác nhận")
+        add(lines, "- Có thể vào lệnh nếu giá vào đúng vùng và có xác nhận rõ")
     elif trade_mode == "HALF":
-        add(lines, "- Có thể canh nhưng không nên đuổi giá, giảm độ quyết liệt")
+        add(lines, "- Có thể canh nhưng không nên đuổi giá")
     else:
-        add(lines, "- Chưa nên vào lệnh mới, ưu tiên quan sát thêm")
+        add(lines, "- Chưa nên vào lệnh")
+    
+    # thêm hành động cụ thể
+    if range_pos is not None:
+        if float(range_pos) > 0.85:
+            add(lines, "- Không SELL đuổi ở vùng cao")
+        elif float(range_pos) < 0.15:
+            add(lines, "- Không BUY đuổi ở vùng thấp")
+    
+    if k.get("M15_BOS"):
+        add(lines, f"- Chờ M15 đóng qua {nf(k.get('M15_BOS'))} để xác nhận")
     if entry is not None or sl is not None or tp1 is not None:
         add(lines, f"- Entry: {nf(entry)} | SL: {nf(sl)} | TP1: {nf(tp1)} | TP2: {nf(tp2)}")
 
