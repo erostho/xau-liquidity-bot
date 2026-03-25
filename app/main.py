@@ -673,11 +673,11 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if side == "SELL":
             if ztxt:
                 if zone_state == "below_zone":
-                    return f"Nếu giá hồi lại vùng {ztxt} thì mới canh SELL; hiện tại đã ở dưới vùng → không nên SELL đuổi"
+                    return f"Giá đã thủng vùng {ztxt} → vùng BUY mất hiệu lực, không nên tiếp tục kỳ vọng BUY tại đây"
                 if zone_state == "in_zone":
                     return f"Đang ở trong vùng {ztxt}; chỉ canh SELL nếu xuất hiện lực từ chối rõ"
                 if zone_state == "above_zone":
-                    return f"Giá đang ở trên vùng {ztxt}; chờ phản ứng rồi mới quyết định có SELL hay không"
+                    return f"Giá đã vượt vùng {ztxt} → vùng SELL mất hiệu lực, không nên tiếp tục kỳ vọng SELL tại đây"
     
             base = base.replace("Base case:", "").strip()
             base = base.replace("hồi để SELL", "chờ hồi để canh bán")
@@ -979,12 +979,13 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         htf_state = str(htf_pressure_v4.get("state") or "")
         if "BULLISH" in htf_state:
             lines.append("- ⚠️ SELL chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
-    
     if side == "BUY" and isinstance(htf_pressure_v4, dict):
         htf_state = str(htf_pressure_v4.get("state") or "")
         if "BEARISH" in htf_state:
             lines.append("- ⚠️ BUY chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
-
+    if 0.3 <= float(pos or 0) <= 0.7:
+        lines.append("🔥 Tradeable: NO")
+        lines.append("- Lý do: đang ở giữa biên độ, edge thấp")
     lines.append("")
     lines.append("⚙️ Hành động:")
     zone_low = playbook.get("zone_low") if isinstance(playbook, dict) else None
