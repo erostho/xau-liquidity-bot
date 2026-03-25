@@ -3082,6 +3082,77 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if favored == "SELL":
             return f"{base} | Ưu tiên SELL"
         return f"{base} | Ưu tiên NONE"
+
+    def _signal_weighting_now(sig: dict, meta: dict, struct: dict, playbook: dict, htf_pressure_v4: dict, ntz: dict):
+        score = 0
+        reasons = []
+    
+        # 1) HTF
+        htf_state = str(htf_pressure_v4.get("state") or "").upper()
+        m15_struct = str(struct.get("M15") or "").upper()
+    
+        if "BULLISH" in htf_state or "BEARISH" in htf_state:
+            score += 1
+            reasons.append("khung lớn có thiên hướng")
+    
+        # 2) structure ngắn hạn
+        if m15_struct in ("HH-HL", "LL-LH"):
+            score += 1
+            reasons.append("cấu trúc ngắn hạn rõ")
+    
+        # 3) position
+        rp = playbook.get("range_pos")
+        try:
+            rp = float(rp)
+            if rp <= 0.2 or rp >= 0.8:
+                score += 1
+                reasons.append("đang ở vùng biên có lợi")
+            elif 0.3 <= rp <= 0.7:
+                score -= 1
+                reasons.append("đang ở giữa biên độ")
+        except Exception:
+            pass
+    
+        # 4) no-trade zone
+        if ntz.get("active"):
+            score -= 2
+            reasons.append("đang ở vùng no-trade")
+    
+        # 5) quality lines / chi tiết phụ
+        q_lines = sig.get("quality_lines") or []
+        q_text = " | ".join(str(x) for x in q_lines).upper()
+    
+        if "VOLUME: HIGH" in q_text or "VOLUME CAO" in q_text:
+            score += 1
+            reasons.append("volume ủng hộ")
+        if "VOLUME: LOW" in q_text or "VOLUME THẤP" in q_text:
+            score -= 1
+            reasons.append("volume chưa ủng hộ")
+    
+        if "REJECTION=UPPER" in q_text or "REJECTION=LOWER" in q_text or "ENGULFING=BULL" in q_text or "ENGULFING=BEAR" in q_text:
+            score += 1
+            reasons.append("nến có phản ứng rõ")
+    
+        if "DIVERGENCE: BEARISH" in q_text or "DIVERGENCE: BULLISH" in q_text or "RSI DIVERGENCE: BEARISH" in q_text or "RSI DIVERGENCE: BULLISH" in q_text:
+            score += 1
+            reasons.append("có phân kỳ hỗ trợ")
+    
+        if score <= 0:
+            label = "YẾU"
+        elif score <= 2:
+            label = "TRUNG BÌNH"
+        else:
+            label = "MẠNH"
+    
+        # loại trùng
+        dedup = []
+        seen = set()
+        for r in reasons:
+            if r not in seen:
+                seen.add(r)
+                dedup.append(r)
+    
+        return label, dedup[:4]
     def position_note_from_range(range_pos_val) -> str:
         try:
             rp = float(range_pos_val)
@@ -3471,6 +3542,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
+    setup_label, setup_reasons = _signal_weighting_now(sig, meta, struct, playbook, htf_pressure_v4, ntz)
+    add(lines, f"- Độ mạnh setup hiện tại: {setup_label}")
+    if setup_reasons:
+        add(lines, f"- Lý do: {', '.join(setup_reasons)}")
     if grade == "A":
         add(lines, "- Edge mạnh: có thể theo nếu giá vào đúng vùng")
     elif grade in ("A-", "B", "B-"):
@@ -3482,7 +3557,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if ntz.get("active"):
         rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
         add(lines, f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
-
     add(lines, "")
     add(lines, "⚙️ Hành động:")
     
