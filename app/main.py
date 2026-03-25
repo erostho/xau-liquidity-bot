@@ -376,7 +376,70 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             return f"{int(round(float(x) * 100))}%"
         except Exception:
             return default
-
+    def _signal_weighting_review(side: str, gate: dict, pos, actions, htf_pressure_v4: dict):
+        score = 0
+        reasons = []
+    
+        htf_state = str(htf_pressure_v4.get("state") or "").upper()
+    
+        if side == "SELL":
+            if gate.get("lh"):
+                score += 1
+                reasons.append("đã có LH")
+            if gate.get("break_dn"):
+                score += 2
+                reasons.append("đã phá đáy")
+            if "BEARISH" in htf_state:
+                score += 1
+                reasons.append("khung lớn ủng hộ SELL")
+            elif "BULLISH" in htf_state:
+                score -= 1
+                reasons.append("đang ngược khung lớn")
+        else:
+            if gate.get("hl"):
+                score += 1
+                reasons.append("đã có HL")
+            if gate.get("break_up"):
+                score += 2
+                reasons.append("đã phá đỉnh")
+            if "BULLISH" in htf_state:
+                score += 1
+                reasons.append("khung lớn ủng hộ BUY")
+            elif "BEARISH" in htf_state:
+                score -= 1
+                reasons.append("đang ngược khung lớn")
+    
+        try:
+            rp = float(pos)
+            if 0.3 <= rp <= 0.7:
+                score -= 1
+                reasons.append("đang ở giữa biên độ")
+        except Exception:
+            pass
+    
+        action_text = " | ".join(str(x) for x in actions).upper()
+        if "VOLUME CAO" in action_text or "VOLUME: HIGH" in action_text:
+            score += 1
+            reasons.append("volume ủng hộ")
+        if "VOLUME THẤP" in action_text or "VOLUME: LOW" in action_text:
+            score -= 1
+            reasons.append("volume yếu")
+    
+        if score <= 0:
+            label = "YẾU"
+        elif score <= 2:
+            label = "TRUNG BÌNH"
+        else:
+            label = "MẠNH"
+    
+        dedup = []
+        seen = set()
+        for r in reasons:
+            if r not in seen:
+                seen.add(r)
+                dedup.append(r)
+    
+        return label, dedup[:4]
     def _safe_float(x, default: float = 0.0) -> float:
         try:
             return float(x) if x is not None else default
@@ -908,6 +971,10 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append(f"📊 Chất lượng hiện tại: {grade}")
+    setup_label, setup_reasons = _signal_weighting_review(side, gate, pos, actions, htf_pressure_v4)
+    lines.append(f"- Độ mạnh setup hiện tại: {setup_label}")
+    if setup_reasons:
+        lines.append(f"- Lý do: {', '.join(setup_reasons)}")
     if side == "SELL" and isinstance(htf_pressure_v4, dict):
         htf_state = str(htf_pressure_v4.get("state") or "")
         if "BULLISH" in htf_state:
@@ -972,9 +1039,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             if key not in seen:
                 seen.add(key)
                 out.append(s)
-    
         return out
-    
     
     # ===== APPLY =====
     actions = _clean_conflict_lines(actions, str(htf_pressure_v4.get("state")))
