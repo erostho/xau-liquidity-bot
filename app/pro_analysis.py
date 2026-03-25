@@ -3136,7 +3136,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         fake = str(session_v4.get("fake_move_risk") or "").upper()
     
         if "CHOP" in sess:
-            score -= 10
+            score -= 6
             reasons.append("session nhiễu")
         if ft == "YES":
             score += 5
@@ -3154,7 +3154,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
         # ===== No trade zone =====
         if ntz.get("active"):
-            score -= 15
+            score -= 8
             reasons.append("đang ở no-trade zone")
     
         # ===== Entry zone =====
