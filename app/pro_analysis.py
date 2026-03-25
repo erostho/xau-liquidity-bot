@@ -3310,10 +3310,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
         try:
             rp = float(rp)
             if rp <= 0.2 or rp >= 0.8:
-                score += 1
+                score += 2
                 reasons.append("đang ở vùng biên có lợi")
             elif 0.3 <= rp <= 0.7:
-                score -= 1
+                score -= 2
                 reasons.append("đang ở giữa biên độ")
         except Exception:
             pass
@@ -3343,11 +3343,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
             reasons.append("có phân kỳ hỗ trợ")
     
         has_zone = bool(playbook.get("zone_low") and playbook.get("zone_high"))
-        if score > 2 and has_zone:
+        if score > 3 and has_zone:
             label = "MẠNH"
-        elif score > 2 and not has_zone:
+        elif score > 3 and not has_zone:
             label = "MẠNH (CHỜ ENTRY)"
-        elif score == 2:
+        elif 2 <= score <= 3:
             label = "TRUNG BÌNH"
         else:
             label = "YẾU"
@@ -3359,7 +3359,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
             if r not in seen:
                 seen.add(r)
                 dedup.append(r)
-    
+        # chống mâu thuẫn: nếu đang ở vùng biên có lợi mà label vẫn YẾU thì nâng tối thiểu lên TRUNG BÌNH
+        if "đang ở vùng biên có lợi" in dedup and label == "YẾU":
+            label = "TRUNG BÌNH"
         return label, dedup[:4]
     def position_note_from_range(range_pos_val) -> str:
         try:
