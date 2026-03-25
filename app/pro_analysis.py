@@ -1065,12 +1065,6 @@ def _inject_meta_structure_and_levels(base: dict, m15, m30, h1, h4):
         m30 = m30 or []
         h1  = h1  or []
         h4  = h4  or []
-        if m15:
-        try:
-            base["last_price"] = float(m15[-1].close)
-            base["current_price"] = float(m15[-1].close)
-        except Exception:
-            pass
         return base
     base["meta"] = meta
 
