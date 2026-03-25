@@ -655,7 +655,132 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         except Exception:
             pass
         return "unknown"
+    def _final_score_review(side: str, gate: dict, pos, actions, playbook: dict, no_trade_zone: dict, htf_pressure_v4: dict):
+        score = 50
+        reasons = []
     
+        htf_state = str((htf_pressure_v4 or {}).get("state") or "").upper()
+    
+        # 1) HTF
+        if "BULLISH_STRONG" in htf_state or "BEARISH_STRONG" in htf_state:
+            score += 10
+            reasons.append("HTF mạnh")
+        elif "BULLISH_WEAK" in htf_state or "BEARISH_WEAK" in htf_state:
+            score += 5
+            reasons.append("HTF hơi nghiêng")
+        else:
+            score -= 4
+            reasons.append("HTF chưa đồng thuận")
+    
+        # 2) Gate structure theo side
+        if side == "SELL":
+            if gate.get("lh"):
+                score += 8
+                reasons.append("đã có LH")
+            else:
+                score -= 8
+                reasons.append("chưa có LH")
+    
+            if gate.get("break_dn"):
+                score += 10
+                reasons.append("đã phá đáy")
+        else:
+            if gate.get("hl"):
+                score += 8
+                reasons.append("đã có HL")
+            else:
+                score -= 8
+                reasons.append("chưa có HL")
+    
+            if gate.get("break_up"):
+                score += 10
+                reasons.append("đã phá đỉnh")
+    
+        # 3) Position
+        try:
+            rp = float(pos)
+            if rp <= 0.2 or rp >= 0.8:
+                score += 6
+                reasons.append("đang ở vùng biên")
+            elif 0.3 <= rp <= 0.7:
+                score -= 8
+                reasons.append("đang ở giữa biên độ")
+        except Exception:
+            pass
+    
+        # 4) No-trade zone
+        if isinstance(no_trade_zone, dict) and no_trade_zone.get("active"):
+            score -= 10
+            reasons.append("đang ở no-trade zone")
+    
+        # 5) Action text / quality text
+        action_text = " | ".join(str(x) for x in (actions or [])).upper()
+    
+        if "VOLUME CAO" in action_text or "VOLUME: HIGH" in action_text:
+            score += 4
+            reasons.append("volume ủng hộ")
+        elif "VOLUME THẤP" in action_text or "VOLUME: LOW" in action_text:
+            score -= 4
+            reasons.append("volume yếu")
+    
+        if "REJECTION=UPPER" in action_text or "REJECTION=LOWER" in action_text or "ENGULFING=BULL" in action_text or "ENGULFING=BEAR" in action_text:
+            score += 3
+            reasons.append("nến có phản ứng rõ")
+    
+        if "DIVERGENCE: BEARISH" in action_text or "DIVERGENCE: BULLISH" in action_text or "RSI DIVERGENCE: BEARISH" in action_text or "RSI DIVERGENCE: BULLISH" in action_text:
+            score += 3
+            reasons.append("có phân kỳ hỗ trợ")
+    
+        # 6) Ngược HTF thì trừ
+        if side == "SELL" and "BULLISH" in htf_state:
+            score -= 10
+            reasons.append("đang ngược khung lớn")
+        if side == "BUY" and "BEARISH" in htf_state:
+            score -= 10
+            reasons.append("đang ngược khung lớn")
+    
+        # clamp
+        score = max(0, min(100, score))
+    
+        # Tradeable cho REVIEW = có nên mở thêm / giữ mạnh không
+        tradeable = True
+        trade_reasons = []
+    
+        if 0.3 <= float(pos or 0) <= 0.7:
+            tradeable = False
+            trade_reasons.append("đang ở giữa biên độ")
+    
+        if isinstance(no_trade_zone, dict) and no_trade_zone.get("active"):
+            tradeable = False
+            trade_reasons.append("đang ở vùng no-trade")
+    
+        if side == "SELL" and not gate.get("lh"):
+            tradeable = False
+            trade_reasons.append("SELL chưa có LH xác nhận")
+        if side == "BUY" and not gate.get("hl"):
+            tradeable = False
+            trade_reasons.append("BUY chưa có HL xác nhận")
+    
+        if score < 60:
+            tradeable = False
+            trade_reasons.append("edge chưa đủ mạnh")
+    
+        # dedupe
+        dedup_reasons = []
+        seen = set()
+        for r in reasons:
+            if r not in seen:
+                seen.add(r)
+                dedup_reasons.append(r)
+    
+        dedup_trade = []
+        seen2 = set()
+        for r in trade_reasons:
+            if r not in seen2:
+                seen2.add(r)
+                dedup_trade.append(r)
+    
+        return score, ("YES" if tradeable else "NO"), dedup_reasons[:5], dedup_trade[:3]
     
     def _review_main_plan_v2(side: str, cur_px, scenario_obj: dict, playbook_obj: dict, grade_text: str):
         base = str((scenario_obj or {}).get("base_case") or "").strip()
@@ -971,6 +1096,28 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append(f"📊 Chất lượng hiện tại: {grade}")
+    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_review(
+        side,
+        gate,
+        pos,
+        actions,
+        playbook if isinstance(playbook, dict) else {},
+        no_trade_zone if isinstance(no_trade_zone, dict) else {},
+        htf_pressure_v4 if isinstance(htf_pressure_v4, dict) else {},
+    )
+    
+    lines.append(f"🔥 Final Score: {final_score}/100")
+    lines.append(f"→ Tradeable thêm: {tradeable_label}")
+    
+    if tradeable_label == "NO":
+        lines.append("- Vị thế hiện tại chưa đủ đẹp để mở thêm rủi ro mới")
+    else:
+        lines.append("- Vị thế hiện tại còn đủ điều kiện để giữ theo kế hoạch")
+    
+    if score_reasons:
+        lines.append(f"- Điểm cộng/trừ chính: {', '.join(score_reasons)}")
+    if tradeable_reasons:
+        lines.append(f"- Lý do chưa trade mạnh: {', '.join(tradeable_reasons)}")
     setup_label, setup_reasons = _signal_weighting_review(side, gate, pos, actions, htf_pressure_v4)
     lines.append(f"- Độ mạnh setup hiện tại: {setup_label}")
     if setup_reasons:
