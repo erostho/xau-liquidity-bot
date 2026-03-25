@@ -2105,8 +2105,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 return base
 
     # ===== Quality =====
-    if rej["upper_reject"] or rej["lower_reject"]:
-        quality_lines.append("Nến từ chối rõ")
+    if rej.get("upper_reject"):
+        txt = "Nến từ chối tăng rõ (râu trên dài)"
+        if range_pos is not None and float(range_pos) > 70:
+            txt += " → xuất hiện ở vùng cao, dễ xảy ra pullback"
+        quality_lines.append(txt)
+        score += 1
+    
+    elif rej.get("lower_reject"):
+        txt = "Nến từ chối giảm rõ (râu dưới dài)"
+        if range_pos is not None and float(range_pos) < 30:
+            txt += " → xuất hiện ở vùng thấp, có thể bật lên"
+        quality_lines.append(txt)
         score += 1
 
     quality_lines.append(f"RSI(14) M15: {_fmt(rsi15)}")
