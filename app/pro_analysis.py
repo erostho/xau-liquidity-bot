@@ -3082,7 +3082,35 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if favored == "SELL":
             return f"{base} | Ưu tiên SELL"
         return f"{base} | Ưu tiên NONE"
-
+    def _tradeability_engine(sig, playbook, ntz, htf_pressure_v4):
+        reasons = []
+        tradeable = True
+    
+        zlo = playbook.get("zone_low")
+        zhi = playbook.get("zone_high")
+    
+        if not zlo or not zhi:
+            tradeable = False
+            reasons.append("chưa có vùng entry rõ")
+    
+        if ntz.get("active"):
+            tradeable = False
+            reasons.append("đang ở vùng no-trade")
+    
+        try:
+            rp = float(playbook.get("range_pos"))
+            if 0.3 <= rp <= 0.7:
+                tradeable = False
+                reasons.append("đang ở giữa biên độ")
+        except:
+            pass
+    
+        action_text = " ".join(sig.get("action_lines") or []).lower()
+        if "buy gần" not in action_text and "sell gần" not in action_text:
+            tradeable = False
+            reasons.append("chưa có trigger gần")
+    
+        return "YES" if tradeable else "NO", reasons[:3]
     def _signal_weighting_now(sig: dict, meta: dict, struct: dict, playbook: dict, htf_pressure_v4: dict, ntz: dict):
         score = 0
         reasons = []
@@ -3137,12 +3165,15 @@ def format_signal(sig: Dict[str, Any]) -> str:
             score += 1
             reasons.append("có phân kỳ hỗ trợ")
     
-        if score <= 0:
-            label = "YẾU"
-        elif score <= 2:
+        has_zone = bool(playbook.get("zone_low") and playbook.get("zone_high"))
+        if score > 2 and has_zone:
+            label = "MẠNH"
+        elif score > 2 and not has_zone:
+            label = "MẠNH (CHỜ ENTRY)"
+        elif score == 2:
             label = "TRUNG BÌNH"
         else:
-            label = "MẠNH"
+            label = "YẾU"
     
         # loại trùng
         dedup = []
@@ -3351,7 +3382,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if stars_val == 2:
             return "C"
         return "SKIP"
-
+    def _session_htf_comment(session_obj, htf_pressure_v4):
+        session = str(session_obj.get("name") or "").upper()
+        htf = str(htf_pressure_v4.get("state") or "").upper()
+    
+        if "IMPULSE_DOWN" in session and "BULLISH" in htf:
+            return "Impulse giảm ngược xu hướng lớn → dễ là pullback, cần thận trọng"
+        if "IMPULSE_UP" in session and "BEARISH" in htf:
+            return "Impulse tăng ngược xu hướng lớn → dễ là hồi kỹ thuật"
+    
+        return None
     def extract_gap_lines(ctxs: list[str], nts: list[str]) -> list[str]:
         out = []
         seen = set()
@@ -3539,27 +3579,39 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"- {sell_near}")
     add(lines, f"- {buy_strong}")
     add(lines, f"- {sell_strong}")
-    
+
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
+    
+    # Setup trước
     setup_label, setup_reasons = _signal_weighting_now(sig, meta, struct, playbook, htf_pressure_v4, ntz)
     add(lines, f"- Độ mạnh setup hiện tại: {setup_label}")
     if setup_reasons:
         add(lines, f"- Lý do: {', '.join(setup_reasons)}")
+    
+    # Tradeable sau (QUAN TRỌNG NHẤT)
+    tradeable_label, tradeable_reasons = _tradeability_engine(sig, playbook, ntz, htf_pressure_v4)
+    add(lines, f"🔥 Tradeable: {tradeable_label}")
+    if tradeable_reasons:
+        add(lines, f"- Lý do: {', '.join(tradeable_reasons)}")
+    
+    # Link logic
+    if setup_label.startswith("MẠNH") and tradeable_label == "NO":
+        add(lines, "- ⚠️ Setup tốt nhưng chưa có điểm vào → không nên trade ngay")
+    
+    if tradeable_label == "NO":
+        add(lines, "- 🚫 Không có lợi thế vào lệnh → ưu tiên đứng ngoài")
+    
+    # Grade explanation
     if grade == "A":
         add(lines, "- Edge mạnh: có thể theo nếu giá vào đúng vùng")
-    elif grade in ("A-", "B", "B-"):
+    elif grade in ("A", "B", "B-"):
         add(lines, "- Có edge nhưng cần chọn điểm vào kỹ, không đuổi giá")
     elif grade == "C":
         add(lines, "- Ý tưởng có thể đúng nhưng rủi ro còn cao")
-    if playbook_v4.get("quality"):
-        add(lines, f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
-    if ntz.get("active"):
-        rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
-        add(lines, f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
+        
     add(lines, "")
     add(lines, "⚙️ Hành động:")
-    
     if trade_mode == "FULL":
         add(lines, "- Có thể mở lệnh nếu giá vào đúng vùng và có xác nhận rõ")
     elif trade_mode == "HALF":
@@ -3589,14 +3641,20 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "🧩 Toàn Cảnh Thị Trường:")
         if session_v4.get("session_tag"):
             add(lines, f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
+        # FIX: define trước
+        htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
         if htf_pressure_v4.get("state"):
             add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-            htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
-            htf_state = str(htf_pressure_v4.get("state") or "")
-            if "BULLISH" in htf_state and rec == "BÁN":
-                add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-            if "BEARISH" in htf_state and rec == "MUA":
-                add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+        htf_state = str(htf_pressure_v4.get("state") or "").upper()
+        side = str(rec).upper()
+        if "BULLISH" in htf_state and side in ("SELL", "BÁN"):
+            add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+        if "BEARISH" in htf_state and side in ("BUY", "MUA"):
+            add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+        # session vs HTF
+        comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4)
+        if comment:
+            add(lines, f"- {comment}")
         if macro_v4.get("headline"):
             add(lines, f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
         if playbook_v4.get("quality"):
