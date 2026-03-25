@@ -3548,6 +3548,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
             out["invalid_lines"].append("Nếu thị trường thoát khỏi trạng thái nhiễu và có break rõ kèm follow-through → bắt đầu xét vào lệnh")
     
         return out
+
+    def _htf_summary(htf_obj: dict, side: str) -> str:
+        state = str((htf_obj or {}).get("state") or "")
+        h1 = str((htf_obj or {}).get("h1_close_bias") or "")
+        if "BEARISH" in state and h1 == "UP":
+            return "Khung lớn vẫn nghiêng giảm, nhưng H1 đang hồi lên → lệnh SELL chỉ nên đánh ngắn" if side == "SELL" else "Khung lớn nghiêng giảm, không thuận cho BUY mạnh"
+        if "BULLISH" in state and h1 == "DOWN":
+            return "Khung lớn vẫn nghiêng tăng, nhưng H1 đang điều chỉnh xuống → lệnh BUY chỉ nên đánh ngắn" if side == "BUY" else "Khung lớn nghiêng tăng, không thuận cho SELL mạnh"
+        if "BEARISH" in state:
+            return "Khung lớn đang nghiêng giảm"
+        if "BULLISH" in state:
+            return "Khung lớn đang nghiêng tăng"
+        return "Khung lớn chưa thật sự đồng thuận"
     def grade_from_mode(mode: str, stars_val: int) -> str:
         mode = str(mode or "").upper()
         if mode == "FULL":
@@ -3826,12 +3839,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
         htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
         if htf_pressure_v4.get("state"):
             add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-        htf_state = str(htf_pressure_v4.get("state") or "").upper()
-        side = str(rec).upper()
-        if "BULLISH" in htf_state and side in ("SELL", "BÁN"):
-            add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-        if "BEARISH" in htf_state and side in ("BUY", "MUA"):
-            add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+            htf_state = str(htf_pressure_v4.get("state") or "").upper()
+            side = str(rec).upper()
+                if "BULLISH" in htf_state and side in ("SELL", "BÁN"):
+                    add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+                if "BEARISH" in htf_state and side in ("BUY", "MUA"):
+                    add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
         # session vs HTF
         comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4)
         if comment:
