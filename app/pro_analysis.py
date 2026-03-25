@@ -3501,13 +3501,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if q_lines:
         add(lines, "")
         add(lines, "🧪 Chi tiết bổ sung:")
-    
-        q_sorted = sorted(
-            q_lines,
-            key=lambda x: 0 if ("nến" in str(x).lower() or "candle" in str(x).lower() or "reject" in str(x).lower()) else 1
-        )
-    
-        for s in q_sorted[:8]:
+        for s in q_lines[:5]:
             add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
             
     if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
