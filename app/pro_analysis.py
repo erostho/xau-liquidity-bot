@@ -3082,6 +3082,183 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if favored == "SELL":
             return f"{base} | Ưu tiên SELL"
         return f"{base} | Ưu tiên NONE"
+
+    def _final_score_now(sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4):
+        score = 50
+        reasons = []
+    
+        # ===== HTF =====
+        htf_state = str(htf_pressure_v4.get("state") or "").upper()
+        if "BULLISH_STRONG" in htf_state or "BEARISH_STRONG" in htf_state:
+            score += 12
+            reasons.append("HTF mạnh")
+        elif "BULLISH_WEAK" in htf_state or "BEARISH_WEAK" in htf_state:
+            score += 6
+            reasons.append("HTF hơi nghiêng")
+        else:
+            score -= 4
+            reasons.append("HTF chưa đồng thuận")
+    
+        # ===== Structure =====
+        m15 = str((struct or {}).get("M15") or "").upper()
+        h1 = str((struct or {}).get("H1") or "").upper()
+    
+        if m15 in ("HH-HL", "LL-LH"):
+            score += 8
+            reasons.append("M15 rõ cấu trúc")
+        else:
+            score -= 4
+            reasons.append("M15 chưa rõ")
+    
+        if h1 in ("HH-HL", "LL-LH"):
+            score += 6
+            reasons.append("H1 rõ cấu trúc")
+        elif h1 == "TRANSITION":
+            score -= 3
+            reasons.append("H1 đang chuyển pha")
+    
+        # ===== Position / range =====
+        rp = playbook.get("range_pos")
+        try:
+            rp = float(rp)
+            if rp <= 0.20 or rp >= 0.80:
+                score += 8
+                reasons.append("đang ở vùng biên")
+            elif 0.30 <= rp <= 0.70:
+                score -= 10
+                reasons.append("đang ở giữa biên độ")
+        except Exception:
+            pass
+    
+        # ===== Session =====
+        sess = str(session_v4.get("session_tag") or "").upper()
+        ft = str(session_v4.get("follow_through") or "").upper()
+        fake = str(session_v4.get("fake_move_risk") or "").upper()
+    
+        if "CHOP" in sess:
+            score -= 10
+            reasons.append("session nhiễu")
+        if ft == "YES":
+            score += 5
+            reasons.append("có follow-through")
+        elif ft == "NO":
+            score -= 5
+            reasons.append("thiếu follow-through")
+    
+        if fake == "HIGH":
+            score -= 8
+            reasons.append("fake risk cao")
+        elif fake == "MEDIUM":
+            score -= 3
+            reasons.append("fake risk trung bình")
+    
+        # ===== No trade zone =====
+        if ntz.get("active"):
+            score -= 15
+            reasons.append("đang ở no-trade zone")
+    
+        # ===== Entry zone =====
+        has_zone = bool(playbook.get("zone_low") is not None and playbook.get("zone_high") is not None)
+        if has_zone:
+            score += 6
+            reasons.append("có vùng entry")
+        else:
+            score -= 8
+            reasons.append("chưa có vùng entry")
+    
+        # ===== Trigger gần =====
+        action_text = " ".join(str(x) for x in (sig.get("action_lines") or []))
+        trigger_text = " ".join(str(x) for x in (sig.get("quality_lines") or []))
+        merged = f"{action_text} {trigger_text}".upper()
+    
+        # nếu bạn render trigger ở dưới, có thể đổi nguồn sang plan_pack trigger lines
+        if "BUY GẦN" in merged or "SELL GẦN" in merged or "BUY NEAR" in merged or "SELL NEAR" in merged:
+            score += 8
+            reasons.append("có trigger gần")
+        else:
+            score -= 6
+            reasons.append("chưa có trigger gần")
+    
+        # ===== Quality lines =====
+        q_lines = sig.get("quality_lines") or []
+        q_text = " | ".join(str(x) for x in q_lines).upper()
+    
+        if "VOLUME: HIGH" in q_text or "VOLUME CAO" in q_text:
+            score += 5
+            reasons.append("volume ủng hộ")
+        elif "VOLUME: LOW" in q_text or "VOLUME THẤP" in q_text:
+            score -= 4
+            reasons.append("volume yếu")
+    
+        if "ENGULFING=BULL" in q_text or "ENGULFING=BEAR" in q_text or "REJECTION=UPPER" in q_text or "REJECTION=LOWER" in q_text:
+            score += 4
+            reasons.append("nến có phản ứng rõ")
+    
+        if "RSI DIVERGENCE: BEARISH" in q_text or "RSI DIVERGENCE: BULLISH" in q_text or "DIVERGENCE: BEARISH" in q_text or "DIVERGENCE: BULLISH" in q_text:
+            score += 4
+            reasons.append("có phân kỳ hỗ trợ")
+    
+        # clamp
+        score = max(0, min(100, score))
+    
+        # tradeable logic cứng
+        tradeable = True
+        tradeable_reasons = []
+    
+        if not has_zone:
+            tradeable = False
+            tradeable_reasons.append("chưa có vùng entry rõ")
+    
+        if ntz.get("active"):
+            tradeable = False
+            tradeable_reasons.append("đang ở vùng no-trade")
+    
+        try:
+            rp = float(playbook.get("range_pos"))
+            if 0.30 <= rp <= 0.70:
+                tradeable = False
+                tradeable_reasons.append("đang ở giữa biên độ")
+        except Exception:
+            pass
+    
+        if score < 60:
+            tradeable = False
+            tradeable_reasons.append("edge chưa đủ mạnh")
+    
+        dedup = []
+        seen = set()
+        for r in reasons:
+            if r not in seen:
+                seen.add(r)
+                dedup.append(r)
+    
+        dedup_trade = []
+        seen_trade = set()
+        for r in tradeable_reasons:
+            if r not in seen_trade:
+                seen_trade.add(r)
+                dedup_trade.append(r)
+    
+        return score, ("YES" if tradeable else "NO"), dedup[:5], dedup_trade[:3]
+
+    def _market_summary_line(score, tradeable_label, session_v4, htf_pressure_v4):
+        htf = str(htf_pressure_v4.get("state") or "").upper()
+        sess = str(session_v4.get("session_tag") or "").upper()
+    
+        if tradeable_label == "NO":
+            if "CHOP" in sess:
+                return "Môi trường đang nhiễu → chưa tradeable"
+            if "BULLISH" in htf:
+                return "Khung lớn nghiêng tăng nhưng hiện chưa có điểm vào đẹp"
+            if "BEARISH" in htf:
+                return "Khung lớn nghiêng giảm nhưng hiện chưa có điểm vào đẹp"
+            return "Môi trường hiện tại chưa đủ lợi thế để vào lệnh"
+    
+        if score >= 75:
+            return "Bối cảnh và điểm vào đang khá đồng thuận"
+        if score >= 60:
+            return "Có edge nhưng cần chọn điểm vào kỹ"
+        return "Kèo có ý tưởng nhưng rủi ro còn cao"
     def _tradeability_engine(sig, playbook, ntz, htf_pressure_v4):
         reasons = []
         tradeable = True
@@ -3583,24 +3760,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
     
-    # Setup trước
-    setup_label, setup_reasons = _signal_weighting_now(sig, meta, struct, playbook, htf_pressure_v4, ntz)
-    add(lines, f"- Độ mạnh setup hiện tại: {setup_label}")
-    if setup_reasons:
-        add(lines, f"- Lý do: {', '.join(setup_reasons)}")
+    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
+        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
+    )
     
-    # Tradeable sau (QUAN TRỌNG NHẤT)
-    tradeable_label, tradeable_reasons = _tradeability_engine(sig, playbook, ntz, htf_pressure_v4)
-    add(lines, f"🔥 Tradeable: {tradeable_label}")
+    add(lines, f"🔥 Final Score: {final_score}/100")
+    add(lines, f"→ Tradeable: {tradeable_label}")
+    
+    summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
+    add(lines, f"- {summary_line}")
+    
+    if score_reasons:
+        add(lines, f"- Điểm cộng/trừ chính: {', '.join(score_reasons)}")
     if tradeable_reasons:
-        add(lines, f"- Lý do: {', '.join(tradeable_reasons)}")
+        add(lines, f"- Lý do chưa trade: {', '.join(tradeable_reasons)}")
     
-    # Link logic
-    if setup_label.startswith("MẠNH") and tradeable_label == "NO":
-        add(lines, "- ⚠️ Setup tốt nhưng chưa có điểm vào → không nên trade ngay")
-    
-    if tradeable_label == "NO":
-        add(lines, "- 🚫 Không có lợi thế vào lệnh → ưu tiên đứng ngoài")
+    if playbook_v4.get("quality"):
+        add(lines, f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
+    if ntz.get("active"):
+        rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
+        add(lines, f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
     
     # Grade explanation
     if grade == "A":
