@@ -3143,6 +3143,114 @@ def format_signal(sig: Dict[str, Any]) -> str:
             sell_strong = f"SELL mạnh: M15 đóng dưới {nf(lo)} với follow-through"
     
         return buy_near, sell_near, buy_strong, sell_strong
+    def _trend_context_for_now(htf_state: str, struct_obj: dict, rec_text: str) -> str:
+        m15 = str((struct_obj or {}).get("M15") or "").upper()
+        h1 = str((struct_obj or {}).get("H1") or "").upper()
+        htf = str(htf_state or "").upper()
+    
+        is_bear = ("BEARISH" in htf) or (m15 in ("LL-LH", "DOWN")) or (h1 in ("LL-LH", "DOWN"))
+        is_bull = ("BULLISH" in htf) or (m15 in ("HH-HL", "UP")) or (h1 in ("HH-HL", "UP"))
+    
+        if is_bear and not is_bull:
+            return "BEAR"
+        if is_bull and not is_bear:
+            return "BULL"
+        return "MIXED"
+    
+    
+    def _state_text_v7(symbol: str, trend_ctx: str, market_state: str) -> str:
+        st = str(market_state or "").upper()
+    
+        if trend_ctx == "BEAR":
+            if st in ("CHOP", "TRANSITION"):
+                return f"{symbol} đang hồi kỹ thuật trong bối cảnh giảm nhưng ngắn hạn còn nhiễu; ưu tiên sell-the-rally, tránh sell đuổi."
+            return f"{symbol} đang hồi kỹ thuật trong xu hướng giảm; ưu tiên sell-the-rally, tránh sell đuổi."
+    
+        if trend_ctx == "BULL":
+            if st in ("CHOP", "TRANSITION"):
+                return f"{symbol} đang điều chỉnh trong bối cảnh tăng nhưng ngắn hạn còn nhiễu; ưu tiên buy-the-dip, tránh buy đuổi."
+            return f"{symbol} đang điều chỉnh trong xu hướng tăng; ưu tiên buy-the-dip, tránh buy đuổi."
+    
+        return f"{symbol} đang ở trạng thái nhiễu hoặc chuyển pha; edge thấp, nên đứng ngoài là chính."
+    
+    
+    def _now_plan_and_triggers_v7(trend_ctx: str, key_levels: dict, playbook_obj: dict, last_px) -> dict:
+        zone_lo = playbook_obj.get("zone_low")
+        zone_hi = playbook_obj.get("zone_high")
+        range_lo = key_levels.get("M15_RANGE_LOW")
+        range_hi = key_levels.get("M15_RANGE_HIGH")
+    
+        def _f(v):
+            return nf(v)
+    
+        out = {
+            "main_plan": "Ưu tiên đứng ngoài quan sát, chưa có lợi thế rõ để mở lệnh mới",
+            "alt_plan": "Chờ displacement thật + follow-through",
+            "invalid_lines": [],
+            "trigger_lines": [],
+        }
+    
+        in_zone = False
+        below_zone = False
+        above_zone = False
+    
+        try:
+            if zone_lo is not None and zone_hi is not None and last_px is not None:
+                px = float(last_px)
+                zlo = float(zone_lo)
+                zhi = float(zone_hi)
+                in_zone = zlo <= px <= zhi
+                below_zone = px < zlo
+                above_zone = px > zhi
+        except Exception:
+            pass
+    
+        if trend_ctx == "BEAR":
+            if zone_lo is not None and zone_hi is not None:
+                if below_zone:
+                    out["main_plan"] = f"Nếu giá hồi lại vùng {_f(zone_lo)} – {_f(zone_hi)} thì mới canh SELL; hiện tại đã ở dưới vùng, không nên SELL đuổi"
+                elif in_zone:
+                    out["main_plan"] = f"Đang ở trong vùng {_f(zone_lo)} – {_f(zone_hi)}; chỉ canh SELL nếu xuất hiện lực từ chối rõ"
+                elif above_zone:
+                    out["main_plan"] = f"Chờ phản ứng tại vùng {_f(zone_lo)} – {_f(zone_hi)} rồi canh SELL nếu bị từ chối"
+    
+                out["trigger_lines"].append(f"SELL gần: nếu giá hồi lên vùng {_f(zone_lo)} – {_f(zone_hi)} và bị từ chối")
+                out["trigger_lines"].append(f"BUY sớm: chỉ xét nếu phá lên và giữ trên {_f(zone_hi)}")
+    
+            if range_hi is not None:
+                out["trigger_lines"].append(f"BUY mạnh: M15 đóng trên {_f(range_hi)} và giữ được")
+                out["invalid_lines"].append(f"Nếu M15 vượt rõ {_f(range_hi)} và giữ được → kịch bản SELL yếu đi rõ")
+            if range_lo is not None:
+                out["trigger_lines"].append(f"SELL mạnh: M15 đóng dưới {_f(range_lo)} với follow-through")
+                out["invalid_lines"].append(f"Nếu M15 không giữ được đà xuống dưới {_f(range_lo)} → tránh SELL đuổi")
+    
+        elif trend_ctx == "BULL":
+            if zone_lo is not None and zone_hi is not None:
+                if above_zone:
+                    out["main_plan"] = f"Nếu giá điều chỉnh lại vùng {_f(zone_lo)} – {_f(zone_hi)} thì mới canh BUY; hiện tại đã ở trên vùng, không nên BUY đuổi"
+                elif in_zone:
+                    out["main_plan"] = f"Đang ở trong vùng {_f(zone_lo)} – {_f(zone_hi)}; chỉ canh BUY nếu giữ được và bật lên rõ"
+                elif below_zone:
+                    out["main_plan"] = f"Chờ phản ứng tại vùng {_f(zone_lo)} – {_f(zone_hi)} rồi canh BUY nếu giữ được"
+    
+                out["trigger_lines"].append(f"BUY gần: nếu giữ được vùng {_f(zone_lo)} – {_f(zone_hi)} và bật lên rõ")
+                out["trigger_lines"].append(f"SELL sớm: nếu thủng vùng {_f(zone_lo)}")
+    
+            if range_hi is not None:
+                out["trigger_lines"].append(f"BUY mạnh: M15 đóng trên {_f(range_hi)} và giữ được")
+            if range_lo is not None:
+                out["trigger_lines"].append(f"SELL mạnh: M15 đóng dưới {_f(range_lo)} với follow-through")
+                out["invalid_lines"].append(f"Nếu M15 thủng rõ {_f(range_lo)} → kịch bản BUY yếu đi rõ")
+    
+        else:
+            out["main_plan"] = "Ưu tiên đứng ngoài quan sát, chờ thị trường rõ hướng hơn"
+            if range_hi is not None:
+                out["trigger_lines"].append(f"BUY mạnh: M15 đóng trên {_f(range_hi)} và giữ được")
+            if range_lo is not None:
+                out["trigger_lines"].append(f"SELL mạnh: M15 đóng dưới {_f(range_lo)} với follow-through")
+            out["invalid_lines"].append("Nếu thị trường thoát khỏi trạng thái nhiễu và có break rõ kèm follow-through → bắt đầu xét vào lệnh")
+    
+        return out
     def grade_from_mode(mode: str, stars_val: int) -> str:
         mode = str(mode or "").upper()
         if mode == "FULL":
@@ -3240,7 +3348,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
     verdict_full = verdict_quick
     if reason and reason not in verdict_quick:
         verdict_full += f"; {reason}"
+    trend_ctx = _trend_context_for_now(str(htf_pressure_v4.get("state") or ""), struct, rec)
+    state_text_final = _state_text_v7(symbol, trend_ctx, meta.get("market_state_v2"))
     
+    # chỉ override rec khi đang CHỜ, không đè mạnh lên engine hiện có
+    if rec == "CHỜ":
+        if trend_ctx == "BEAR":
+            rec = "CHỜ"
+        elif trend_ctx == "BULL":
+            rec = "CHỜ"
+    
+    reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
+    verdict_quick = "Chưa đẹp để vào ngay"
+    if ntz.get("active") or trade_mode == "WAIT":
+        verdict_quick = "Ưu tiên đứng ngoài"
+    verdict_full = f"{verdict_quick}; {reason_text}" if reason_text else verdict_quick
     add(lines, f"💵 Giá hiện tại: {price_now}")
     add(lines, f"📌 Kết luận nhanh: {verdict_full}")
     add(lines, f"🧭 Hướng ưu tiên: {rec}")
@@ -3307,62 +3429,28 @@ def format_signal(sig: Dict[str, Any]) -> str:
     else:
         add(lines, "- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
     buy_near, sell_near, buy_strong, sell_strong = trigger_lines_v2(rec, k, playbook)
+    plan_pack = _now_plan_and_triggers_v7(trend_ctx, k, playbook, last_px)
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
-    base = str(scenario.get("base_case") or "").strip()
-
-    if "NO TRADE" in base.upper() or trade_mode == "WAIT":
-        add(lines, "- Ưu tiên đứng ngoài quan sát, chưa có lợi thế rõ để mở lệnh mới")
-    else:
-        base = base.replace("Base case:", "").strip()
-        base = base.replace("hồi để SELL", "chờ hồi để canh bán")
-        base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
-        if playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
-            zlo = nf(playbook.get("zone_low"))
-            zhi = nf(playbook.get("zone_high"))
-            if zlo not in base and zhi not in base:
-                base = f"{base} trong vùng {zlo} – {zhi}"
-        add(lines, f"- {base}")
-
+    add(lines, f"- {plan_pack['main_plan']}")
+    
     add(lines, "")
     add(lines, "🪄 Kịch bản phụ:")
-    alt = str(scenario.get("alt_case") or "").strip()
-    if alt:
-        alt = alt.replace("Alt case:", "").strip()
-        alt = alt.replace("reversal candidate", "nguy cơ đổi hướng")
-        alt = alt.replace("breakdown risk", "nguy cơ giảm mạnh")
-        alt = alt.replace("break đỉnh mạnh", "vượt đỉnh mạnh")
-        add(lines, f"- {alt}")
-    else:
-        add(lines, "- Chưa có kịch bản phụ rõ")
-
+    add(lines, f"- {plan_pack['alt_plan']}")
+    
     add(lines, "")
     add(lines, "🧯 Điểm sai kịch bản:")
-    invalid_txt = str(scenario.get("invalid_if") or "").strip()
-    
-    # chuẩn hoá câu chữ
-    if invalid_txt:
-        invalid_txt = invalid_txt.replace("Invalid if:", "").strip()
-        invalid_txt = invalid_txt.replace("market state thoát khỏi CHOP/TRANSITION", "nếu thị trường thoát khỏi vùng nhiễu và bắt đầu chạy rõ")
-        invalid_txt = invalid_txt.replace("Mất cấu trúc hiện tại", "nếu cấu trúc hiện tại bị phá")
-        invalid_txt = invalid_txt.replace("reversal candidate", "nguy cơ đổi hướng")
-        invalid_txt = invalid_txt.replace("breakdown risk", "nguy cơ giảm mạnh")
-    
-    # ưu tiên logic theo market nếu đang WAIT
-    if "NO TRADE" in str(scenario.get("base_case") or "").upper() or trade_mode == "WAIT":
-        add(lines, "- Nếu thị trường thoát khỏi trạng thái nhiễu và có break rõ kèm follow-through → bắt đầu xét vào lệnh")
+    if plan_pack["invalid_lines"]:
+        for s in plan_pack["invalid_lines"]:
+            add(lines, f"- {s}")
     else:
-        if invalid_txt:
-            add(lines, f"- {invalid_txt}")
-        else:
-            # fallback theo giá
-            if rec == "MUA" and k.get("M15_RANGE_LOW") is not None:
-                add(lines, f"- Nếu thủng {nf(k.get('M15_RANGE_LOW'))} → kịch bản BUY không còn hiệu lực")
-            elif rec == "BÁN" and k.get("M15_RANGE_HIGH") is not None:
-                add(lines, f"- Nếu vượt {nf(k.get('M15_RANGE_HIGH'))} → kịch bản SELL không còn hiệu lực")
-            else:
-                add(lines, "- Nếu thị trường đi ngược hướng ưu tiên → bỏ kịch bản")
-
+        add(lines, "- Nếu cấu trúc hiện tại bị phá thì bỏ kịch bản")
+    
+    add(lines, "")
+    add(lines, "🧯 Trigger quan trọng:")
+    for s in plan_pack["trigger_lines"]:
+        add(lines, f"- {s}")
+    
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
     if grade == "A":
@@ -3379,28 +3467,24 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     add(lines, "")
     add(lines, "⚙️ Hành động:")
+    
     if trade_mode == "FULL":
         add(lines, "- Có thể mở lệnh nếu giá vào đúng vùng và có xác nhận rõ")
     elif trade_mode == "HALF":
         add(lines, "- Có thể canh nhưng không nên đuổi giá")
     else:
         add(lines, "- Chưa nên mở lệnh mới")
+    
     try:
         rp = float(range_pos)
         if 0.30 <= rp <= 0.70:
             add(lines, "- Tránh trade ở giữa biên độ")
         elif rp > 0.80:
-            add(lines, "- Không BUY đuổi ở vùng cao, ưu tiên chờ điều chỉnh theo xu hướng")
+            add(lines, "- Không BUY đuổi ở vùng cao, chờ phản ứng rồi mới quyết định theo xu hướng")
         elif rp < 0.20:
-            add(lines, "- Không SELL đuổi ở vùng thấp, ưu tiên chờ phản ứng hồi theo xu hướng")
+            add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
     except Exception:
         pass
-    add(lines, "")
-    add(lines, "🧯 Trigger quan trọng:")
-    add(lines, f"- {buy_near}")
-    add(lines, f"- {sell_near}")
-    add(lines, f"- {buy_strong}")
-    add(lines, f"- {sell_strong}")
 
     if q_lines:
         add(lines, "")
