@@ -3836,14 +3836,13 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if session_v4.get("session_tag"):
             add(lines, f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
         # FIX: define trước
-        htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
         if htf_pressure_v4.get("state"):
             add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-            htf_state = str(htf_pressure_v4.get("state") or "").upper()
-            side = str(rec).upper()
-            if "BULLISH" in htf_state and side in ("SELL", "BÁN"):
+            htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
+            htf_state = str(htf_pressure_v4.get("state") or "")
+            if "BULLISH" in htf_state and rec ("SELL", "BÁN"):
                 add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-            if "BEARISH" in htf_state and side in ("BUY", "MUA"):
+            if "BEARISH" in htf_state and rec ("BUY", "MUA"):
                 add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
         # session vs HTF
         comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4)
