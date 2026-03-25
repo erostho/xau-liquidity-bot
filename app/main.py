@@ -575,7 +575,65 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             tp2_s = entry - 1.80 * a
             sl_s = entry + 1.10 * a
 
-
+    def _plan_zone_status(cur_px, zone_low, zone_high):
+        try:
+            if cur_px is None or zone_low is None or zone_high is None:
+                return "unknown"
+            px = float(cur_px)
+            zlo = float(zone_low)
+            zhi = float(zone_high)
+    
+            if px < zlo:
+                return "below_zone"
+            if zlo <= px <= zhi:
+                return "in_zone"
+            if px > zhi:
+                return "above_zone"
+        except Exception:
+            pass
+        return "unknown"
+    
+    
+    def _review_main_plan_v2(side: str, cur_px, scenario_obj: dict, playbook_obj: dict, grade_text: str):
+        base = str((scenario_obj or {}).get("base_case") or "").strip()
+        zlo = playbook_obj.get("zone_low")
+        zhi = playbook_obj.get("zone_high")
+        zone_state = _plan_zone_status(cur_px, zlo, zhi)
+    
+        def _z():
+            if zlo is None or zhi is None:
+                return None
+            return f"{_f(zlo)} – {_f(zhi)}"
+    
+        ztxt = _z()
+    
+        if side == "SELL":
+            if ztxt:
+                if zone_state == "below_zone":
+                    return f"Nếu giá hồi lại vùng {ztxt} thì mới canh SELL; hiện tại đã ở dưới vùng → không nên SELL đuổi"
+                if zone_state == "in_zone":
+                    return f"Đang ở trong vùng {ztxt}; chỉ canh SELL nếu xuất hiện lực từ chối rõ"
+                if zone_state == "above_zone":
+                    return f"Giá đang ở trên vùng {ztxt}; chờ phản ứng rồi mới quyết định có SELL hay không"
+    
+            base = base.replace("Base case:", "").strip()
+            base = base.replace("hồi để SELL", "chờ hồi để canh bán")
+            return base or "Chờ hồi rồi mới xét SELL"
+    
+        if side == "BUY":
+            if ztxt:
+                if zone_state == "above_zone":
+                    return f"Nếu giá điều chỉnh lại vùng {ztxt} thì mới canh BUY; hiện tại đã ở trên vùng → không nên BUY đuổi"
+                if zone_state == "in_zone":
+                    return f"Đang ở trong vùng {ztxt}; chỉ canh BUY nếu giữ được và bật lên rõ"
+                if zone_state == "below_zone":
+                    return f"Giá đang ở dưới vùng {ztxt}; chờ phản ứng rồi mới quyết định có BUY hay không"
+    
+            base = base.replace("Base case:", "").strip()
+            base = base.replace("hồi để BUY", "chờ điều chỉnh để canh mua")
+            return base or "Chờ điều chỉnh rồi mới xét BUY"
+    
+        return "Chưa có kịch bản chính rõ"
     def _vn_phase_label(pobj: dict) -> str:
         p = str((pobj or {}).get("label") or "").upper()
         return {
@@ -813,7 +871,13 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append("🗺 Kịch bản chính:")
-    main_plan_text = _review_main_plan(side, scenario_v3 if isinstance(scenario_v3, dict) else {}, playbook if isinstance(playbook, dict) else {}, grade, verdict_text, no_trade_zone if isinstance(no_trade_zone, dict) else {})
+    main_plan_text = _review_main_plan_v2(
+        side,
+        cur,
+        scenario_v3 if isinstance(scenario_v3, dict) else {},
+        playbook if isinstance(playbook, dict) else {},
+        grade,
+    )
     lines.append(f"- {main_plan_text}")
     
     lines.append("")
@@ -832,6 +896,15 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append("")
     lines.append("🧯 Điểm sai kịch bản:")
     lines.append(f"- {_review_invalidation(side, sl, gate)}")
+    
+    # thêm invalidation theo zone / hold
+    zone_low = playbook.get("zone_low") if isinstance(playbook, dict) else None
+    zone_high = playbook.get("zone_high") if isinstance(playbook, dict) else None
+    
+    if side == "SELL" and zone_high is not None:
+        lines.append(f"- Nếu M15 đóng trên {_f(zone_high)} và giữ được → kịch bản SELL suy yếu rõ")
+    if side == "BUY" and zone_low is not None:
+        lines.append(f"- Nếu M15 đóng dưới {_f(zone_low)} và không lấy lại được → kịch bản BUY suy yếu rõ")
 
     lines.append("")
     lines.append(f"📊 Chất lượng hiện tại: {grade}")
@@ -847,6 +920,17 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     lines.append("")
     lines.append("⚙️ Hành động:")
+    zone_low = playbook.get("zone_low") if isinstance(playbook, dict) else None
+    zone_high = playbook.get("zone_high") if isinstance(playbook, dict) else None
+    zone_state = _plan_zone_status(cur, zone_low, zone_high)
+    
+    if 0.30 <= float(pos or 0) <= 0.70:
+        lines.append("- 🚨 Đang ở vùng giữa biên độ → edge thấp, không nên mở lệnh mới")
+    
+    if side == "SELL" and zone_state == "below_zone":
+        lines.append("- Giá đã ở dưới vùng SELL plan → không nên SELL đuổi, chỉ chờ hồi lại vùng")
+    if side == "BUY" and zone_state == "above_zone":
+        lines.append("- Giá đã ở trên vùng BUY plan → không nên BUY đuổi, chỉ chờ điều chỉnh lại vùng")
     
     # ===== câu chốt chính =====
     if grade == "A":
