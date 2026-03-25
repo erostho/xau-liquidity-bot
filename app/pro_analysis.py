@@ -1732,7 +1732,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # (Python 3.11+ can raise UnboundLocalError if referenced before assignment).
     entry_major = sl_major = tp1_major = tp2_major = None
     entry_minor = sl_minor = tp1_minor = tp2_minor = None
-
+    last_close_15 = None
+    last_close_30 = None
     context_lines = base["context_lines"]
     position_lines = base.get("position_lines", [])
     liquidity_lines = base["liquidity_lines"]
@@ -1747,8 +1748,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
-        base["last_price"] = float(last_close_15)
-        base["current_price"] = float(last_close_15)
         return base
 
     # derive major_bearish for gating logic
@@ -1757,15 +1756,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         major_bearish = str(h1_tag) in ("LL-LH", "LH–LL", "LH-LL")
     except Exception:
         major_bearish = False
-        base["last_price"] = float(last_close_15)
-        base["current_price"] = float(last_close_15)
         return base
 
     m15c = _safe_candles(m15)
     m30c = _safe_candles(m30)
     h1c = _safe_candles(h1)
     h4c = _safe_candles(h4)
-
+    if not m15c or not m30c:
+        base["note_lines"].append("⚠️ Không đọc được nến M15/M30 sau khi chuẩn hoá dữ liệu.")
+        base["short_hint"] = ["- Dữ liệu nến lỗi / thiếu → CHỜ KÈO"]
+        base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
+        _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        return base
     if len(m15c) < 20 or len(m30c) < 5 or len(h1c) < 5 or len(h4c) < 5:
         base["note_lines"].append("⚠️ Dữ liệu candles chưa đủ → kết quả có thể thiếu chính xác (vẫn hiển thị).")
 
