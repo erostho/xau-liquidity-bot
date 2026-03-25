@@ -2107,14 +2107,14 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # ===== Quality =====
     if rej.get("upper_reject"):
         txt = "Nến từ chối tăng rõ (râu trên dài)"
-        if range_pos is not None and float(range_pos) > 70:
+        if range_pos is not None and float(range_pos) > 0.70:
             txt += " → xuất hiện ở vùng cao, dễ xảy ra pullback"
         quality_lines.append(txt)
         score += 1
     
     elif rej.get("lower_reject"):
         txt = "Nến từ chối giảm rõ (râu dưới dài)"
-        if range_pos is not None and float(range_pos) < 30:
+        if range_pos is not None and float(range_pos) < 0.30:
             txt += " → xuất hiện ở vùng thấp, có thể bật lên"
         quality_lines.append(txt)
         score += 1
@@ -3458,8 +3458,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
     add(lines, "")
     add(lines, "🧯 Trigger quan trọng:")
-    for s in plan_pack["trigger_lines"]:
-        add(lines, f"- {s}")
+    add(lines, f"- {buy_near}")
+    add(lines, f"- {sell_near}")
+    add(lines, f"- {buy_strong}")
+    add(lines, f"- {sell_strong}")
     
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
@@ -3499,7 +3501,13 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if q_lines:
         add(lines, "")
         add(lines, "🧪 Chi tiết bổ sung:")
-        for s in q_lines[:5]:
+    
+        q_sorted = sorted(
+            q_lines,
+            key=lambda x: 0 if ("nến" in str(x).lower() or "candle" in str(x).lower() or "reject" in str(x).lower()) else 1
+        )
+    
+        for s in q_sorted[:8]:
             add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
             
     if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
