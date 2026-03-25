@@ -3841,10 +3841,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
             htf_state = str(htf_pressure_v4.get("state") or "").upper()
             side = str(rec).upper()
-                if "BULLISH" in htf_state and side in ("SELL", "BÁN"):
-                    add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-                if "BEARISH" in htf_state and side in ("BUY", "MUA"):
-                    add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+            if "BULLISH" in htf_state and side in ("SELL", "BÁN"):
+                add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+            if "BEARISH" in htf_state and side in ("BUY", "MUA"):
+                add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
         # session vs HTF
         comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4)
         if comment:
