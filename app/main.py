@@ -21,8 +21,8 @@ CRON_LOCK = asyncio.Lock()
 LAST_CRON_TS = 0
 MIN_CRON_GAP_SEC = int(os.getenv("MIN_CRON_GAP_SEC", "25"))
 
-# Default symbols (override by env SYMBOLS="XAU/USD,BTC/USD")
-DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD").split(",") if s.strip()]
+# Default symbols (override by env SYMBOLS="XAU/USD,XAG/USD,BTC/USD")
+DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,XAG/USD,BTC/USD").split(",") if s.strip()]
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # default chat for cron
@@ -32,7 +32,8 @@ REGIME_ALERT_ENABLED=1
 REGIME_CHOP_THRESHOLD=6.8
 REGIME_ALERT_COOLDOWN_MIN=120
 REGIME_ALERT_STATE_PATH = os.getenv("REGIME_ALERT_STATE_PATH", "regime_alert_state.json")
-
+NOW_ALERT_STATE_PATH = os.getenv("NOW_ALERT_STATE_PATH", "now_alert_state.json")
+NOW_ALERT_COOLDOWN_MIN = int(os.getenv("NOW_ALERT_COOLDOWN_MIN", "120"))
 
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
@@ -41,10 +42,6 @@ MIN_STARS = int(os.getenv("MIN_STARS", "1"))
 
 # Telegram hard limit is 4096; keep safe chunk size
 TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
-NOW_ALERT_ENABLED = os.getenv("NOW_ALERT_ENABLED", "1").strip() != "0"
-NOW_ALERT_SCORE_MIN = int(os.getenv("NOW_ALERT_SCORE_MIN", "65"))
-NOW_ALERT_COOLDOWN_MIN = int(os.getenv("NOW_ALERT_COOLDOWN_MIN", "60"))
-NOW_ALERT_STATE_PATH = os.getenv("NOW_ALERT_STATE_PATH", "now_alert_state.json")
 
 @app.get("/health")
 def health():
@@ -527,6 +524,17 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if tp is not None:
             tp_atr = abs(float(tp) - entry) / a
             actions.append((f"⚠️ TP hơi ngắn: ~{tp_atr:.2f} ATR.") if tp_atr < 0.70 else f"✅ TP khoảng ~{tp_atr:.2f} ATR.")
+        if cur is not None:
+            if side == "SELL":
+                if tp is not None and float(tp) >= float(cur):
+                    actions.append("⚠️ TP hiện tại nằm trên giá hiện tại đối với lệnh SELL → cần kiểm tra lại input TP.")
+                if sl is not None and float(sl) <= float(cur):
+                    actions.append("⚠️ SL hiện tại nằm dưới hoặc ngang giá hiện tại đối với lệnh SELL → cần kiểm tra lại input SL.")
+            elif side == "BUY":
+                if tp is not None and float(tp) <= float(cur):
+                    actions.append("⚠️ TP hiện tại nằm dưới giá hiện tại đối với lệnh BUY → cần kiểm tra lại input TP.")
+                if sl is not None and float(sl) >= float(cur):
+                    actions.append("⚠️ SL hiện tại nằm trên hoặc ngang giá hiện tại đối với lệnh BUY → cần kiểm tra lại input SL.")
         if sl is not None and tp is not None:
             try:
                 rr_now = abs(float(tp) - entry) / max(abs(entry - float(sl)), 1e-9)
@@ -1369,106 +1377,6 @@ async def data_mt5(token: str = "", request: Request = None):
     return "OK"
 
 
-
-def _fallback_signal(sym: str, data_source: Optional[str] = None, note: str = "⚠️ analyze_pro returned None → fallback signal") -> Dict[str, Any]:
-    return {
-        "symbol": sym,
-        "tf": "M30",
-        "session": "",
-        "recommendation": "CHỜ",
-        "stars": 1,
-        "trade_mode": "WAIT",
-        "meta": {"data_source": data_source},
-        "context_lines": ["- Context: n/a"],
-        "liquidity_lines": ["- n/a"],
-        "quality_lines": ["- n/a"],
-        "note_lines": [note],
-        "notes": [note],
-    }
-
-
-def _attach_signal_data_source(sig: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        ds = data.get("data_source") if isinstance(data, dict) else None
-        if ds:
-            sig["data_source"] = ds
-            sig.setdefault("meta", {})["data_source"] = ds
-    except Exception:
-        pass
-    return sig
-
-
-def _main_trade_ready(sig: Dict[str, Any]) -> bool:
-    if not isinstance(sig, dict):
-        return False
-    rec = str(sig.get("recommendation") or "").strip().upper()
-    stars = int(sig.get("stars", 0) or 0)
-    trade_mode = str(sig.get("trade_mode") or "WAIT").upper()
-    has_plan = sig.get("entry") is not None and sig.get("sl") is not None and sig.get("tp1") is not None
-    return rec != "CHỜ" and stars >= MIN_STARS and trade_mode in ("FULL", "HALF") and has_plan
-
-
-def _load_alert_state(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _save_alert_state(path: str, data: dict) -> None:
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
-
-def _now_alert_key(sig: Dict[str, Any]) -> str:
-    sym = str(sig.get("symbol") or "UNKNOWN")
-    ds = str((sig.get("meta") or {}).get("data_source") or sig.get("data_source") or "")
-    return f"{sym}|{ds}|NOW_ALERT"
-
-
-def _should_send_now_alert(sig: Dict[str, Any]) -> tuple[bool, Dict[str, Any]]:
-    status = get_now_status(sig if isinstance(sig, dict) else {})
-    if not NOW_ALERT_ENABLED:
-        return False, status
-    if _main_trade_ready(sig):
-        return False, status
-    if _force_send(sig):
-        return False, status
-    score = int(status.get("final_score", 0) or 0)
-    tradeable = str(status.get("tradeable") or "NO").upper()
-    if score < NOW_ALERT_SCORE_MIN:
-        return False, status
-    if tradeable != "YES":
-        return False, status
-    return True, status
-
-
-def _maybe_send_now_alert(sig: Dict[str, Any], chat_id: Optional[str] = None) -> bool:
-    ok, status = _should_send_now_alert(sig)
-    if not ok:
-        return False
-
-    state = _load_alert_state(NOW_ALERT_STATE_PATH)
-    key = _now_alert_key(sig)
-    now_ts = int(time.time())
-    last_ts = int(state.get(key, 0) or 0)
-    if now_ts - last_ts < NOW_ALERT_COOLDOWN_MIN * 60:
-        logger.info("[NOW_ALERT] cooldown skip %s", key)
-        return False
-
-    header = (
-        f"🟡 NOW ALERT | {sig.get('symbol', '')}\n"
-        f"Final Score: {status.get('final_score', 0)}/100 | Tradeable: {status.get('tradeable', 'NO')}\n\n"
-    )
-    _send_telegram(header + format_signal(sig), chat_id=chat_id or ADMIN_CHAT_ID)
-    state[key] = now_ts
-    _save_alert_state(NOW_ALERT_STATE_PATH, state)
-    return True
-
-
 # Telegram webhook handler
 @app.post("/telegram/webhook", response_class=PlainTextResponse)
 async def telegram_webhook(request: Request):
@@ -1605,38 +1513,72 @@ async def cron_run(token: str = "", request: Request = None):
         logger.info("[CRON] start from=%s", client)
 
         symbols = DEFAULT_SYMBOLS or ["XAU/USD", "BTC/USD", "XAG/USD"]
+        now_alert_state = _load_json(NOW_ALERT_STATE_PATH, {})
 
         for sym in symbols:
             try:
                 data = _fetch_triplet(sym, limit=260)
+                session = ""
                 sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
                 if not isinstance(sig, dict):
-                    sig = _fallback_signal(sym, data.get("data_source") if isinstance(data, dict) else None)
-                sig = _attach_signal_data_source(sig, data)
-
+                    sig = {
+                        "symbol": sym,
+                        "tf": "M30",
+                        "session": session,
+                        "recommendation": "CHỜ",
+                        "stars": 1,
+                        "trade_mode": "MANUAL",
+                        "meta": {
+                            "data_source": data.get("data_source") if isinstance(data, dict) else None
+                        },
+                        "context_lines": ["- Context: n/a"],
+                        "liquidity_lines": ["- n/a"],
+                        "quality_lines": ["- n/a"],
+                        "note_lines": ["⚠️ analyze_pro returned None → fallback signal"],
+                    }
                 try:
-                    h2 = _as_list_from_get_candles(get_candles(sym, "2h", limit=220))
+                    ds = data.get("data_source")
+                    if ds:
+                        sig["data_source"] = ds
+                        sig.setdefault("meta", {})["data_source"] = ds
                 except Exception:
-                    h2 = []
-                maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
+                    pass
 
-                if _main_trade_ready(sig):
+                stars = int(sig.get("stars", 0) or 0)
+                rec = str(sig.get("recommendation", "") or "")
+                status = get_now_status(sig) if isinstance(sig, dict) else {}
+                setup_score = int(status.get("setup_score", 0) or 0)
+                entry_score = int(status.get("entry_score", 0) or 0)
+                tradeable_now = str(status.get("tradeable_now") or "NO")
+                force_send = _force_send(sig)
+                trade_mode = str(sig.get("trade_mode") or "").upper()
+                is_main_trade = (stars >= MIN_STARS and rec != "CHỜ" and trade_mode in ("FULL", "HALF"))
+                is_now_alert = (rec == "CHỜ" and tradeable_now == "YES" and setup_score >= 65 and entry_score >= 60)
+
+                if is_main_trade:
                     _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
-                elif _force_send(sig):
-                    prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\n\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=ADMIN_CHAT_ID)
-                elif _maybe_send_now_alert(sig, chat_id=ADMIN_CHAT_ID):
-                    logger.info("[CRON] %s: NOW ALERT sent", sym)
-                else:
-                    status = get_now_status(sig)
-                    logger.info(
-                        "[CRON] %s: no send | mode=%s | score=%s | tradeable=%s",
-                        sym,
-                        sig.get("trade_mode"),
-                        status.get("final_score"),
-                        status.get("tradeable"),
-                    )
+                    logger.info("[CRON] %s: sent main trade", sym)
+                    continue
+
+                if force_send:
+                    _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
+                    logger.info("[CRON] %s: force-send liquidity/post-sweep", sym)
+                    continue
+
+                if is_now_alert:
+                    last_ts = int(now_alert_state.get(sym, 0) or 0)
+                    cooldown_sec = max(60, NOW_ALERT_COOLDOWN_MIN * 60)
+                    if now - last_ts >= cooldown_sec:
+                        _send_telegram("🟡 NOW ALERT\n\n" + format_signal(sig), chat_id=ADMIN_CHAT_ID)
+                        now_alert_state[sym] = now
+                        logger.info("[CRON] %s: sent NOW alert", sym)
+                    else:
+                        logger.info("[CRON] %s: NOW alert cooldown", sym)
+                    continue
+
+                logger.info("[CRON] %s: only observation, no trade | setup=%s entry=%s tradeable_now=%s", sym, setup_score, entry_score, tradeable_now)
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
+        _save_json_atomic(NOW_ALERT_STATE_PATH, now_alert_state)
         return "OK"
