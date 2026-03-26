@@ -1201,7 +1201,7 @@ def _force_send(sig: dict) -> bool:
 # =========================
 
 REGIME_ALERT_STATE_PATH = os.getenv("REGIME_ALERT_STATE_PATH", "regime_alert_state.json")
-REGIME_ALERT_COOLDOWN_MIN = int(os.getenv("REGIME_ALERT_COOLDOWN_MIN", "120"))  # 2h
+REGIME_ALERT_COOLDOWN_MIN = int(os.getenv("REGIME_ALERT_COOLDOWN_MIN", "60"))  # 1h
 REGIME_CHOP_THRESHOLD = float(os.getenv("REGIME_CHOP_THRESHOLD", "6.8"))        # 0..10
 REGIME_ALERT_ENABLED = os.getenv("REGIME_ALERT_ENABLED", "1").strip() != "0"
 
@@ -1615,7 +1615,7 @@ async def cron_run(token: str = "", request: Request = None):
                 if should_send_main or force_send or should_send_now:
                     _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
                 else:
-                    logger.info("[CRON] %s: only observation, no trade | setup=%s entry=%s tradeable=%s", sym, setup_score, entry_score, tradeable_now)
+                    logger.info("[CRON] %s: no telegram send | setup=%s entry=%s, sym, setup_score, entry_score)
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
