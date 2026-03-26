@@ -4351,6 +4351,38 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- {s}")
     else:
         add(lines, "- Nếu cấu trúc hiện tại bị phá thì bỏ kịch bản")
+    psych_warnings = []
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+    try:
+        phase_num = int(phase.get('phase')) if phase and phase.get('phase') is not None else None
+    except Exception:
+        phase_num = None
+    rsi_now = None
+    for s in q_lines:
+        ss = str(s)
+        if 'RSI(14) M15:' in ss:
+            try:
+                rsi_now = float(ss.split(':')[-1].strip())
+                break
+            except Exception:
+                pass
+    if rp is not None and rp <= 0.10:
+        psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
+    elif rp is not None and rp >= 0.90:
+        psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
+    if phase_num is not None and phase_num >= 8:
+        psych_warnings.append("⚠️ Late move → vào lệnh dễ dính đảo chiều")
+    if liq_evt.get('ok'):
+        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
+    if rsi_now is not None and rsi_now < 30:
+        psych_warnings.append("⚠️ RSI quá bán → không nên SELL đuổi")
+    elif rsi_now is not None and rsi_now > 70:
+        psych_warnings.append("⚠️ RSI quá mua → không nên BUY đuổi")
+    if 'CHOP' in str(session_v4.get('session_tag') or '').upper():
+        psych_warnings.append("⚠️ Market đang nhiễu → dễ bị quét 2 đầu")
     if psych_warnings:
         add(lines, "")
         add(lines, "🧠 Cảnh báo tâm lý:")
@@ -4460,38 +4492,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
     except Exception:
         pass
-    psych_warnings = []
-    try:
-        rp = float(range_pos) if range_pos is not None else None
-    except Exception:
-        rp = None
-    try:
-        phase_num = int(phase.get('phase')) if phase and phase.get('phase') is not None else None
-    except Exception:
-        phase_num = None
-    rsi_now = None
-    for s in q_lines:
-        ss = str(s)
-        if 'RSI(14) M15:' in ss:
-            try:
-                rsi_now = float(ss.split(':')[-1].strip())
-                break
-            except Exception:
-                pass
-    if rp is not None and rp <= 0.10:
-        psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
-    elif rp is not None and rp >= 0.90:
-        psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
-    if phase_num is not None and phase_num >= 8:
-        psych_warnings.append("⚠️ Late move → vào lệnh dễ dính đảo chiều")
-    if liq_evt.get('ok'):
-        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
-    if rsi_now is not None and rsi_now < 30:
-        psych_warnings.append("⚠️ RSI quá bán → không nên SELL đuổi")
-    elif rsi_now is not None and rsi_now > 70:
-        psych_warnings.append("⚠️ RSI quá mua → không nên BUY đuổi")
-    if 'CHOP' in str(session_v4.get('session_tag') or '').upper():
-        psych_warnings.append("⚠️ Market đang nhiễu → dễ bị quét 2 đầu")
+
 
     out = []
     for line in lines:
