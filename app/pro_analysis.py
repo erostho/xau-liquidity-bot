@@ -2921,9 +2921,145 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["current_price"] = float(last_close_15)
     return base
 
-    # =========================
-    # Formatter (MUST be named format_signal for main.py import)
-    # =========================
+# =========================
+# NOW status helper (shared by main.py + formatter)
+# =========================
+def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
+    sig = sig or {}
+    meta = sig.get("meta", {}) or {}
+    struct = meta.get("structure", {}) or {}
+    playbook = meta.get("playbook_v2", {}) or {}
+    ntz = meta.get("no_trade_zone", {}) or {}
+    session_v4 = meta.get("session_v4", {}) or {}
+    htf_pressure_v4 = meta.get("htf_pressure_v4", {}) or {}
+
+    score = 50
+    reasons: List[str] = []
+
+    htf_state = str(htf_pressure_v4.get("state") or "").upper()
+    if "BULLISH_STRONG" in htf_state or "BEARISH_STRONG" in htf_state:
+        score += 12
+        reasons.append("HTF mạnh")
+    elif "BULLISH_WEAK" in htf_state or "BEARISH_WEAK" in htf_state:
+        score += 6
+        reasons.append("HTF hơi nghiêng")
+    else:
+        score -= 4
+        reasons.append("HTF chưa đồng thuận")
+
+    m15 = str((struct or {}).get("M15") or "").upper()
+    h1 = str((struct or {}).get("H1") or "").upper()
+    if m15 in ("HH-HL", "LL-LH", "HH–HL", "LH–LL"):
+        score += 8
+        reasons.append("M15 rõ cấu trúc")
+    else:
+        score -= 4
+        reasons.append("M15 chưa rõ")
+
+    if h1 in ("HH-HL", "LL-LH", "HH–HL", "LH–LL"):
+        score += 6
+        reasons.append("H1 rõ cấu trúc")
+    elif h1 == "TRANSITION":
+        score -= 3
+        reasons.append("H1 đang chuyển pha")
+
+    range_pos = playbook.get("range_pos")
+    try:
+        rp = float(range_pos)
+        if rp <= 0.20 or rp >= 0.80:
+            score += 8
+            reasons.append("đang ở vùng biên")
+        elif 0.30 <= rp <= 0.70:
+            score -= 10
+            reasons.append("đang ở giữa biên độ")
+    except Exception:
+        rp = None
+
+    sess = str(session_v4.get("session_tag") or "").upper()
+    ft = str(session_v4.get("follow_through") or "").upper()
+    fake = str(session_v4.get("fake_move_risk") or "").upper()
+    if "CHOP" in sess:
+        score -= 6
+        reasons.append("session nhiễu")
+    if ft == "YES":
+        score += 5
+        reasons.append("có follow-through")
+    elif ft == "NO":
+        score -= 5
+        reasons.append("thiếu follow-through")
+
+    if fake == "HIGH":
+        score -= 8
+        reasons.append("fake risk cao")
+    elif fake == "MEDIUM":
+        score -= 3
+        reasons.append("fake risk trung bình")
+
+    if ntz.get("active"):
+        score -= 8
+        reasons.append("đang ở no-trade zone")
+
+    has_zone = bool(playbook.get("zone_low") is not None and playbook.get("zone_high") is not None)
+    if has_zone:
+        score += 6
+        reasons.append("có vùng entry")
+    else:
+        score -= 8
+        reasons.append("chưa có vùng entry")
+
+    q_lines = sig.get("quality_lines") or []
+    q_text = " | ".join(str(x) for x in q_lines).upper()
+    if "VOLUME: HIGH" in q_text or "VOLUME CAO" in q_text:
+        score += 5
+        reasons.append("volume ủng hộ")
+    elif "VOLUME: LOW" in q_text or "VOLUME THẤP" in q_text:
+        score -= 4
+        reasons.append("volume yếu")
+
+    if any(k in q_text for k in ["ENGULFING=BULL", "ENGULFING=BEAR", "REJECTION=UPPER", "REJECTION=LOWER"]):
+        score += 4
+        reasons.append("nến có phản ứng rõ")
+
+    if any(k in q_text for k in ["RSI DIVERGENCE: BEARISH", "RSI DIVERGENCE: BULLISH", "DIVERGENCE: BEARISH", "DIVERGENCE: BULLISH"]):
+        score += 4
+        reasons.append("có phân kỳ hỗ trợ")
+
+    score = max(0, min(100, score))
+
+    tradeable = True
+    tradeable_reasons: List[str] = []
+    if not has_zone:
+        tradeable = False
+        tradeable_reasons.append("chưa có vùng entry rõ")
+    if ntz.get("active"):
+        tradeable = False
+        tradeable_reasons.append("đang ở vùng no-trade")
+    if rp is not None and 0.30 <= rp <= 0.70:
+        tradeable = False
+        tradeable_reasons.append("đang ở giữa biên độ")
+    if score < 60:
+        tradeable = False
+        tradeable_reasons.append("edge chưa đủ mạnh")
+
+    def _dedup(items: List[str], limit: int) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out[:limit]
+
+    return {
+        "final_score": int(score),
+        "tradeable": "YES" if tradeable else "NO",
+        "score_reasons": _dedup(reasons, 5),
+        "tradeable_reasons": _dedup(tradeable_reasons, 3),
+    }
+
+# =========================
+# Formatter (MUST be named format_signal for main.py import)
+# =========================
 
 def _safe_float(x):
     """Convert various numeric formats to float safely.
@@ -3775,10 +3911,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
     
-    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
-        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
-    )
-    
+    now_status = get_now_status(sig)
+    final_score = int(now_status.get("final_score", 0) or 0)
+    tradeable_label = str(now_status.get("tradeable") or "NO")
+    score_reasons = list(now_status.get("score_reasons") or [])
+    tradeable_reasons = list(now_status.get("tradeable_reasons") or [])
+
     add(lines, f"🔥 Final Score: {final_score}/100")
     add(lines, f"→ Tradeable: {tradeable_label}")
     
