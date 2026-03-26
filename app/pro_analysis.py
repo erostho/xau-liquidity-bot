@@ -1700,7 +1700,243 @@ def _attach_gd4_meta(base: Dict[str, Any], session_v4: Dict[str, Any], htf_press
     meta["close_confirm_v4"] = close_confirm_v4
     meta["macro_v4"] = macro_v4
     meta["playbook_v4"] = playbook_v4
+def _clamp(v: float, lo: float, hi: float) -> float:
+    try:
+        return max(lo, min(hi, float(v)))
+    except Exception:
+        return lo
 
+
+def _compression_label(m15c: Sequence[Any], volq: Dict[str, Any], atr15: float) -> Dict[str, Any]:
+    """
+    Đo độ nén đơn giản:
+    - ATR ngắn co lại
+    - range 6 nến gần nhất nhỏ hơn range 24 nến
+    - volume thấp
+    """
+    if not m15c or len(m15c) < 30:
+        return {
+            "score": 0,
+            "label": "LOW",
+            "timing": "CHƯA RÕ",
+            "reasons": ["thiếu dữ liệu nến"],
+        }
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    last6 = closed[-6:]
+    last24 = closed[-24:]
+
+    def _avg_range(cs):
+        vals = [abs(float(c.high) - float(c.low)) for c in cs]
+        return sum(vals) / max(1, len(vals))
+
+    rng6 = _avg_range(last6)
+    rng24 = _avg_range(last24)
+
+    score = 0
+    reasons = []
+
+    # 1) range co
+    if rng24 > 0 and rng6 <= 0.72 * rng24:
+        score += 1
+        reasons.append("range ngắn đang co lại")
+
+    # 2) ATR hiện tại không lớn
+    if atr15 and rng6 <= 0.85 * float(atr15):
+        score += 1
+        reasons.append("biên độ gần nhỏ hơn ATR")
+
+    # 3) volume thấp
+    vol_state = str((volq or {}).get("state") or "").upper()
+    vol_ratio = float((volq or {}).get("ratio") or 1.0)
+    if vol_state == "LOW" or vol_ratio <= 0.85:
+        score += 1
+        reasons.append("volume cạn dần")
+
+    if score >= 3:
+        label = "HIGH"
+        timing = "SẮP XẢY RA"
+    elif score == 2:
+        label = "MEDIUM"
+        timing = "ĐANG TÍCH LŨY"
+    else:
+        label = "LOW"
+        timing = "CHƯA RÕ"
+
+    return {
+        "score": score,
+        "label": label,
+        "timing": timing,
+        "reasons": reasons,
+        "rng6": rng6,
+        "rng24": rng24,
+    }
+
+
+def _liquidity_side_hint(range_pos: Optional[float], m15_struct_tag: str) -> Dict[str, Any]:
+    """
+    Gợi ý thanh khoản nằm đâu theo vị trí hiện tại + cấu trúc.
+    Không cần quá phức tạp ở bản đầu.
+    """
+    above = False
+    below = False
+    reasons = []
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    tag = str(m15_struct_tag or "").upper()
+
+    if rp is not None:
+        if rp <= 0.30:
+            below = True
+            reasons.append("liquidity nằm dưới")
+        elif rp >= 0.70:
+            above = True
+            reasons.append("liquidity nằm trên")
+
+    if "LL" in tag or "LH" in tag:
+        below = True
+    if "HH" in tag or "HL" in tag:
+        above = True
+
+    return {
+        "above": above,
+        "below": below,
+        "reasons": reasons,
+    }
+
+
+def _predict_pump_dump_v1(
+    symbol: str,
+    m15c: Sequence[Any],
+    h1_trend: str,
+    htf_pressure_v4: Dict[str, Any],
+    market_state_v2: str,
+    flow_state: Dict[str, Any],
+    range_pos: Optional[float],
+    volq: Dict[str, Any],
+    atr15: float,
+    m15_struct_tag: str,
+    liquidation_evt: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Trả về:
+    - Compression
+    - Bias bung
+    - Xác suất
+    - Thời điểm
+    - Lý do
+    """
+    comp = _compression_label(m15c, volq, atr15)
+    liq = _liquidity_side_hint(range_pos, m15_struct_tag)
+
+    pump_score = 0
+    dump_score = 0
+    reasons = []
+
+    # 1) Structure M15
+    tag = str(m15_struct_tag or "").upper()
+    if "LL" in tag or "LH" in tag:
+        dump_score += 2
+        reasons.append("cấu trúc giảm")
+    elif "HH" in tag or "HL" in tag:
+        pump_score += 2
+        reasons.append("cấu trúc tăng")
+
+    # 2) HTF bias
+    htf_state = str((htf_pressure_v4 or {}).get("state") or "").upper()
+    if "BEARISH" in htf_state or str(h1_trend).lower() == "bearish":
+        dump_score += 1
+        reasons.append("H1/HTF yếu")
+    elif "BULLISH" in htf_state or str(h1_trend).lower() == "bullish":
+        pump_score += 1
+        reasons.append("H1/HTF mạnh")
+
+    # 3) Range position
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    if rp is not None:
+        if rp <= 0.30:
+            dump_score += 1
+            reasons.append("nén sát đáy range")
+        elif rp >= 0.70:
+            pump_score += 1
+            reasons.append("nén sát đỉnh range")
+
+    # 4) Liquidity side
+    if liq.get("below"):
+        dump_score += 1
+        reasons.append("liquidity nằm dưới")
+    if liq.get("above"):
+        pump_score += 1
+        reasons.append("liquidity nằm trên")
+
+    # 5) Flow
+    favored = str((flow_state or {}).get("favored_side") or "").upper()
+    if favored == "SELL":
+        dump_score += 1
+    elif favored == "BUY":
+        pump_score += 1
+
+    # 6) liquidation vừa xảy ra thì nghiêng theo hướng quét gần nhất nhưng hạ độ tin cậy
+    just_liquidated = bool((liquidation_evt or {}).get("ok"))
+    if just_liquidated:
+        side = str((liquidation_evt or {}).get("side") or "").upper()
+        if "SELL" in side:
+            dump_score += 1
+            reasons.append("vừa có sell liquidation")
+        elif "BUY" in side:
+            pump_score += 1
+            reasons.append("vừa có buy liquidation")
+
+    # Kết luận hướng
+    if dump_score > pump_score:
+        bias = "DUMP nghiêng hơn"
+        edge = dump_score - pump_score
+    elif pump_score > dump_score:
+        bias = "PUMP nghiêng hơn"
+        edge = pump_score - dump_score
+    else:
+        bias = "NEUTRAL"
+        edge = 0
+
+    # Xác suất
+    comp_label = comp.get("label", "LOW")
+    if bias == "NEUTRAL":
+        probability = "LOW"
+    elif comp_label == "HIGH" and edge >= 2:
+        probability = "HIGH"
+    elif comp_label in ("HIGH", "MEDIUM"):
+        probability = "MEDIUM"
+    else:
+        probability = "LOW"
+
+    # liquidation vừa xảy ra => hạ 1 nấc để tránh quá tự tin
+    if just_liquidated and probability == "HIGH":
+        probability = "MEDIUM"
+
+    timing = comp.get("timing", "CHƯA RÕ")
+
+    final_reasons = []
+    for x in reasons:
+        if x not in final_reasons:
+            final_reasons.append(x)
+
+    return {
+        "compression": comp_label,
+        "bias": bias,
+        "probability": probability,
+        "timing": timing,
+        "reasons": final_reasons[:4],
+        "pump_score": pump_score,
+        "dump_score": dump_score,
+    }
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -2177,7 +2413,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
-
+    pump_dump_v1 = _predict_pump_dump_v1(
+        symbol=symbol,
+        m15c=m15c,
+        h1_trend=h1_trend,
+        htf_pressure_v4=htf_pressure_v4,
+        market_state_v2=market_state_v2,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        volq=volq,
+        atr15=atr15,
+        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+        liquidation_evt=liquidation_evt,
+    )
+    base.setdefault("meta", {})["pump_dump_v1"] = pump_dump_v1
     if bias is None:
         # --------------------
         # Mode-based plan selection:
@@ -3983,7 +4232,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"- {sell_near}")
     add(lines, f"- {buy_strong}")
     add(lines, f"- {sell_strong}")
+    pump_dump = ((sig.get("meta") or {}).get("pump_dump_v1") or {})
+    compression = str(pump_dump.get("compression") or "LOW")
+    bias_bung = str(pump_dump.get("bias") or "NEUTRAL")
+    probability = str(pump_dump.get("probability") or "LOW")
+    timing = str(pump_dump.get("timing") or "CHƯA RÕ")
+    reasons = pump_dump.get("reasons") or []
 
+    lines.append("")
+    lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
+    lines.append(f"- Compression: {compression}")
+    lines.append(f"- Bias bung: {bias_bung}")
+    lines.append(f"- Xác suất: {probability}")
+    lines.append(f"- Thời điểm: {timing}")
+    if reasons:
+        lines.append(f"- Lý do: {' + '.join(reasons[:3])}")
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}" + (" (đang ở vùng no-trade / cuối move)" if grade == "SKIP" else ""))
     
