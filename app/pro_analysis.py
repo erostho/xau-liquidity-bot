@@ -2413,20 +2413,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
-    pump_dump_v1 = _predict_pump_dump_v1(
-        symbol=symbol,
-        m15c=m15c,
-        h1_trend=h1_trend,
-        htf_pressure_v4=htf_pressure_v4,
-        market_state_v2=market_state_v2,
-        flow_state=flow_state,
-        range_pos=range_pos,
-        volq=volq,
-        atr15=atr15,
-        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
-        liquidation_evt=liquidation_evt,
-    )
-    base.setdefault("meta", {})["pump_dump_v1"] = pump_dump_v1
+
     if bias is None:
         # --------------------
         # Mode-based plan selection:
@@ -2697,7 +2684,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     h1_struct = _structure_from_swings(h1c, lookback=260)
     h4_struct = _structure_from_swings(h4c, lookback=260)
     m15_struct = _m15_key_levels(m15c, bias_side=bias_side, lookback=120)
-
+    pump_dump_v1 = _predict_pump_dump_v1(
+        symbol=symbol,
+        m15c=m15c,
+        h1_trend=h1_trend,
+        htf_pressure_v4=htf_pressure_v4,
+        market_state_v2=market_state_v2,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        volq=volq,
+        atr15=atr15,
+        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+        liquidation_evt=liquidation_evt,
+    )
+    base.setdefault("meta", {})["pump_dump_v1"] = pump_dump_v1
     base.setdefault("meta", {})["structure"] = {
         "H4": h4_struct.get("tag"),
         "H1": h1_struct.get("tag"),
