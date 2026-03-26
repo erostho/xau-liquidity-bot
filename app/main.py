@@ -896,9 +896,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     v = str(verdict or "").upper()
     if "CHƯA RÕ" in v:
         if side == "SELL":
-            verdict_text = "Tạm ổn — cùng bối cảnh giảm nhưng chưa có LH xác nhận"
+            verdict_text = "Lệnh SELL đang ngược xu hướng chính, chưa có LH xác nhận → chỉ giữ ngắn hạn"
         else:
-            verdict_text = "Tạm ổn — cùng bối cảnh tăng nhưng chưa có HL xác nhận"
+            verdict_text = "Lệnh BUY đang ngược xu hướng chính, chưa có HL xác nhận → chỉ giữ ngắn hạn"
     elif "ĐÚNG" in v:
         verdict_text = "Ổn — đang đi cùng hướng chính"
     elif "SAI" in v or "NGUY HIỂM" in v:
