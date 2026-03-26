@@ -512,7 +512,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
 
     h1_txt = " ".join(str(x).lower() for x in ctx)
     if side == "BUY" and "h1: bearish" in h1_txt:
-        actions.append("⚠️ BUY ngược H1 bearish → ưu tiên đánh ngắn, không gồng.")
+        actions.append("⚠️ BUY ngược H1 → chỉ đánh ngắn, không gồng.")
     if side == "SELL" and "h1: bullish" in h1_txt:
         actions.append("⚠️ SELL ngược H1 bullish → ưu tiên đánh ngắn, không gồng.")
 
@@ -557,7 +557,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
                 actions.append("⏳ Có thể giữ ngắn hạn, KHÔNG add. Chờ break xác nhận.")
 
     if isinstance(no_trade_zone, dict) and no_trade_zone.get("active"):
-        actions.append("🚨 Đang ở no-trade zone → không nên add hoặc mở rộng rủi ro.")
+        actions.append("🚨 Đang ở vùng no-trade → không mở thêm rủi ro.")
 
     try:
         mgmt = _trade_management_5_10_15(side, entry, cur, a, gate, div, cpat, volq, tp, sl) or {}
@@ -637,6 +637,42 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if favored == "SELL":
             return f"{base} | Ưu tiên SELL"
         return f"{base} | Ưu tiên NONE"
+
+    def _review_confidence_risk(final_score: int, tradeable_label: str, side: str, pos, ntz_obj: dict, htf_obj: dict, liquidation_obj: dict) -> tuple[str, str]:
+        confidence = "LOW"
+        if tradeable_label == "YES" and final_score >= 75:
+            confidence = "HIGH"
+        elif final_score >= 55:
+            confidence = "MEDIUM"
+
+        risk_points = 0
+        if isinstance(ntz_obj, dict) and ntz_obj.get("active"):
+            risk_points += 2
+        if isinstance(liquidation_obj, dict) and liquidation_obj.get("ok"):
+            risk_points += 2
+        htf_state = str((htf_obj or {}).get("state") or "").upper()
+        if str(side).upper() == "BUY" and "BEARISH" in htf_state:
+            risk_points += 2
+        if str(side).upper() == "SELL" and "BULLISH" in htf_state:
+            risk_points += 2
+        try:
+            rp = float(pos)
+            if str(side).upper() == "BUY" and rp > 0.80:
+                risk_points += 2
+            elif str(side).upper() == "SELL" and rp < 0.20:
+                risk_points += 2
+            elif 0.30 <= rp <= 0.70:
+                risk_points += 1
+        except Exception:
+            pass
+
+        if risk_points >= 5:
+            risk = "HIGH"
+        elif risk_points >= 3:
+            risk = "MEDIUM"
+        else:
+            risk = "LOW"
+        return confidence, risk
 
     def _grade_from_verdict(v: str) -> str:
         vv = str(v or "").upper()
@@ -896,9 +932,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     v = str(verdict or "").upper()
     if "CHƯA RÕ" in v:
         if side == "SELL":
-            verdict_text = "Lệnh SELL đang ngược xu hướng chính, chưa có LH xác nhận → chỉ giữ ngắn hạn"
+            verdict_text = "Lệnh SELL đang ngược xu hướng chính → chỉ giữ ngắn hạn"
         else:
-            verdict_text = "Lệnh BUY đang ngược xu hướng chính, chưa có HL xác nhận → chỉ giữ ngắn hạn"
+            verdict_text = "Lệnh BUY đang ngược xu hướng chính → chỉ giữ ngắn hạn"
     elif "ĐÚNG" in v:
         verdict_text = "Ổn — đang đi cùng hướng chính"
     elif "SAI" in v or "NGUY HIỂM" in v:
@@ -1010,6 +1046,17 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     )
     lines.append(f"🔥 Final Score: {final_score}/100")
     lines.append(f"→ Tradeable thêm: {tradeable_label}")
+    confidence_level, risk_level = _review_confidence_risk(
+        final_score,
+        tradeable_label,
+        side,
+        pos,
+        no_trade_zone if isinstance(no_trade_zone, dict) else {},
+        htf_pressure_v4 if isinstance(htf_pressure_v4, dict) else {},
+        liquidation if isinstance(liquidation, dict) else {},
+    )
+    lines.append(f"- Confidence level: {confidence_level}")
+    lines.append(f"- Risk level: {risk_level}")
     if tradeable_label == "NO":
         lines.append("- Vị thế hiện tại chưa đủ đẹp để mở thêm rủi ro mới")
     else:
@@ -1031,6 +1078,25 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if "BEARISH" in htf_state:
             lines.append("- ⚠️ BUY chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
 
+    psych_warnings = []
+    try:
+        rp = float(pos)
+        if rp <= 0.10 and str(side).upper() == "SELL":
+            psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
+        elif rp >= 0.90 and str(side).upper() == "BUY":
+            psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
+    except Exception:
+        pass
+    if isinstance(liquidation, dict) and liquidation.get("ok"):
+        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
+    if str(side).upper() == "BUY" and isinstance(htf_pressure_v4, dict) and "BEARISH" in str(htf_pressure_v4.get("state") or "").upper():
+        psych_warnings.append("⚠️ Đây là lệnh ngược xu hướng chính → chỉ giữ ngắn hạn")
+    if psych_warnings:
+        lines.append("")
+        lines.append("🧠 Cảnh báo tâm lý:")
+        for s in psych_warnings[:4]:
+            lines.append(f"- {s}")
+
     lines.append("")
     lines.append("⚙️ Hành động:")
     for s in (location_ctx.get("action_lines") or []):
@@ -1043,7 +1109,7 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     elif grade == "A":
         lines.append("- Có thể giữ lệnh theo kế hoạch, nhưng không nên mở thêm lệnh mới")
     elif grade == "B":
-        lines.append("- Có thể giữ ngắn hạn nếu cấu trúc chưa hỏng, nhưng không nên add")
+        lines.append("- Có thể giữ ngắn hạn nếu cấu trúc chưa hỏng → KHÔNG add")
     else:
         lines.append("- Ưu tiên giảm rủi ro và quan sát thêm")
 
