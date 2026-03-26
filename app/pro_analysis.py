@@ -1937,6 +1937,125 @@ def _predict_pump_dump_v1(
         "pump_score": pump_score,
         "dump_score": dump_score,
     }
+
+def _entry_sniper_v1(
+    m15c,
+    m15_struct: dict | None,
+    atr15: float | None,
+    volq: dict | None = None,
+) -> dict:
+    """
+    Entry Sniper:
+    - Cây chỉ hướng
+    - Điểm nổ
+    - Trạng thái
+    """
+
+    out = {
+        "direction": "NONE",
+        "strength": "-",
+        "trigger": "NONE",
+        "state": "KHÔNG CÓ SETUP",
+        "reason": "",
+    }
+
+    if not m15c or len(m15c) < 25:
+        out["reason"] = "thiếu dữ liệu M15"
+        return out
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    if len(closed) < 10:
+        out["reason"] = "thiếu nến đã đóng"
+        return out
+
+    last = closed[-1]
+    prev = closed[-2]
+
+    def _body(c):
+        return abs(float(c.close) - float(c.open))
+
+    def _range(c):
+        return max(1e-9, float(c.high) - float(c.low))
+
+    # ===== 1) Cây chỉ hướng =====
+    body_last = _body(last)
+    range_last = _range(last)
+
+    avg_body = sum(_body(x) for x in closed[-6:]) / max(1, len(closed[-6:]))
+    big_body = body_last >= 0.55 * range_last
+    displacement = body_last >= 1.35 * max(avg_body, 1e-9)
+
+    direction = "NONE"
+    strength = "-"
+
+    # dựa thêm vào cấu trúc ngắn hạn
+    m15_tag = str((m15_struct or {}).get("tag") or "").upper()
+
+    if float(last.close) < float(last.open) and big_body and displacement:
+        direction = "SELL"
+        strength = "STRONG" if body_last >= 1.6 * max(avg_body, 1e-9) else "MEDIUM"
+
+    elif float(last.close) > float(last.open) and big_body and displacement:
+        direction = "BUY"
+        strength = "STRONG" if body_last >= 1.6 * max(avg_body, 1e-9) else "MEDIUM"
+
+    # cấu trúc hỗ trợ tăng độ tin cậy
+    if direction == "SELL" and ("LL" in m15_tag or "LH" in m15_tag):
+        if strength == "MEDIUM":
+            strength = "STRONG"
+    if direction == "BUY" and ("HH" in m15_tag or "HL" in m15_tag):
+        if strength == "MEDIUM":
+            strength = "STRONG"
+
+    # nếu chưa có cây chỉ hướng
+    if direction == "NONE":
+        out["reason"] = "chưa có cây chỉ hướng rõ"
+        return out
+
+    out["direction"] = direction
+    out["strength"] = strength
+
+    # ===== 2) Điểm nổ =====
+    # Ý tưởng đơn giản:
+    # - READY: sau cây chỉ hướng có hồi yếu / giữ hướng
+    # - TRIGGERED: phá tiếp theo hướng đó
+    trigger = "NONE"
+    state = "CHỜ"
+
+    recent_high = max(float(x.high) for x in closed[-6:-1]) if len(closed) >= 6 else float(last.high)
+    recent_low = min(float(x.low) for x in closed[-6:-1]) if len(closed) >= 6 else float(last.low)
+
+    vol_state = str((volq or {}).get("state") or "").upper()
+
+    if direction == "SELL":
+        # READY: nến trước đó đã là cây chỉ hướng, nến hiện tại hồi yếu / không vượt nổi
+        weak_pullback = float(last.close) <= (float(last.open) + 0.35 * range_last)
+        # TRIGGERED: phá đáy gần + có follow-through
+        triggered = float(last.close) < recent_low
+
+        if triggered:
+            trigger = "TRIGGERED"
+            state = "CÓ THỂ VÀO"
+        elif weak_pullback or vol_state == "HIGH":
+            trigger = "READY"
+            state = "SẮP NỔ"
+
+    elif direction == "BUY":
+        weak_pullback = float(last.close) >= (float(last.open) - 0.35 * range_last)
+        triggered = float(last.close) > recent_high
+
+        if triggered:
+            trigger = "TRIGGERED"
+            state = "CÓ THỂ VÀO"
+        elif weak_pullback or vol_state == "HIGH":
+            trigger = "READY"
+            state = "SẮP NỔ"
+
+    out["trigger"] = trigger
+    out["state"] = state
+    out["reason"] = f"body={body_last:.2f} | avg_body={avg_body:.2f} | m15={m15_tag or 'n/a'}"
+
+    return out
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -2684,6 +2803,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     h1_struct = _structure_from_swings(h1c, lookback=260)
     h4_struct = _structure_from_swings(h4c, lookback=260)
     m15_struct = _m15_key_levels(m15c, bias_side=bias_side, lookback=120)
+    entry_sniper = _entry_sniper_v1(
+        m15c=m15c,
+        m15_struct=m15_struct,
+        atr15=atr15,
+        volq=volq,
+    )
+    base.setdefault("meta", {})["entry_sniper"] = entry_sniper
     pump_dump_v1 = _predict_pump_dump_v1(
         symbol=symbol,
         m15c=m15c,
@@ -4225,115 +4351,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- {s}")
     else:
         add(lines, "- Nếu cấu trúc hiện tại bị phá thì bỏ kịch bản")
-    
-    add(lines, "")
-    add(lines, "🧯 Trigger quan trọng:")
-    add(lines, f"- {buy_near}")
-    add(lines, f"- {sell_near}")
-    add(lines, f"- {buy_strong}")
-    add(lines, f"- {sell_strong}")
-    pump_dump = ((sig.get("meta") or {}).get("pump_dump_v1") or {})
-    compression = str(pump_dump.get("compression") or "LOW")
-    bias_bung = str(pump_dump.get("bias") or "NEUTRAL")
-    probability = str(pump_dump.get("probability") or "LOW")
-    timing = str(pump_dump.get("timing") or "CHƯA RÕ")
-    reasons = pump_dump.get("reasons") or []
-
-    lines.append("")
-    lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
-    lines.append(f"- Compression: {compression}")
-    lines.append(f"- Bias bung: {bias_bung}")
-    lines.append(f"- Xác suất: {probability}")
-    lines.append(f"- Thời điểm: {timing}")
-    if reasons:
-        lines.append(f"- Lý do: {' + '.join(reasons[:3])}")
-    add(lines, "")
-    add(lines, f"📊 Chất lượng cơ hội: {grade}" + (" (đang ở vùng no-trade / cuối move)" if grade == "SKIP" else ""))
-    
-    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
-        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
-    )
-    
-    add(lines, f"🔥 Final Score: {final_score}/100")
-    add(lines, f"→ Tradeable: {tradeable_label}")
-    add(lines, f"- Confidence level: {str(now_status.get('confidence_level') or 'LOW').upper()}")
-    add(lines, f"- Risk level: {str(now_status.get('risk_level') or 'HIGH').upper()}")
-    
-    summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
-    add(lines, f"- {summary_line}")
-    
-    if score_reasons:
-        add(lines, f"- Điểm cộng/trừ chính: {', '.join(score_reasons)}")
-    if tradeable_reasons:
-        add(lines, f"- Lý do chưa trade: {', '.join(tradeable_reasons)}")
-    
-    if playbook_v4.get("quality"):
-        add(lines, f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
-    if ntz.get("active"):
-        rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
-        add(lines, f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
-    
-    # Grade explanation
-    if grade == "A":
-        add(lines, "- Edge mạnh: có thể theo nếu giá vào đúng vùng")
-    elif grade in ("A", "B", "B-"):
-        add(lines, "- Có edge nhưng cần chọn điểm vào kỹ, không đuổi giá")
-    elif grade == "C":
-        add(lines, "- Ý tưởng có thể đúng nhưng rủi ro còn cao")
-        
-    add(lines, "")
-    add(lines, "⚙️ Hành động:")
-    if trade_mode == "FULL":
-        add(lines, "- Có thể mở lệnh nếu giá vào đúng vùng và có xác nhận rõ")
-    elif trade_mode == "HALF":
-        add(lines, "- Có thể canh nhưng không nên đuổi giá")
-    else:
-        add(lines, "- Chưa nên mở lệnh mới")
-    
-    try:
-        rp = float(range_pos)
-        if 0.30 <= rp <= 0.70:
-            add(lines, "- Tránh trade ở giữa biên độ")
-        elif rp > 0.80:
-            add(lines, "- Không BUY đuổi ở vùng cao, chờ phản ứng rồi mới quyết định theo xu hướng")
-        elif rp < 0.20:
-            add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
-    except Exception:
-        pass
-
-    psych_warnings = []
-    try:
-        rp = float(range_pos) if range_pos is not None else None
-    except Exception:
-        rp = None
-    try:
-        phase_num = int(phase.get('phase')) if phase and phase.get('phase') is not None else None
-    except Exception:
-        phase_num = None
-    rsi_now = None
-    for s in q_lines:
-        ss = str(s)
-        if 'RSI(14) M15:' in ss:
-            try:
-                rsi_now = float(ss.split(':')[-1].strip())
-                break
-            except Exception:
-                pass
-    if rp is not None and rp <= 0.10:
-        psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
-    elif rp is not None and rp >= 0.90:
-        psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
-    if phase_num is not None and phase_num >= 8:
-        psych_warnings.append("⚠️ Late move → vào lệnh dễ dính đảo chiều")
-    if liq_evt.get('ok'):
-        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
-    if rsi_now is not None and rsi_now < 30:
-        psych_warnings.append("⚠️ RSI quá bán → không nên SELL đuổi")
-    elif rsi_now is not None and rsi_now > 70:
-        psych_warnings.append("⚠️ RSI quá mua → không nên BUY đuổi")
-    if 'CHOP' in str(session_v4.get('session_tag') or '').upper():
-        psych_warnings.append("⚠️ Market đang nhiễu → dễ bị quét 2 đầu")
-
     if psych_warnings:
         add(lines, "")
         add(lines, "🧠 Cảnh báo tâm lý:")
@@ -4369,6 +4386,112 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if playbook_v4.get("quality"):
             trig = ", ".join(playbook_v4.get("trigger_pack") or [])
             add(lines, f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
+    
+    add(lines, "")
+    add(lines, "🧯 Trigger quan trọng:")
+    add(lines, f"- {buy_near}")
+    add(lines, f"- {sell_near}")
+    add(lines, f"- {buy_strong}")
+    add(lines, f"- {sell_strong}")
+    pump_dump = ((sig.get("meta") or {}).get("pump_dump_v1") or {})
+    compression = str(pump_dump.get("compression") or "LOW")
+    bias_bung = str(pump_dump.get("bias") or "NEUTRAL")
+    probability = str(pump_dump.get("probability") or "LOW")
+    timing = str(pump_dump.get("timing") or "CHƯA RÕ")
+    reasons = pump_dump.get("reasons") or []
+    sniper = ((sig.get("meta") or {}).get("entry_sniper") or {})
+    lines.append("")
+    lines.append("🎯 ENTRY SNIPER:")
+    lines.append(f"- Cây chỉ hướng: {sniper.get('direction', 'NONE')} ({sniper.get('strength', '-')})")
+    lines.append(f"- Điểm nổ: {sniper.get('trigger', 'NONE')}")
+    lines.append(f"- Trạng thái: {sniper.get('state', 'KHÔNG CÓ SETUP')}")
+    lines.append("")
+    lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
+    lines.append(f"- Compression: {compression}")
+    lines.append(f"- Bias bung: {bias_bung}")
+    lines.append(f"- Xác suất: {probability}")
+    lines.append(f"- Thời điểm: {timing}")
+    if reasons:
+        lines.append(f"- Lý do: {' + '.join(reasons[:3])}")
+    add(lines, "")
+    add(lines, f"📊 Chất lượng cơ hội: {grade}" + (" (đang ở vùng no-trade / cuối move)" if grade == "SKIP" else ""))
+    
+    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
+        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
+    )
+    add(lines, f"🔥 Final Score: {final_score}/100")
+    add(lines, f"→ Tradeable: {tradeable_label}")
+    add(lines, f"- Confidence level: {str(now_status.get('confidence_level') or 'LOW').upper()}")
+    add(lines, f"- Risk level: {str(now_status.get('risk_level') or 'HIGH').upper()}")
+    summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
+    add(lines, f"- {summary_line}")
+    if score_reasons:
+        add(lines, f"- Điểm cộng/trừ chính: {', '.join(score_reasons)}")
+    if tradeable_reasons:
+        add(lines, f"- Lý do chưa trade: {', '.join(tradeable_reasons)}")
+    
+    if playbook_v4.get("quality"):
+        add(lines, f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
+    if ntz.get("active"):
+        rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
+        add(lines, f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
+    # Grade explanation
+    if grade == "A":
+        add(lines, "- Edge mạnh: có thể theo nếu giá vào đúng vùng")
+    elif grade in ("A", "B", "B-"):
+        add(lines, "- Có edge nhưng cần chọn điểm vào kỹ, không đuổi giá")
+    elif grade == "C":
+        add(lines, "- Ý tưởng có thể đúng nhưng rủi ro còn cao")
+    add(lines, "")
+    add(lines, "⚙️ Hành động:")
+    if trade_mode == "FULL":
+        add(lines, "- Có thể mở lệnh nếu giá vào đúng vùng và có xác nhận rõ")
+    elif trade_mode == "HALF":
+        add(lines, "- Có thể canh nhưng không nên đuổi giá")
+    else:
+        add(lines, "- Chưa nên mở lệnh mới")
+    try:
+        rp = float(range_pos)
+        if 0.30 <= rp <= 0.70:
+            add(lines, "- Tránh trade ở giữa biên độ")
+        elif rp > 0.80:
+            add(lines, "- Không BUY đuổi ở vùng cao, chờ phản ứng rồi mới quyết định theo xu hướng")
+        elif rp < 0.20:
+            add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
+    except Exception:
+        pass
+    psych_warnings = []
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+    try:
+        phase_num = int(phase.get('phase')) if phase and phase.get('phase') is not None else None
+    except Exception:
+        phase_num = None
+    rsi_now = None
+    for s in q_lines:
+        ss = str(s)
+        if 'RSI(14) M15:' in ss:
+            try:
+                rsi_now = float(ss.split(':')[-1].strip())
+                break
+            except Exception:
+                pass
+    if rp is not None and rp <= 0.10:
+        psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
+    elif rp is not None and rp >= 0.90:
+        psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
+    if phase_num is not None and phase_num >= 8:
+        psych_warnings.append("⚠️ Late move → vào lệnh dễ dính đảo chiều")
+    if liq_evt.get('ok'):
+        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
+    if rsi_now is not None and rsi_now < 30:
+        psych_warnings.append("⚠️ RSI quá bán → không nên SELL đuổi")
+    elif rsi_now is not None and rsi_now > 70:
+        psych_warnings.append("⚠️ RSI quá mua → không nên BUY đuổi")
+    if 'CHOP' in str(session_v4.get('session_tag') or '').upper():
+        psych_warnings.append("⚠️ Market đang nhiễu → dễ bị quét 2 đầu")
 
     out = []
     for line in lines:
