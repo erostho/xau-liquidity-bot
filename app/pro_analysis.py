@@ -2952,275 +2952,180 @@ def _safe_float(x):
     except Exception:
         return None
 
-
 def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
+    """Safe NOW-status snapshot for cron/filtering and Telegram rendering.
+    Always returns a dict and never raises.
     """
-    Tách riêng:
-    - setup_score: chất lượng bối cảnh / playbook
-    - entry_score: chất lượng điểm vào NGAY BÂY GIỜ
-    - tradeable_now: có được phép bấm lệnh ngay hay không
-    """
-    if not isinstance(sig, dict):
+    try:
+        sig = sig if isinstance(sig, dict) else {}
+        meta = sig.get("meta") if isinstance(sig.get("meta"), dict) else {}
+        playbook = meta.get("playbook_v2") if isinstance(meta.get("playbook_v2"), dict) else {}
+        ntz = meta.get("no_trade_zone") if isinstance(meta.get("no_trade_zone"), dict) else {}
+        struct = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
+        session_v4 = meta.get("session_v4") if isinstance(meta.get("session_v4"), dict) else {}
+        htf_pressure_v4 = meta.get("htf_pressure_v4") if isinstance(meta.get("htf_pressure_v4"), dict) else {}
+        k = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
+
+        reasons = []
+        trade_reasons = []
+        setup = 50
+
+        htf_state = str(htf_pressure_v4.get("state") or "").upper()
+        if "STRONG" in htf_state:
+            setup += 12
+            reasons.append("HTF mạnh")
+        elif "WEAK" in htf_state:
+            setup += 6
+            reasons.append("HTF hơi nghiêng")
+        else:
+            setup -= 4
+            reasons.append("HTF chưa đồng thuận")
+
+        m15 = str((struct or {}).get("M15") or "").upper()
+        h1 = str((struct or {}).get("H1") or "").upper()
+        if m15 in ("HH-HL", "LL-LH"):
+            setup += 8
+            reasons.append("M15 rõ cấu trúc")
+        else:
+            setup -= 4
+            reasons.append("M15 chưa rõ")
+        if h1 in ("HH-HL", "LL-LH"):
+            setup += 6
+            reasons.append("H1 rõ cấu trúc")
+        elif h1 == "TRANSITION":
+            setup -= 3
+            reasons.append("H1 đang chuyển pha")
+
+        sess = str(session_v4.get("session_tag") or "").upper()
+        ft = str(session_v4.get("follow_through") or "").upper()
+        fake = str(session_v4.get("fake_move_risk") or "").upper()
+        if "CHOP" in sess:
+            setup -= 6
+            reasons.append("session nhiễu")
+        if ft == "YES":
+            setup += 5
+            reasons.append("có follow-through")
+        elif ft == "NO":
+            setup -= 5
+            reasons.append("thiếu follow-through")
+        if fake == "HIGH":
+            setup -= 8
+            reasons.append("fake risk cao")
+        elif fake == "MEDIUM":
+            setup -= 3
+            reasons.append("fake risk trung bình")
+
+        zlo = _safe_float(playbook.get("zone_low"))
+        zhi = _safe_float(playbook.get("zone_high"))
+        if zlo is not None and zhi is not None:
+            setup += 6
+            reasons.append("có vùng entry")
+        else:
+            setup -= 8
+            reasons.append("chưa có vùng entry")
+
+        rp = None
+        try:
+            rp = float(playbook.get("range_pos"))
+            if rp <= 0.20 or rp >= 0.80:
+                setup += 8
+                reasons.append("đang ở vùng biên")
+            elif 0.30 <= rp <= 0.70:
+                setup -= 10
+                reasons.append("đang ở giữa biên độ")
+        except Exception:
+            rp = None
+
+        if ntz.get("active"):
+            setup -= 8
+            reasons.append("đang ở no-trade zone")
+
+        setup = max(0, min(100, setup))
+
+        last_px = _safe_float(k.get("M15_LAST"))
+        if last_px is None:
+            last_px = _safe_float(sig.get("last_price"))
+        if last_px is None:
+            last_px = _safe_float(sig.get("current_price"))
+        entry = 50
+        tradeable_now = True
+
+        if zlo is None or zhi is None:
+            entry -= 20
+            tradeable_now = False
+            trade_reasons.append("chưa có vùng entry rõ")
+        elif last_px is not None:
+            lo, hi = min(zlo, zhi), max(zlo, zhi)
+            width = max(hi - lo, 1e-9)
+            dist = 0.0
+            if last_px < lo:
+                dist = (lo - last_px) / width
+            elif last_px > hi:
+                dist = (last_px - hi) / width
+            if lo <= last_px <= hi:
+                entry += 25
+            elif dist <= 0.20:
+                entry += 12
+                trade_reasons.append("giá đang gần vùng vào")
+            elif dist <= 0.50:
+                entry -= 8
+                tradeable_now = False
+                trade_reasons.append("chưa vào đúng vùng entry")
+            else:
+                entry -= 22
+                tradeable_now = False
+                trade_reasons.append("giá đang xa vùng entry")
+
+        rec = str(sig.get("recommendation") or "").upper()
+        if rp is not None:
+            if rec in ("🔴 SELL", "SELL", "BÁN") and rp < 0.20:
+                entry -= 25
+                tradeable_now = False
+                trade_reasons.append("SELL đang ở vùng thấp")
+            if rec in ("🟢 BUY", "BUY", "MUA") and rp > 0.80:
+                entry -= 25
+                tradeable_now = False
+                trade_reasons.append("BUY đang ở vùng cao")
+            if 0.30 <= rp <= 0.70:
+                entry -= 18
+                tradeable_now = False
+                trade_reasons.append("đang ở giữa biên độ")
+
+        if ntz.get("active"):
+            entry -= 15
+            tradeable_now = False
+            trade_reasons.append("đang ở vùng no-trade")
+
+        if setup < 60:
+            tradeable_now = False
+            trade_reasons.append("setup chưa đủ mạnh")
+        if entry < 60:
+            tradeable_now = False
+
+        entry = max(0, min(100, entry))
+
+        dedup_reasons = list(dict.fromkeys(reasons))[:5]
+        dedup_trade = list(dict.fromkeys(trade_reasons))[:4]
+
+        return {
+            "setup_score": int(setup),
+            "entry_score_now": int(entry),
+            "tradeable_now": "YES" if tradeable_now else "NO",
+            "final_score": int(setup),
+            "tradeable": "YES" if tradeable_now else "NO",
+            "score_reasons": dedup_reasons,
+            "tradeable_reasons": dedup_trade,
+        }
+    except Exception as e:
         return {
             "setup_score": 0,
-            "entry_score": 0,
+            "entry_score_now": 0,
             "tradeable_now": "NO",
-            "current_action": "WAIT",
-            "quality_label": "SKIP",
-            "setup_reasons": ["signal lỗi"],
-            "entry_reasons": ["signal lỗi"],
-            "summary_line": "Signal không hợp lệ",
-            "late_reason": "",
-            "location_state": "UNKNOWN",
+            "final_score": 0,
+            "tradeable": "NO",
+            "score_reasons": [f"get_now_status fallback: {e}"],
+            "tradeable_reasons": ["status fallback"],
         }
-
-    meta = sig.get("meta") if isinstance(sig.get("meta"), dict) else {}
-    playbook = meta.get("playbook_v2") if isinstance(meta.get("playbook_v2"), dict) else {}
-    ntz = meta.get("no_trade_zone") if isinstance(meta.get("no_trade_zone"), dict) else {}
-    struct = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
-    session_v4 = meta.get("session_v4") if isinstance(meta.get("session_v4"), dict) else {}
-    htf_pressure_v4 = meta.get("htf_pressure_v4") if isinstance(meta.get("htf_pressure_v4"), dict) else {}
-    playbook_v4 = meta.get("playbook_v4") if isinstance(meta.get("playbook_v4"), dict) else {}
-    k = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
-
-    last_px = (
-        k.get("M15_LAST")
-        if k.get("M15_LAST") is not None else
-        sig.get("last_price")
-        if sig.get("last_price") is not None else
-        sig.get("current_price")
-    )
-
-    range_pos = playbook.get("range_pos")
-    if range_pos is None:
-        lo = _safe_float(k.get("M15_RANGE_LOW"))
-        hi = _safe_float(k.get("M15_RANGE_HIGH"))
-        px = _safe_float(last_px)
-        if lo is not None and hi is not None and px is not None and hi > lo:
-            range_pos = (px - lo) / max(1e-9, hi - lo)
-
-    try:
-        rp = float(range_pos) if range_pos is not None else None
-    except Exception:
-        rp = None
-
-    zone_lo = _safe_float(playbook.get("zone_low"))
-    zone_hi = _safe_float(playbook.get("zone_high"))
-    px = _safe_float(last_px)
-
-    in_zone = below_zone = above_zone = False
-    if zone_lo is not None and zone_hi is not None and px is not None:
-        in_zone = zone_lo <= px <= zone_hi
-        below_zone = px < zone_lo
-        above_zone = px > zone_hi
-
-    htf_state = str(htf_pressure_v4.get("state") or "").upper()
-    m15 = str((struct or {}).get("M15") or "").upper()
-    h1 = str((struct or {}).get("H1") or "").upper()
-
-    trend_ctx = "MIXED"
-    bear_ctx = ("BEARISH" in htf_state) or (m15 in ("LL-LH", "LH–LL", "LH-LL")) or (h1 in ("LL-LH", "LH–LL", "LH-LL"))
-    bull_ctx = ("BULLISH" in htf_state) or (m15 in ("HH-HL", "HH–HL")) or (h1 in ("HH-HL", "HH–HL"))
-    if bear_ctx and not bull_ctx:
-        trend_ctx = "BEAR"
-    elif bull_ctx and not bear_ctx:
-        trend_ctx = "BULL"
-
-    setup_score = 50
-    setup_reasons = []
-
-    if "STRONG" in htf_state:
-        setup_score += 12
-        setup_reasons.append("HTF mạnh")
-    elif "WEAK" in htf_state:
-        setup_score += 6
-        setup_reasons.append("HTF hơi nghiêng")
-    else:
-        setup_score -= 4
-        setup_reasons.append("HTF chưa đồng thuận")
-
-    if m15 in ("HH-HL", "LL-LH", "HH–HL", "LH–LL", "LH-LL"):
-        setup_score += 8
-        setup_reasons.append("M15 rõ cấu trúc")
-    else:
-        setup_score -= 4
-        setup_reasons.append("M15 chưa rõ")
-
-    if h1 in ("HH-HL", "LL-LH", "HH–HL", "LH–LL", "LH-LL"):
-        setup_score += 6
-        setup_reasons.append("H1 rõ cấu trúc")
-    elif h1 == "TRANSITION":
-        setup_score -= 3
-        setup_reasons.append("H1 đang chuyển pha")
-
-    sess = str(session_v4.get("session_tag") or "").upper()
-    ft = str(session_v4.get("follow_through") or "").upper()
-    fake = str(session_v4.get("fake_move_risk") or "").upper()
-    if "CHOP" in sess:
-        setup_score -= 6
-        setup_reasons.append("session nhiễu")
-    if ft == "YES":
-        setup_score += 5
-        setup_reasons.append("có follow-through")
-    elif ft == "NO":
-        setup_score -= 5
-        setup_reasons.append("thiếu follow-through")
-    if fake == "HIGH":
-        setup_score -= 8
-        setup_reasons.append("fake risk cao")
-    elif fake == "MEDIUM":
-        setup_score -= 3
-        setup_reasons.append("fake risk trung bình")
-
-    if playbook_v4.get("quality") == "HIGH":
-        setup_score += 6
-        setup_reasons.append("playbook sạch")
-    elif playbook_v4.get("quality") == "MEDIUM":
-        setup_score += 3
-        setup_reasons.append("playbook tạm ổn")
-
-    entry_score = 50
-    entry_reasons = []
-    location_state = "UNKNOWN"
-    late_reason = ""
-
-    has_zone = zone_lo is not None and zone_hi is not None
-    if has_zone:
-        entry_score += 8
-        entry_reasons.append("có vùng entry")
-        if in_zone:
-            entry_score += 18
-            entry_reasons.append("giá đang ở vùng entry")
-            location_state = "IN_ZONE"
-        elif trend_ctx == "BEAR" and below_zone:
-            entry_score -= 28
-            entry_reasons.append("giá đã đi dưới vùng sell đẹp")
-            location_state = "LATE_CHASE"
-            late_reason = "Không SELL đuổi ở vùng thấp; chờ hồi lại vùng đẹp rồi mới đánh giá tiếp"
-        elif trend_ctx == "BULL" and above_zone:
-            entry_score -= 28
-            entry_reasons.append("giá đã đi trên vùng buy đẹp")
-            location_state = "LATE_CHASE"
-            late_reason = "Không BUY đuổi ở vùng cao; chờ điều chỉnh lại vùng đẹp rồi mới đánh giá tiếp"
-        else:
-            entry_score -= 6
-            entry_reasons.append("giá chưa vào vùng entry đẹp")
-            location_state = "WAIT_ZONE"
-    else:
-        entry_score -= 12
-        entry_reasons.append("chưa có vùng entry rõ")
-
-    if rp is not None:
-        if 0.30 <= rp <= 0.70:
-            entry_score -= 18
-            entry_reasons.append("đang ở giữa biên độ")
-            location_state = "MID_RANGE"
-        elif trend_ctx == "BEAR" and rp < 0.20:
-            entry_score -= 22
-            entry_reasons.append("đang ở vùng thấp, SELL dễ thành đuổi")
-            location_state = "LATE_CHASE"
-            late_reason = "Không SELL đuổi ở vùng thấp; chờ hồi lại vùng đẹp rồi mới đánh giá tiếp"
-        elif trend_ctx == "BULL" and rp > 0.80:
-            entry_score -= 22
-            entry_reasons.append("đang ở vùng cao, BUY dễ thành đuổi")
-            location_state = "LATE_CHASE"
-            late_reason = "Không BUY đuổi ở vùng cao; chờ điều chỉnh lại vùng đẹp rồi mới đánh giá tiếp"
-        elif (trend_ctx == "BEAR" and rp >= 0.55) or (trend_ctx == "BULL" and rp <= 0.45):
-            entry_score += 8
-            entry_reasons.append("vị trí còn hợp với hướng chính")
-
-    if ntz.get("active"):
-        entry_score -= 18
-        entry_reasons.append("đang ở vùng no-trade")
-
-    q_lines = sig.get("quality_lines") or []
-    q_text = " | ".join(str(x) for x in q_lines).upper()
-    if "VOLUME: HIGH" in q_text or "VOLUME CAO" in q_text:
-        entry_score += 5
-        entry_reasons.append("volume ủng hộ")
-    elif "VOLUME: LOW" in q_text or "VOLUME THẤP" in q_text:
-        entry_score -= 4
-        entry_reasons.append("volume yếu")
-    if any(kx in q_text for kx in ["ENGULFING=BULL", "ENGULFING=BEAR", "REJECTION=UPPER", "REJECTION=LOWER"]):
-        entry_score += 3
-        entry_reasons.append("nến phản ứng rõ")
-
-    setup_score = max(0, min(100, int(round(setup_score))))
-    entry_score = max(0, min(100, int(round(entry_score))))
-
-    tradeable_now = True
-    tradeable_reasons = []
-    if setup_score < 60:
-        tradeable_now = False
-        tradeable_reasons.append("bối cảnh chưa đủ mạnh")
-    if entry_score < 60:
-        tradeable_now = False
-        tradeable_reasons.append("điểm vào hiện tại chưa đẹp")
-    if ntz.get("active"):
-        tradeable_now = False
-        tradeable_reasons.append("đang ở vùng no-trade")
-    if location_state in ("MID_RANGE", "LATE_CHASE", "WAIT_ZONE"):
-        tradeable_now = False
-        if location_state == "MID_RANGE":
-            tradeable_reasons.append("đang ở giữa biên độ")
-        elif location_state == "LATE_CHASE":
-            tradeable_reasons.append(late_reason or "đang ở vị trí đuổi giá")
-        elif location_state == "WAIT_ZONE":
-            tradeable_reasons.append("chưa vào vùng entry")
-
-    if tradeable_now:
-        current_action = "CAN_TRADE_NOW"
-        quality_label = "READY"
-    else:
-        if location_state == "LATE_CHASE":
-            current_action = "WAIT_RETRACE"
-            quality_label = "SKIP"
-        elif location_state == "MID_RANGE":
-            current_action = "WAIT_BREAK_OR_PULLBACK"
-            quality_label = "SKIP"
-        elif location_state == "WAIT_ZONE":
-            current_action = "WAIT_ZONE"
-            quality_label = "WAIT"
-        else:
-            current_action = "WAIT"
-            quality_label = "WAIT"
-
-    if tradeable_now:
-        summary_line = "Bối cảnh đúng hướng và điểm vào hiện tại còn hợp lý"
-    elif location_state == "LATE_CHASE":
-        summary_line = late_reason or "Ý tưởng đúng nhưng vị trí hiện tại không còn đẹp để bấm lệnh"
-    elif location_state == "MID_RANGE":
-        summary_line = "Bối cảnh có thể đúng nhưng giá đang ở giữa biên độ, chưa nên vào"
-    elif location_state == "WAIT_ZONE":
-        summary_line = "Ý tưởng đúng hướng nhưng phải chờ giá quay lại vùng entry đẹp"
-    else:
-        summary_line = "Môi trường hiện tại chưa đủ lợi thế để vào lệnh"
-
-    def _dedup(items, limit):
-        out = []
-        seen = set()
-        for item in items:
-            item = str(item or "").strip()
-            if item and item not in seen:
-                seen.add(item)
-                out.append(item)
-        return out[:limit]
-
-    return {
-        "setup_score": setup_score,
-        "entry_score": entry_score,
-        "tradeable_now": "YES" if tradeable_now else "NO",
-        "current_action": current_action,
-        "quality_label": quality_label,
-        "setup_reasons": _dedup(setup_reasons, 5),
-        "entry_reasons": _dedup(entry_reasons, 5),
-        "tradeable_reasons": _dedup(tradeable_reasons, 4),
-        "summary_line": summary_line,
-        "late_reason": late_reason,
-        "location_state": location_state,
-        "trend_ctx": trend_ctx,
-    }
-
 
 def format_signal(sig: Dict[str, Any]) -> str:
     """Telegram formatter V5: dễ đọc hơn, giữ nguyên logic/meta hiện có."""
@@ -3267,6 +3172,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     close_confirm_v4 = meta.get("close_confirm_v4") if isinstance(meta.get("close_confirm_v4"), dict) else {}
     macro_v4 = meta.get("macro_v4") if isinstance(meta.get("macro_v4"), dict) else {}
     playbook_v4 = meta.get("playbook_v4") if isinstance(meta.get("playbook_v4"), dict) else {}
+
+    now_status = get_now_status(sig)
 
     ctx_lines = sig.get("context_lines") or []
     liq_lines = sig.get("liquidity_lines") or []
@@ -3676,83 +3583,39 @@ def format_signal(sig: Dict[str, Any]) -> str:
         reasons = [mapping[t] for t in tags if t in mapping]
         return "; ".join(reasons) if reasons else "chưa có xác nhận đủ mạnh"
 
-    def trigger_lines_v2(rec_text: str, key_levels: dict, playbook_obj: dict, last_px=None, trend_ctx: str = "MIXED"):
+    def trigger_lines_v2(rec_text: str, key_levels: dict, playbook_obj: dict):
         hi = key_levels.get("M15_RANGE_HIGH")
         lo = key_levels.get("M15_RANGE_LOW")
         bos = key_levels.get("M15_BOS")
-
+    
         zone_lo = playbook_obj.get("zone_low")
         zone_hi = playbook_obj.get("zone_high")
-
-        def _ff(v):
-            return nf(v)
-
+    
+        # ===== trigger gần =====
         buy_near = "Chưa có trigger BUY gần"
         sell_near = "Chưa có trigger SELL gần"
-
-        try:
-            px = float(last_px) if last_px is not None else None
-        except Exception:
-            px = None
-
-        in_zone = below_zone = above_zone = False
-        if zone_lo is not None and zone_hi is not None and px is not None:
-            try:
-                zlo = float(zone_lo)
-                zhi = float(zone_hi)
-                in_zone = zlo <= px <= zhi
-                below_zone = px < zlo
-                above_zone = px > zhi
-            except Exception:
-                pass
-
-        if trend_ctx == "BEAR":
-            if zone_lo is not None and zone_hi is not None:
-                if below_zone:
-                    sell_near = f"SELL gần đã xảy ra; hiện tại giá ở dưới vùng {_ff(zone_lo)} – {_ff(zone_hi)}, không nên SELL đuổi"
-                    buy_near = f"BUY sớm: chỉ xét nếu reclaim lại {_ff(zone_hi)} và giữ được"
-                elif in_zone:
-                    sell_near = f"SELL gần: nếu bị từ chối tại vùng {_ff(zone_lo)} – {_ff(zone_hi)}"
-                    buy_near = f"BUY sớm: nếu phá lên và giữ trên vùng {_ff(zone_hi)}"
-                elif above_zone:
-                    sell_near = f"SELL gần: chờ giá hồi xuống vào vùng {_ff(zone_lo)} – {_ff(zone_hi)} rồi bị từ chối"
-                    buy_near = f"BUY sớm: nếu phá lên và giữ trên vùng {_ff(zone_hi)}"
-                else:
-                    sell_near = f"SELL gần: chờ giá hồi lên vùng {_ff(zone_lo)} – {_ff(zone_hi)} rồi bị từ chối"
-                    buy_near = f"BUY sớm: nếu phá lên và giữ trên vùng {_ff(zone_hi)}"
-            elif bos:
-                sell_near = f"SELL gần: nếu bị từ chối dưới {_ff(bos)}"
-                buy_near = f"BUY sớm: nếu reclaim {_ff(bos)} và giữ được"
-        elif trend_ctx == "BULL":
-            if zone_lo is not None and zone_hi is not None:
-                if above_zone:
-                    buy_near = f"BUY gần đã xảy ra; hiện tại giá ở trên vùng {_ff(zone_lo)} – {_ff(zone_hi)}, không nên BUY đuổi"
-                    sell_near = f"SELL sớm: chỉ xét nếu thủng lại {_ff(zone_lo)} rõ ràng"
-                elif in_zone:
-                    buy_near = f"BUY gần: nếu giữ được vùng {_ff(zone_lo)} – {_ff(zone_hi)} và bật lên rõ"
-                    sell_near = f"SELL sớm: nếu thủng vùng {_ff(zone_lo)}"
-                elif below_zone:
-                    buy_near = f"BUY gần: chờ giá quay lên vùng {_ff(zone_lo)} – {_ff(zone_hi)} rồi giữ được"
-                    sell_near = f"SELL sớm: nếu thủng vùng {_ff(zone_lo)}"
-                else:
-                    buy_near = f"BUY gần: chờ giá điều chỉnh lại vùng {_ff(zone_lo)} – {_ff(zone_hi)} rồi giữ được"
-                    sell_near = f"SELL sớm: nếu thủng vùng {_ff(zone_lo)}"
-            elif bos:
-                buy_near = f"BUY gần: nếu reclaim {_ff(bos)} và giữ được"
-                sell_near = f"SELL sớm: nếu thủng lại {_ff(bos)}"
-        else:
-            if bos:
-                buy_near = f"BUY gần: nếu reclaim {_ff(bos)} và giữ được"
-                sell_near = f"SELL gần: nếu bị từ chối dưới {_ff(bos)}"
-
+    
+        if bos:
+            buy_near = f"BUY gần: nếu reclaim {nf(bos)} và giữ được"
+            sell_near = f"SELL gần: nếu bị từ chối dưới {nf(bos)}"
+    
+        if zone_lo and zone_hi:
+            if rec_text == "BÁN":
+                sell_near = f"SELL gần: nếu bị từ chối tại vùng {nf(zone_lo)} – {nf(zone_hi)}"
+                buy_near = f"BUY sớm: nếu phá lên và giữ trên vùng {nf(zone_hi)}"
+            else:
+                buy_near = f"BUY gần: nếu giữ được vùng {nf(zone_lo)} – {nf(zone_hi)}"
+                sell_near = f"SELL sớm: nếu thủng vùng {nf(zone_lo)}"
+    
+        # ===== trigger mạnh =====
         buy_strong = "Chưa có trigger BUY mạnh"
         sell_strong = "Chưa có trigger SELL mạnh"
-
-        if hi is not None:
-            buy_strong = f"BUY mạnh: M15 đóng trên {_ff(hi)} và giữ được"
-        if lo is not None:
-            sell_strong = f"SELL mạnh: M15 đóng dưới {_ff(lo)} với follow-through"
-
+    
+        if hi:
+            buy_strong = f"BUY mạnh: M15 đóng trên {nf(hi)} và giữ được"
+        if lo:
+            sell_strong = f"SELL mạnh: M15 đóng dưới {nf(lo)} với follow-through"
+    
         return buy_near, sell_near, buy_strong, sell_strong
     def _trend_context_for_now(htf_state: str, struct_obj: dict, rec_text: str) -> str:
         m15 = str((struct_obj or {}).get("M15") or "").upper()
@@ -3934,16 +3797,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
     verdict_quick = "Chưa đẹp để vào ngay"
     reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
 
-    if now_status.get("tradeable_now") == "YES":
+    if trade_mode == "FULL":
         verdict_quick = "Có thể theo kịch bản chính"
-    elif now_status.get("current_action") == "WAIT_RETRACE":
-        verdict_quick = "Ý tưởng đúng nhưng vị trí hiện tại không còn đẹp để vào ngay"
-    elif now_status.get("current_action") == "WAIT_ZONE":
-        verdict_quick = "Đúng hướng nhưng phải chờ giá quay lại vùng entry"
+    elif trade_mode == "HALF":
+        verdict_quick = "Có thể canh nhưng chưa nên quá quyết liệt"
     elif ntz.get("active"):
         verdict_quick = "Ưu tiên đứng ngoài"
 
-    if now_status.get("tradeable_now") != "YES" and reason_text:
+    if trade_mode == "WAIT":
         verdict_quick = f"{verdict_quick}; {reason_text}"
 
     lines: List[str] = []
@@ -4063,8 +3924,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- {s}")
     else:
         add(lines, "- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
-    now_status = get_now_status(sig)
-    buy_near, sell_near, buy_strong, sell_strong = trigger_lines_v2(rec, k, playbook, last_px, trend_ctx)
+    buy_near, sell_near, buy_strong, sell_strong = trigger_lines_v2(rec, k, playbook)
     plan_pack = _now_plan_and_triggers_v7(trend_ctx, k, playbook, last_px)
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
@@ -4089,46 +3949,44 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"- {buy_strong}")
     add(lines, f"- {sell_strong}")
 
-    now_status = get_now_status(sig)
-    setup_score = int(now_status.get("setup_score", 0) or 0)
-    entry_score = int(now_status.get("entry_score", 0) or 0)
-    tradeable_label = str(now_status.get("tradeable_now") or "NO")
-    current_action = str(now_status.get("current_action") or "WAIT")
-    quality_now = str(now_status.get("quality_label") or grade)
-    setup_reasons = list(now_status.get("setup_reasons") or [])
-    entry_reasons = list(now_status.get("entry_reasons") or [])
-    tradeable_reasons = list(now_status.get("tradeable_reasons") or [])
-    summary_line = str(now_status.get("summary_line") or "")
-
     add(lines, "")
-    add(lines, f"📊 Chất lượng cơ hội: {quality_now}")
-    add(lines, f"🔥 Setup Score: {setup_score}/100")
-    add(lines, f"🎯 Entry Score Now: {entry_score}/100")
-    add(lines, f"→ Tradeable Now: {tradeable_label}")
-    if summary_line:
-        add(lines, f"- {summary_line}")
-    if setup_reasons:
-        add(lines, f"- Điểm mạnh bối cảnh: {', '.join(setup_reasons)}")
-    if entry_reasons:
-        add(lines, f"- Điểm vào hiện tại: {', '.join(entry_reasons)}")
+    add(lines, f"📊 Chất lượng cơ hội: {grade}")
+    
+    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
+        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
+    )
+    
+    add(lines, f"🔥 Final Score: {final_score}/100")
+    add(lines, f"→ Tradeable: {tradeable_label}")
+    
+    summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
+    add(lines, f"- {summary_line}")
+    
+    if score_reasons:
+        add(lines, f"- Điểm cộng/trừ chính: {', '.join(score_reasons)}")
     if tradeable_reasons:
-        add(lines, f"- Lý do chưa vào ngay: {', '.join(tradeable_reasons)}")
+        add(lines, f"- Lý do chưa trade: {', '.join(tradeable_reasons)}")
+    
     if playbook_v4.get("quality"):
         add(lines, f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
     if ntz.get("active"):
         rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
         add(lines, f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
-
+    
+    # Grade explanation
+    if grade == "A":
+        add(lines, "- Edge mạnh: có thể theo nếu giá vào đúng vùng")
+    elif grade in ("A", "B", "B-"):
+        add(lines, "- Có edge nhưng cần chọn điểm vào kỹ, không đuổi giá")
+    elif grade == "C":
+        add(lines, "- Ý tưởng có thể đúng nhưng rủi ro còn cao")
+        
     add(lines, "")
     add(lines, "⚙️ Hành động:")
-    if tradeable_label == "YES":
-        add(lines, "- Có thể mở lệnh nếu giá vẫn giữ được vùng và có xác nhận rõ")
-    elif current_action == "WAIT_RETRACE":
-        add(lines, "- Chưa nên mở lệnh mới; chờ giá hồi/điều chỉnh lại vùng entry đẹp")
-    elif current_action == "WAIT_ZONE":
-        add(lines, "- Chờ giá quay lại đúng vùng entry rồi mới đánh giá tiếp")
-    elif current_action == "WAIT_BREAK_OR_PULLBACK":
-        add(lines, "- Đứng ngoài ở giữa biên độ; chờ break rõ hoặc pullback đẹp")
+    if trade_mode == "FULL":
+        add(lines, "- Có thể mở lệnh nếu giá vào đúng vùng và có xác nhận rõ")
+    elif trade_mode == "HALF":
+        add(lines, "- Có thể canh nhưng không nên đuổi giá")
     else:
         add(lines, "- Chưa nên mở lệnh mới")
     
@@ -4159,9 +4017,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
             htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
             htf_state = str(htf_pressure_v4.get("state") or "")
-            if "BULLISH" in htf_state and rec in ("SELL", "BÁN"):
+            if "BULLISH" in htf_state and rec ("SELL", "BÁN"):
                 add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-            if "BEARISH" in htf_state and rec in ("BUY", "MUA"):
+            if "BEARISH" in htf_state and rec ("BUY", "MUA"):
                 add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
         # session vs HTF
         comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4)
