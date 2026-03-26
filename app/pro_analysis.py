@@ -3592,8 +3592,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
         zone_hi = playbook_obj.get("zone_high")
     
         # ===== trigger gần =====
-        buy_near = "Chưa có trigger BUY gần"
-        sell_near = "Chưa có trigger SELL gần"
+        buy_near = "Chưa có trigger BUY gần → chưa vào lệnh"
+        sell_near = "Chưa có trigger SELL gần → chưa vào lệnh"
     
         if bos:
             buy_near = f"BUY gần: nếu reclaim {nf(bos)} và giữ được"
@@ -3880,7 +3880,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         pos_pct = int(round(float(range_pos) * 100))
     
         if pos_pct >= 80:
-            pos_note = "→ sát vùng cao, không nên BUY đuổi, chờ phản ứng rồi quyết định theo xu hướng"
+            pos_note = "→ sát vùng cao, không nên BUY đuổi → chỉ canh buy khi giá giảm xuống"
         elif pos_pct >= 60:
             pos_note = "→ vùng cao, ưu tiên chờ tín hiệu SELL"
         elif pos_pct >= 40:
@@ -3888,7 +3888,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         elif pos_pct >= 20:
             pos_note = "→ vùng thấp, ưu tiên chờ tín hiệu BUY"
         else:
-            pos_note = "→ sát vùng thấp, không nên SELL đuổi, chờ phản ứng rồi quyết định theo xu hướng"
+            pos_note = "→ sát vùng thấp, không nên SELL đuổi → chỉ canh sell khi hồi lên"
     
         add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
