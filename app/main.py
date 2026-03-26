@@ -1116,15 +1116,15 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     else:
         verdict_text = str(verdict or "").strip()
     summary_text = _review_market_vs_position(side, verdict_text, grade, no_trade_zone if isinstance(no_trade_zone, dict) else {})
-    lines.append(f"📌 Kết luận: {verdict_text}")
-    lines.append(f"- {summary_text}")
+    #lines.append(f"📌 Kết luận: {verdict_text}")
+    #lines.append(f"- {summary_text}")
     if location_ctx.get("zone") == "LOW_ZONE" and str(side).upper() == "SELL":
         lines[-1] = "📌 Kết luận: Không còn vị trí đẹp để SELL — đang ở vùng thấp, ưu tiên không đuổi lệnh."
     elif location_ctx.get("zone") == "HIGH_ZONE" and str(side).upper() == "BUY":
         lines[-1] = "📌 Kết luận: Không còn vị trí đẹp để BUY — đang ở vùng cao, ưu tiên không đuổi lệnh."
     if phase369:
         lines.append(f"🧭 Giai đoạn: {phase369.get('phase', 'n/a')} | {_vn_phase_label(phase369)}")
-    lines.append(f"🌡 Trạng thái: {_vn_state_text(market_state_v2, narrative_v3 if isinstance(narrative_v3, dict) else {}, side)}")
+    #lines.append(f"🌡 Trạng thái: {_vn_state_text(market_state_v2, narrative_v3 if isinstance(narrative_v3, dict) else {}, side)}")
     if isinstance(flow_state, dict) and flow_state.get("state"):
         lines.append(f"💰 Dòng tiền: {_vn_flow_text(flow_state)}")
     if location_ctx.get("state_text"):
