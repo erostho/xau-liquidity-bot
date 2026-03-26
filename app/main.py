@@ -1607,8 +1607,10 @@ async def cron_run(token: str = "", request: Request = None):
                 force_send = _force_send(sig)
 
                 # ----- LUỒNG A: KÈO CHÍNH -----
-                should_send_main = stars >= MIN_STARS and rec != "CHỜ"
-                should_send_now = setup_score >= 65 and entry_score >= 60 and tradeable_now == "YES"
+                should_send_main = stars >= MIN_STARS
+                #and rec != "CHỜ"
+                should_send_now = setup_score >= 65 and entry_score >= 50
+                #and tradeable_now == "YES"
 
                 if should_send_main or force_send or should_send_now:
                     _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
