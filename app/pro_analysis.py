@@ -2964,6 +2964,7 @@ def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
         struct = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
         session_v4 = meta.get("session_v4") if isinstance(meta.get("session_v4"), dict) else {}
         htf_pressure_v4 = meta.get("htf_pressure_v4") if isinstance(meta.get("htf_pressure_v4"), dict) else {}
+        liq_evt = meta.get("liquidation") if isinstance(meta.get("liquidation"), dict) else {}
         k = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
 
         reasons = []
@@ -3107,6 +3108,36 @@ def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
         dedup_reasons = list(dict.fromkeys(reasons))[:5]
         dedup_trade = list(dict.fromkeys(trade_reasons))[:4]
 
+        if tradeable_now and setup >= 75 and entry >= 70:
+            confidence_level = "HIGH"
+        elif setup >= 60 and entry >= 50:
+            confidence_level = "MEDIUM"
+        else:
+            confidence_level = "LOW"
+
+        risk_points = 0
+        if ntz.get("active"):
+            risk_points += 2
+        if liq_evt.get("ok"):
+            risk_points += 2
+        if fake == "HIGH":
+            risk_points += 2
+        elif fake == "MEDIUM":
+            risk_points += 1
+        if entry < 45:
+            risk_points += 2
+        elif entry < 60:
+            risk_points += 1
+        if setup < 60:
+            risk_points += 1
+
+        if risk_points >= 5:
+            risk_level = "HIGH"
+        elif risk_points >= 3:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+
         return {
             "setup_score": int(setup),
             "entry_score_now": int(entry),
@@ -3115,6 +3146,8 @@ def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
             "tradeable": "YES" if tradeable_now else "NO",
             "score_reasons": dedup_reasons,
             "tradeable_reasons": dedup_trade,
+            "confidence_level": confidence_level,
+            "risk_level": risk_level,
         }
     except Exception as e:
         return {
@@ -3125,6 +3158,8 @@ def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
             "tradeable": "NO",
             "score_reasons": [f"get_now_status fallback: {e}"],
             "tradeable_reasons": ["status fallback"],
+            "confidence_level": "LOW",
+            "risk_level": "HIGH",
         }
 
 def format_signal(sig: Dict[str, Any]) -> str:
@@ -3592,8 +3627,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
         zone_hi = playbook_obj.get("zone_high")
     
         # ===== trigger gần =====
-        buy_near = "Chưa có trigger BUY gần → chưa vào lệnh"
-        sell_near = "Chưa có trigger SELL gần → chưa vào lệnh"
+        buy_near = "Chưa có trigger BUY gần"
+        sell_near = "Chưa có trigger SELL gần"
     
         if bos:
             buy_near = f"BUY gần: nếu reclaim {nf(bos)} và giữ được"
@@ -3794,7 +3829,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     ez_v6 = meta.get("entry_zone_v6") if isinstance(meta.get("entry_zone_v6"), dict) else {}
     sweep_grade_v6 = str(meta.get("sweep_grade_v6") or "NONE")
 
-    verdict_quick = "Chưa đẹp để vào ngay"
+    verdict_quick = "Chưa có lợi thế rõ → đứng ngoài"
     reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
 
     if trade_mode == "FULL":
@@ -3802,7 +3837,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     elif trade_mode == "HALF":
         verdict_quick = "Có thể canh nhưng chưa nên quá quyết liệt"
     elif ntz.get("active"):
-        verdict_quick = "Ưu tiên đứng ngoài"
+        verdict_quick = "Chưa có lợi thế rõ → đứng ngoài"
 
     if trade_mode == "WAIT":
         verdict_quick = f"{verdict_quick}; {reason_text}"
@@ -3833,9 +3868,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         try:
             rp = float(range_pos)
             if rp > 0.8:
-                reason = "đang sát vùng cao, không nên BUY đuổi"
+                reason = "đang sát vùng cao → KHÔNG BUY đuổi"
             elif rp < 0.2:
-                reason = "đang sát vùng thấp, không nên SELL đuổi"
+                reason = "đang sát vùng thấp → KHÔNG SELL đuổi"
             else:
                 reason = "đang ở giữa biên độ, dễ nhiễu"
         except Exception:
@@ -3855,9 +3890,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
             rec = "CHỜ"
     
     reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
-    verdict_quick = "Chưa đẹp để vào ngay"
+    verdict_quick = "Chưa có lợi thế rõ → đứng ngoài"
     if ntz.get("active") or trade_mode == "WAIT":
-        verdict_quick = "Ưu tiên đứng ngoài"
+        verdict_quick = "Chưa có lợi thế rõ → đứng ngoài"
     verdict_full = f"{verdict_quick}; {reason_text}" if reason_text else verdict_quick
     add(lines, f"💵 Giá hiện tại: {price_now}")
     add(lines, f"📌 Kết luận nhanh: {verdict_full}")
@@ -3880,7 +3915,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         pos_pct = int(round(float(range_pos) * 100))
     
         if pos_pct >= 80:
-            pos_note = "→ sát vùng cao, không nên BUY đuổi → chỉ canh buy khi giá giảm xuống"
+            pos_note = "→ sát vùng cao, KHÔNG BUY đuổi → chỉ canh mua nếu có xác nhận lại"
         elif pos_pct >= 60:
             pos_note = "→ vùng cao, ưu tiên chờ tín hiệu SELL"
         elif pos_pct >= 40:
@@ -3888,7 +3923,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         elif pos_pct >= 20:
             pos_note = "→ vùng thấp, ưu tiên chờ tín hiệu BUY"
         else:
-            pos_note = "→ sát vùng thấp, không nên SELL đuổi → chỉ canh sell khi hồi lên"
+            pos_note = "→ sát vùng thấp, KHÔNG SELL đuổi ở vùng thấp → chỉ canh sell khi hồi lên"
     
         add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
@@ -3900,7 +3935,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     else:
         add(lines, "- Chưa thấy vùng quét thanh khoản rõ")
     if liq_evt.get("ok"):
-        add(lines, f"- Vừa có quét mạnh: {liq_evt.get('side')} | {liq_evt.get('kind')}")
+        add(lines, f"- ⚠️ Vừa có liquidation mạnh: {liq_evt.get('side')} | {liq_evt.get('kind')} → nguy cơ bật ngược cao")
     if sweep_grade_v6 and sweep_grade_v6 != "NONE":
         add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")
 
@@ -3950,7 +3985,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"- {sell_strong}")
 
     add(lines, "")
-    add(lines, f"📊 Chất lượng cơ hội: {grade}")
+    add(lines, f"📊 Chất lượng cơ hội: {grade}" + (" (đang ở vùng no-trade / cuối move)" if grade == "SKIP" else ""))
     
     final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
         sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
@@ -3958,6 +3993,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
     add(lines, f"🔥 Final Score: {final_score}/100")
     add(lines, f"→ Tradeable: {tradeable_label}")
+    add(lines, f"- Confidence level: {str(now_status.get('confidence_level') or 'LOW').upper()}")
+    add(lines, f"- Risk level: {str(now_status.get('risk_level') or 'HIGH').upper()}")
     
     summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
     add(lines, f"- {summary_line}")
@@ -4000,6 +4037,45 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
     except Exception:
         pass
+
+    psych_warnings = []
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+    try:
+        phase_num = int(phase.get('phase')) if phase and phase.get('phase') is not None else None
+    except Exception:
+        phase_num = None
+    rsi_now = None
+    for s in q_lines:
+        ss = str(s)
+        if 'RSI(14) M15:' in ss:
+            try:
+                rsi_now = float(ss.split(':')[-1].strip())
+                break
+            except Exception:
+                pass
+    if rp is not None and rp <= 0.10:
+        psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
+    elif rp is not None and rp >= 0.90:
+        psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
+    if phase_num is not None and phase_num >= 8:
+        psych_warnings.append("⚠️ Late move → vào lệnh dễ dính đảo chiều")
+    if liq_evt.get('ok'):
+        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
+    if rsi_now is not None and rsi_now < 30:
+        psych_warnings.append("⚠️ RSI quá bán → không nên SELL đuổi")
+    elif rsi_now is not None and rsi_now > 70:
+        psych_warnings.append("⚠️ RSI quá mua → không nên BUY đuổi")
+    if 'CHOP' in str(session_v4.get('session_tag') or '').upper():
+        psych_warnings.append("⚠️ Market đang nhiễu → dễ bị quét 2 đầu")
+
+    if psych_warnings:
+        add(lines, "")
+        add(lines, "🧠 Cảnh báo tâm lý:")
+        for s in psych_warnings[:5]:
+            add(lines, f"- {s}")
 
     if q_lines:
         add(lines, "")
