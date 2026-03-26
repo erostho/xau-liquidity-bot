@@ -42,6 +42,12 @@ MIN_STARS = int(os.getenv("MIN_STARS", "1"))
 # Telegram hard limit is 4096; keep safe chunk size
 TG_CHUNK = int(os.getenv("TG_CHUNK", "3500"))
 
+# NOW alert (independent from old trade-signal branch)
+NOW_ALERT_ENABLED = os.getenv("NOW_ALERT_ENABLED", "1").strip() != "0"
+NOW_ALERT_MIN_SCORE = int(os.getenv("NOW_ALERT_MIN_SCORE", "65"))
+NOW_ALERT_DEDUPE_MIN = int(os.getenv("NOW_ALERT_DEDUPE_MIN", "30"))
+NOW_ALERT_STATE_PATH = os.getenv("NOW_ALERT_STATE_PATH", "now_alert_state.json")
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -94,6 +100,78 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_m
     for i, part in enumerate(parts, start=1):
         header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
         _send_telegram(header + part, chat_id=chat_id)
+
+
+
+def _extract_now_score_tradeable(text: str) -> tuple[int, str]:
+    try:
+        import re
+        s = str(text or "")
+        m_score = re.search(r"🔥\s*Final Score:\s*(\d+)\s*/\s*100", s)
+        m_trade = re.search(r"→\s*Tradeable:\s*(YES|NO)", s, flags=re.IGNORECASE)
+        score = int(m_score.group(1)) if m_score else 0
+        tradeable = (m_trade.group(1).upper() if m_trade else "NO")
+        return score, tradeable
+    except Exception:
+        return 0, "NO"
+
+
+def _now_alert_load_state() -> dict:
+    try:
+        with open(NOW_ALERT_STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _now_alert_save_state(data: dict) -> None:
+    try:
+        tmp = f"{NOW_ALERT_STATE_PATH}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, NOW_ALERT_STATE_PATH)
+    except Exception as e:
+        logger.exception("[NOW_ALERT] save state failed: %s", e)
+
+
+def _maybe_send_now_alert(sym: str, sig: dict) -> bool:
+    if not NOW_ALERT_ENABLED or not isinstance(sig, dict):
+        return False
+
+    try:
+        # NOW alert chỉ chạy cho nhánh quan sát / chưa có kèo chính để tránh trùng với logic cũ
+        rec = str(sig.get("recommendation") or "").strip().upper()
+        if rec and rec != "CHỜ":
+            return False
+
+        rendered = format_signal(sig)
+        score, tradeable = _extract_now_score_tradeable(rendered)
+        if score < NOW_ALERT_MIN_SCORE:
+            return False
+        if tradeable != "YES":
+            return False
+
+        phase = (((sig.get("meta") or {}).get("phase_369") or {}).get("phase"))
+        rec_hint = str((sig.get("meta") or {}).get("playbook_v2", {}).get("plan") or "CHỜ")
+        key = f"{sym}|{score//5}|{tradeable}|{phase}|{rec_hint}"
+
+        state = _now_alert_load_state()
+        last_ts = int(state.get(key, 0) or 0)
+        now_ts = int(time.time())
+        if now_ts - last_ts < NOW_ALERT_DEDUPE_MIN * 60:
+            logger.info("[NOW_ALERT] %s skip duplicate (score=%s tradeable=%s)", sym, score, tradeable)
+            return False
+
+        prefix = f"🔥 NOW ALERT | {sym} | Score {score}/100\n"
+        _send_telegram(prefix + rendered, chat_id=ADMIN_CHAT_ID)
+        state[key] = now_ts
+        _now_alert_save_state(state)
+        logger.info("[NOW_ALERT] %s sent (score=%s tradeable=%s)", sym, score, tradeable)
+        return True
+    except Exception as e:
+        logger.exception("[NOW_ALERT] %s failed: %s", sym, e)
+        return False
+
 
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
@@ -1680,7 +1758,10 @@ async def cron_run(token: str = "", request: Request = None):
 
                 # ----- CÒN LẠI: KHÔNG GỬI -----
                 else:
-                    logger.info("[CRON] %s: only observation, no trade", sym)
+                    # Nhánh NOW ALERT: giữ nguyên logic cũ, chỉ bổ sung cảnh báo khi NOW score đủ cao
+                    sent_now = _maybe_send_now_alert(sym, sig)
+                    if not sent_now:
+                        logger.info("[CRON] %s: only observation, no trade", sym)
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
