@@ -1615,7 +1615,7 @@ async def cron_run(token: str = "", request: Request = None):
                 if should_send_main or force_send or should_send_now:
                     _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
                 else:
-                    logger.info("[CRON] %s: no telegram send | setup=%s entry=%s, sym, setup_score, entry_score)
+                    logger.info("[CRON] %s: no telegram send | setup=%s entry=%s", sym, setup_score, entry_score)
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
