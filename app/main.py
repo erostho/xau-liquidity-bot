@@ -788,6 +788,14 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             elif 0.30 <= rp <= 0.70:
                 score -= 8
                 reasons.append("đang ở giữa biên độ")
+
+            side_u2 = str(side).upper()
+            if side_u2 == "SELL" and rp < 0.20:
+                score -= 15
+                reasons.append("SELL ở vùng thấp")
+            if side_u2 == "BUY" and rp > 0.80:
+                score -= 15
+                reasons.append("BUY ở vùng cao")
         except Exception:
             pass
 
@@ -822,6 +830,13 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             if 0.30 <= rp <= 0.70:
                 tradeable = False
                 trade_reasons.append("đang ở giữa biên độ")
+            side_u2 = str(side).upper()
+            if side_u2 == "SELL" and rp < 0.20:
+                tradeable = False
+                trade_reasons.append("SELL đang ở vùng thấp")
+            if side_u2 == "BUY" and rp > 0.80:
+                tradeable = False
+                trade_reasons.append("BUY đang ở vùng cao")
         except Exception:
             pass
         if isinstance(ntz_obj, dict) and ntz_obj.get("active"):
@@ -1021,7 +1036,11 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     for s in (location_ctx.get("action_lines") or []):
         lines.append(f"- {s}")
 
-    if grade == "A":
+    if location_ctx.get("zone") == "LOW_ZONE" and str(side).upper() == "SELL":
+        lines.append("- Ưu tiên giảm rủi ro; nếu đã có SELL từ vùng cao hơn thì chỉ giữ nhỏ, không mở thêm.")
+    elif location_ctx.get("zone") == "HIGH_ZONE" and str(side).upper() == "BUY":
+        lines.append("- Ưu tiên giảm rủi ro; nếu đã có BUY từ vùng thấp hơn thì chỉ giữ nhỏ, không mở thêm.")
+    elif grade == "A":
         lines.append("- Có thể giữ lệnh theo kế hoạch, nhưng không nên mở thêm lệnh mới")
     elif grade == "B":
         lines.append("- Có thể giữ ngắn hạn nếu cấu trúc chưa hỏng, nhưng không nên add")
