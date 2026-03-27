@@ -2056,6 +2056,199 @@ def _entry_sniper_v1(
     out["reason"] = f"body={body_last:.2f} | avg_body={avg_body:.2f} | m15={m15_tag or 'n/a'}"
 
     return out
+
+def _liquidity_strength_label(score: int) -> str:
+    if score >= 4:
+        return "HIGH"
+    if score >= 2:
+        return "MEDIUM"
+    if score >= 1:
+        return "LOW"
+    return "LOW"
+
+
+def _fmt_price_range(a, b) -> str:
+    try:
+        if a is None and b is None:
+            return "n/a"
+        if b is None or abs(float(a) - float(b)) < 1e-9:
+            return f"{float(a):.2f}"
+        lo = min(float(a), float(b))
+        hi = max(float(a), float(b))
+        return f"{lo:.2f} – {hi:.2f}"
+    except Exception:
+        return "n/a"
+
+
+def _build_liquidity_map_v1(
+    symbol: str,
+    m15c,
+    h1_trend: str,
+    htf_pressure_v4: dict | None,
+    flow_state: dict | None,
+    range_pos: float | None,
+    market_state_v2: str | None,
+    playbook_v2: dict | None,
+    liquidation_evt: dict | None,
+    m15_struct_tag: str | None,
+    range_low: float | None,
+    range_high: float | None,
+) -> dict:
+    """
+    Fake heatmap / liquidity map:
+    - Liquidity trên
+    - Liquidity dưới
+    - Sweep bias (khả năng quét)
+    """
+    out = {
+        "above_strength": "LOW",
+        "below_strength": "LOW",
+        "above_zone": None,
+        "below_zone": None,
+        "state_text": "Chưa thấy sweep/spring rõ",
+        "sweep_bias": "NEUTRAL",
+        "reasons": [],
+    }
+
+    if not m15c or len(m15c) < 20:
+        out["state_text"] = "Thiếu dữ liệu để đọc thanh khoản"
+        return out
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    use = closed[-20:] if len(closed) >= 20 else closed
+
+    highs = [float(c.high) for c in use]
+    lows = [float(c.low) for c in use]
+
+    recent_hi = max(highs)
+    recent_lo = min(lows)
+
+    # ===== 1) Cụm liquidity trên / dưới =====
+    # đếm số lần chạm vùng high / low gần nhau
+    hi_band = max(1e-9, (recent_hi - recent_lo) * 0.08)
+    lo_band = hi_band
+
+    above_hits = sum(1 for x in highs if abs(x - recent_hi) <= hi_band)
+    below_hits = sum(1 for x in lows if abs(x - recent_lo) <= lo_band)
+
+    above_score = 0
+    below_score = 0
+
+    if above_hits >= 2:
+        above_score += 2
+    if above_hits >= 4:
+        above_score += 1
+
+    if below_hits >= 2:
+        below_score += 2
+    if below_hits >= 4:
+        below_score += 1
+
+    # structure phụ trợ
+    tag = str(m15_struct_tag or "").upper()
+    if "HH" in tag or "HL" in tag:
+        above_score += 1
+    if "LL" in tag or "LH" in tag:
+        below_score += 1
+
+    # zones
+    above_zone_lo = recent_hi - hi_band
+    above_zone_hi = recent_hi
+    below_zone_lo = recent_lo
+    below_zone_hi = recent_lo + lo_band
+
+    out["above_strength"] = _liquidity_strength_label(above_score)
+    out["below_strength"] = _liquidity_strength_label(below_score)
+    out["above_zone"] = (above_zone_lo, above_zone_hi)
+    out["below_zone"] = (below_zone_lo, below_zone_hi)
+
+    # ===== 2) state text =====
+    liq_evt = liquidation_evt or {}
+    if liq_evt.get("ok"):
+        side = str(liq_evt.get("side") or "")
+        kind = str(liq_evt.get("kind") or "")
+        out["state_text"] = f"Vừa có quét mạnh: {side} | {kind}"
+    else:
+        out["state_text"] = "Chưa thấy sweep/spring rõ"
+
+    # ===== 3) Sweep bias: khả năng quét đầu nào =====
+    # dùng HTF + flow + vị trí giá + playbook
+    pump_score = 0
+    dump_score = 0
+    reasons = []
+
+    htf_state = str((htf_pressure_v4 or {}).get("state") or "").upper()
+    flow_favored = str((flow_state or {}).get("favored_side") or "").upper()
+    plan = str((playbook_v2 or {}).get("plan") or "").upper()
+    ms = str(market_state_v2 or "").upper()
+
+    # HTF
+    if "BEARISH" in htf_state or str(h1_trend).lower() == "bearish":
+        dump_score += 2
+        reasons.append("HTF nghiêng giảm")
+    elif "BULLISH" in htf_state or str(h1_trend).lower() == "bullish":
+        pump_score += 2
+        reasons.append("HTF nghiêng tăng")
+
+    # Flow
+    if flow_favored == "SELL":
+        dump_score += 1
+        reasons.append("flow ưu tiên SELL")
+    elif flow_favored == "BUY":
+        pump_score += 1
+        reasons.append("flow ưu tiên BUY")
+
+    # Vị trí trong range
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    if rp is not None:
+        if rp <= 0.20:
+            pump_score += 1
+            reasons.append("đang ở vùng thấp")
+        elif rp >= 0.80:
+            dump_score += 1
+            reasons.append("đang ở vùng cao")
+
+    # Playbook / market state
+    if plan in ("BOUNCE_TO_SELL", "SELL_RALLY", "WAIT_BOUNCE_TO_SELL"):
+        dump_score += 2
+        reasons.append("playbook nghiêng SELL")
+    elif plan in ("DIP_TO_BUY", "BUY_DIP", "WAIT_PULLBACK_TO_BUY"):
+        pump_score += 2
+        reasons.append("playbook nghiêng BUY")
+
+    if ms in ("CHOP", "TRANSITION"):
+        reasons.append("market nhiễu")
+
+    # Nếu đang ở vùng thấp nhưng bias lớn là SELL -> thường dễ quét lên rồi mới dump
+    if rp is not None and rp <= 0.20 and dump_score > pump_score:
+        out["sweep_bias"] = "UP → DOWN"
+        reasons.append("dễ quét lên trước rồi mới dump")
+    elif rp is not None and rp >= 0.80 and pump_score > dump_score:
+        out["sweep_bias"] = "DOWN → UP"
+        reasons.append("dễ quét xuống trước rồi mới pump")
+    else:
+        if dump_score > pump_score:
+            out["sweep_bias"] = "DOWN"
+        elif pump_score > dump_score:
+            out["sweep_bias"] = "UP"
+        else:
+            out["sweep_bias"] = "NEUTRAL"
+
+    # Nếu vừa liquidation mạnh thì giảm độ tự tin, thiên về quét 2 đầu
+    if liq_evt.get("ok") and out["sweep_bias"] in ("DOWN", "UP"):
+        out["sweep_bias"] = out["sweep_bias"] + " (cẩn thận quét 2 đầu)"
+
+    dedup = []
+    for r in reasons:
+        if r not in dedup:
+            dedup.append(r)
+    out["reasons"] = dedup[:4]
+
+    return out
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -2803,6 +2996,22 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     h1_struct = _structure_from_swings(h1c, lookback=260)
     h4_struct = _structure_from_swings(h4c, lookback=260)
     m15_struct = _m15_key_levels(m15c, bias_side=bias_side, lookback=120)
+    liquidity_map_v1 = _build_liquidity_map_v1(
+        symbol=symbol,
+        m15c=m15c,
+        h1_trend=h1_trend,
+        htf_pressure_v4=htf_pressure_v4,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        market_state_v2=market_state_v2,
+        playbook_v2=playbook_v2,
+        liquidation_evt=liquidation_evt,
+        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+        range_low=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_LOW"),
+        range_high=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_HIGH"),
+    )
+    base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1
+    
     entry_sniper = _entry_sniper_v1(
         m15c=m15c,
         m15_struct=m15_struct,
@@ -2810,6 +3019,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         volq=volq,
     )
     base.setdefault("meta", {})["entry_sniper"] = entry_sniper
+    
     pump_dump_v1 = _predict_pump_dump_v1(
         symbol=symbol,
         m15c=m15c,
@@ -4302,17 +4512,30 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
         add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
-    add(lines, "")
-    add(lines, "💧 Thanh khoản:")
-    if liq_lines:
-        for s in liq_lines[:4]:
-            add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
+    liq_map = ((sig.get("meta") or {}).get("liquidity_map_v1") or {})
+    above_strength = str(liq_map.get("above_strength") or "LOW")
+    below_strength = str(liq_map.get("below_strength") or "LOW")
+    above_zone = liq_map.get("above_zone")
+    below_zone = liq_map.get("below_zone")
+    state_text = str(liq_map.get("state_text") or "Chưa thấy sweep/spring rõ")
+    sweep_bias = str(liq_map.get("sweep_bias") or "NEUTRAL")
+    
+    lines.append("")
+    lines.append("💧 Thanh khoản:")
+    if above_zone:
+        lines.append(f"- Liquidity trên: {above_strength} ({_fmt_price_range(above_zone[0], above_zone[1])})")
     else:
-        add(lines, "- Chưa thấy vùng quét thanh khoản rõ")
+        lines.append(f"- Liquidity trên: {above_strength}")
+    if below_zone:
+        lines.append(f"- Liquidity dưới: {below_strength} ({_fmt_price_range(below_zone[0], below_zone[1])})")
+    else:
+        lines.append(f"- Liquidity dưới: {below_strength}")
     if liq_evt.get("ok"):
         add(lines, f"- ⚠️ Vừa có liquidation mạnh: {liq_evt.get('side')} | {liq_evt.get('kind')} → nguy cơ bật ngược cao")
     if sweep_grade_v6 and sweep_grade_v6 != "NONE":
-        add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")
+        add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")            
+    lines.append(f"- Trạng thái: {state_text}")
+    lines.append(f"- Khả năng quét: {sweep_bias}")
 
     add(lines, "")
     add(lines, "✅ Xác nhận:")
