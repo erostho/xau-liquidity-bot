@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from app.data_source import get_candles, ingest_mt5_candles
 from app.pro_analysis import analyze_pro, format_signal, build_scale_plan_v2, format_scale_plan_v2, get_now_status
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
@@ -1200,8 +1201,82 @@ def _force_send(sig: dict) -> bool:
     # Post-sweep state
     if "POST-SWEEP" in ctx or "POST-SWEEP" in notes:
         return True
-
     return False
+
+# =========================
+# SCALE ALERT - separate from NOW
+# =========================
+SCALE_ALERT_STATE_PATH = os.getenv("SCALE_ALERT_STATE_PATH", "scale_alert_state.json")
+SCALE_ALERT_COOLDOWN_MIN = int(os.getenv("SCALE_ALERT_COOLDOWN_MIN", "60"))  # mặc định 60 phút
+
+def _load_scale_state() -> dict:
+    try:
+        with open(SCALE_ALERT_STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_scale_state(st: dict) -> None:
+    tmp = f"{SCALE_ALERT_STATE_PATH}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, SCALE_ALERT_STATE_PATH)
+
+def _should_send_scale_alert(symbol: str, plan: dict) -> bool:
+    """
+    Gửi SCALE riêng mỗi 15' nhưng có cooldown + chống lặp trạng thái.
+    Rule:
+    - Stage 3: luôn đáng gửi
+    - Stage 2: chỉ gửi khi readiness HIGH
+    - Stage 1: không gửi
+    """
+    try:
+        direction = str(plan.get("direction") or "").upper()
+        stage_num = int(plan.get("stage_num") or 1)
+        readiness = str(plan.get("readiness") or "").upper()
+
+        if direction not in ("BUY", "SELL"):
+            return False
+
+        if stage_num == 1:
+            return False
+
+        if stage_num == 2 and readiness not in ("MEDIUM", "HIGH"):
+            return False
+
+        if stage_num == 3:
+            pass
+        elif stage_num == 2 and readiness == "HIGH":
+            pass
+        else:
+            return False
+
+        st = _load_scale_state()
+        now_ts = int(time.time())
+        key = f"{symbol}_SCALE"
+
+        current_sig = {
+            "direction": direction,
+            "stage_num": stage_num,
+            "readiness": readiness,
+            "condition": str(plan.get("condition") or ""),
+            "invalid": str(plan.get("invalid") or ""),
+        }
+
+        prev = st.get(key, {})
+        last_ts = int(prev.get("ts", 0))
+        prev_sig = prev.get("sig", {})
+
+        # nếu y hệt trạng thái cũ và chưa hết cooldown -> không gửi
+        if prev_sig == current_sig and (now_ts - last_ts) < SCALE_ALERT_COOLDOWN_MIN * 60:
+            return False
+
+        st[key] = {"ts": now_ts, "sig": current_sig}
+        _save_scale_state(st)
+        return True
+
+    except Exception:
+        return False
 # =========================
 # REGIME ALERT (CHOP / STOP-HUNT) - independent of stars
 # =========================
@@ -1563,9 +1638,34 @@ async def telegram_webhook(request: Request):
                 except Exception:
                     pass
 
+                # ===== SCALE ALERT (separate from NOW) =====
+                scale_plan = None
+                should_send_scale = False
+                try:
+                    scale_plan = build_scale_plan_v2(
+                        symbol=sym,
+                        m15=data["m15"],
+                        m30=data["m30"],
+                        h1=data["h1"],
+                        h4=data["h4"],
+                        total_tp_cent=500.0,
+                        lot1=0.30,
+                        lot2=0.30,
+                        lot3=0.50,
+                    )
+
+                    if ds:
+                        scale_plan["data_source"] = ds
+
+                    should_send_scale = _should_send_scale_alert(sym, scale_plan)
+
+                except Exception as e:
+                    logger.exception("[CRON] %s: SCALE build failed: %s", sym, e)
+                    scale_plan = None
+                    should_send_scale = False
+                
                 stars = int(sig.get("stars", 0) or 0)
                 force_send = _force_send(sig)
-
                 if force_send:
                     prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\\n\\n"
                     _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
@@ -1662,6 +1762,22 @@ async def cron_run(token: str = "", request: Request = None):
                     #_send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
                 else:
                     logger.info("[CRON] %s: no telegram send | setup=%s entry=%s", sym, setup_score, entry_score)
+                # ===== SEND SCALE ALERT SEPARATELY =====
+                if should_send_scale and scale_plan:
+                    try:
+                        scale_msg = format_scale_plan_v2(scale_plan)
+
+                        if ds:
+                            scale_msg = scale_msg.replace(
+                                f"📌 {sym} SCALE | M15/H1",
+                                f"📌 {sym} SCALE | M15/H1\n📡 Dữ liệu: {ds}"
+                            )
+
+                        scale_msg = "🚀 SCALE ALERT\n━━━━━━━━━━━━━━\n" + scale_msg
+                        _send_telegram(scale_msg, chat_id=ADMIN_CHAT_ID)
+
+                    except Exception as e:
+                        logger.exception("[CRON] %s: SCALE send failed: %s", sym, e)
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
