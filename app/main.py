@@ -1762,36 +1762,41 @@ async def cron_run(token: str = "", request: Request = None):
                     #_send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
                 else:
                     logger.info("[CRON] %s: no telegram send | setup=%s entry=%s", sym, setup_score, entry_score)
+
                 # ===== SEND SCALE ALERT SEPARATELY =====
                 if should_send_scale and scale_plan:
-                logger.info(
-                            "[CRON][SCALE ALERT] %s: SEND | stage=%s readiness=%s direction=%s",
-                            sym,
-                            scale_plan.get("stage_num"),
-                            scale_plan.get("readiness"),
-                            scale_plan.get("direction"),
-                )
                     try:
                         scale_msg = format_scale_plan_v2(scale_plan)
-
+                
                         if ds:
                             scale_msg = scale_msg.replace(
                                 f"📌 {sym} SCALE | M15/H1",
                                 f"📌 {sym} SCALE | M15/H1\n📡 Dữ liệu: {ds}"
                             )
-
+                
                         scale_msg = "🚀 SCALE ALERT\n━━━━━━━━━━━━━━\n" + scale_msg
+                
                         logger.info(
                             "[CRON][SCALE ALERT] %s: SEND | stage=%s readiness=%s direction=%s",
                             sym,
-                            scale_plan.get("stage_num"),
-                            scale_plan.get("readiness"),
-                            scale_plan.get("direction"),
+                            scale_plan.get("stage_num", "n/a"),
+                            scale_plan.get("readiness", "n/a"),
+                            scale_plan.get("direction", "n/a"),
                         )
+                
                         _send_telegram(scale_msg, chat_id=ADMIN_CHAT_ID)
-
+                
                     except Exception as e:
-                        logger.exception("[CRON] %s: SCALE send failed: %s", sym, e)
+                        logger.exception("[CRON][SCALE SEND] %s failed: %s", sym, e)
+                else:
+                    if scale_plan:
+                        logger.info(
+                            "[CRON][SCALE] %s: skip send | stage=%s readiness=%s direction=%s",
+                            sym,
+                            scale_plan.get("stage_num", "n/a"),
+                            scale_plan.get("readiness", "n/a"),
+                            scale_plan.get("direction", "n/a"),
+                        )
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
