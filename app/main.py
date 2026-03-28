@@ -1481,12 +1481,12 @@ async def telegram_webhook(request: Request):
                 msg = msg.replace(f"📌 {symbol} SCALE | M15/H1", f"📌 {symbol} SCALE | M15/H1\n📡 Dữ liệu: {ds}")
 
             _send_long_telegram(msg, chat_id=chat_id)
-            return {"ok": True, "type": "scale", "symbol": symbol}
+            return "ok"
 
         except Exception as e:
             logger.exception("SCALE failed for %s: %s", symbol, e)
             _send_telegram(f"❌ SCALE lỗi cho {symbol}: {e}", chat_id=chat_id)
-            return {"ok": False, "type": "scale", "symbol": symbol, "error": str(e)}
+            return f"ERROR SCALE {symbol}: {e}"
                 
     
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
