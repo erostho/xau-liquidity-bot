@@ -1382,7 +1382,7 @@ def _detect_phase_369_v2(
         return {"phase": 3, "label": "LATE", "meaning": "đang sát đáy, dễ sell trễ", "reason": f"range-pos={int(range_pos*100)}%"}
     if bias_side == "BUY" and range_pos is not None and range_pos >= 0.82:
         return {"phase": 3, "label": "LATE", "meaning": "đang sát đỉnh, dễ buy trễ", "reason": f"range-pos={int(range_pos*100)}%"}
-    return {"phase": 6, "label": "READY", "meaning": "đợi đủ bias + confirm", "reason": f"range-pos={int((range_pos or 0)*100)}%"}
+    return {"phase": 2, "label": "READY", "meaning": "đợi đủ bias + confirm", "reason": f"range-pos={int((range_pos or 0)*100)}%"}
 
 def _attach_gd2_meta(
     base: Dict[str, Any],
@@ -2370,10 +2370,10 @@ def build_scale_plan(
     # phase đơn giản cho scale
     if range_pos is not None:
         if range_pos <= 0.15 or range_pos >= 0.85:
-            phase_txt = "9 | Đang ở đoạn muộn"
+            phase_txt = "3 | Đang ở đoạn muộn"
             late_move = True
         else:
-            phase_txt = "6 | Có thể chuẩn bị"
+            phase_txt = "2 | Có thể chuẩn bị"
             late_move = False
     else:
         phase_txt = "n/a"
