@@ -2249,6 +2249,295 @@ def _build_liquidity_map_v1(
     out["reasons"] = dedup[:4]
 
     return out
+
+def _nf2(x) -> str:
+    try:
+        return f"{float(x):.2f}"
+    except Exception:
+        return "n/a"
+
+
+def _scale_readiness_label(score: int) -> str:
+    if score >= 5:
+        return "HIGH"
+    if score >= 3:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _mid(a: float | None, b: float | None) -> float | None:
+    try:
+        if a is None or b is None:
+            return None
+        return (float(a) + float(b)) / 2.0
+    except Exception:
+        return None
+
+
+def _zone_pad_from_atr(atr15: float | None, ratio: float = 0.18) -> float:
+    a = float(atr15 or 0.0)
+    if a <= 0:
+        return 0.0
+    return max(1e-9, a * ratio)
+
+
+def build_scale_plan(
+    symbol: str,
+    m15,
+    m30,
+    h1,
+    h4,
+    total_tp_cent: float = 500.0,
+    lot1: float = 0.30,
+    lot2: float = 0.30,
+    lot3: float = 0.50,
+) -> dict:
+    """
+    SCALE plan cho trader tay:
+    - không auto trade
+    - chỉ trả về có nên scale không, scale theo hướng nào, vùng lệnh 1/2/3, invalid
+    """
+    base = {
+        "symbol": symbol,
+        "tf": "M15/H1",
+        "direction": "NONE",
+        "condition": "CHƯA ĐỦ",
+        "readiness": "LOW",
+        "logic_lines": [],
+        "orders": [],
+        "tp_total_cent": float(total_tp_cent),
+        "tp1": None,
+        "tp2": None,
+        "invalid": None,
+        "notes": [],
+        "data_source": None,
+    }
+
+    # normalize candles
+    m15c = _safe_candles(m15)
+    m30c = _safe_candles(m30)
+    h1c = _safe_candles(h1)
+    h4c = _safe_candles(h4)
+
+    if not m15c or not h1c or not h4c:
+        base["notes"].append("Thiếu dữ liệu M15/H1/H4")
+        return base
+
+    atr15 = _atr(m15c, 14) or 0.0
+    h1_trend = _trend_label(h1c)
+    h4_trend = _trend_label(h4c)
+
+    # bias lớn
+    if h1_trend == "bearish":
+        direction = "SELL"
+    elif h1_trend == "bullish":
+        direction = "BUY"
+    else:
+        direction = "NONE"
+
+    base["direction"] = direction
+    base["logic_lines"].append(f"Bias lớn: {direction if direction != 'NONE' else 'CHƯA RÕ'}")
+
+    # structure
+    m15_struct = _m15_key_levels(m15c, bias_side=direction if direction in ("BUY", "SELL") else "BUY", lookback=120)
+    m15_tag = str((m15_struct or {}).get("tag") or "n/a").upper()
+
+    # entry sniper nếu đã có trong file thì tận dụng, không thì fallback đơn giản
+    try:
+        sniper = _entry_sniper_v1(
+            m15c=m15c,
+            m15_struct=m15_struct,
+            atr15=atr15,
+            volq=_vol_quality(m15c, n=20),
+        )
+    except Exception:
+        sniper = {"direction": "NONE", "strength": "-", "trigger": "NONE", "state": "KHÔNG CÓ SETUP"}
+
+    sniper_dir = str(sniper.get("direction") or "NONE").upper()
+    sniper_strength = str(sniper.get("strength") or "-")
+    sniper_trigger = str(sniper.get("trigger") or "NONE").upper()
+    sniper_state = str(sniper.get("state") or "KHÔNG CÓ SETUP")
+
+    base["logic_lines"].append(f"Cây chỉ hướng: {sniper_dir} ({sniper_strength})")
+    base["logic_lines"].append(f"Điểm nổ: {sniper_trigger}")
+
+    # range / position
+    lo, hi, last_px = _range_levels(m15c[:-1] if len(m15c) > 1 else m15c, n=20)
+    range_pos = None
+    if lo is not None and hi is not None and hi > lo and last_px is not None:
+        range_pos = (last_px - lo) / max(1e-9, hi - lo)
+
+    # phase đơn giản cho scale
+    if range_pos is not None:
+        if range_pos <= 0.15 or range_pos >= 0.85:
+            phase_txt = "9 | Đang ở đoạn muộn"
+            late_move = True
+        else:
+            phase_txt = "6 | Có thể chuẩn bị"
+            late_move = False
+    else:
+        phase_txt = "n/a"
+        late_move = False
+
+    base["logic_lines"].append(f"Giai đoạn: {phase_txt}")
+
+    # readiness score
+    readiness_score = 0
+
+    # 1) bias rõ
+    if direction in ("BUY", "SELL"):
+        readiness_score += 1
+
+    # 2) H1/H4 cùng hướng
+    if h1_trend == h4_trend and h1_trend in ("bullish", "bearish"):
+        readiness_score += 1
+
+    # 3) có cây chỉ hướng cùng hướng
+    if sniper_dir == direction and direction != "NONE":
+        readiness_score += 1
+
+    # 4) có trigger usable
+    if sniper_trigger in ("READY", "TRIGGERED"):
+        readiness_score += 1
+
+    # 5) không late move
+    if not late_move:
+        readiness_score += 1
+
+    # 6) không đuổi giá
+    if range_pos is not None:
+        if direction == "SELL" and range_pos < 0.20:
+            readiness_score -= 2
+            base["notes"].append("Đang sát vùng thấp → không SELL đuổi")
+        if direction == "BUY" and range_pos > 0.80:
+            readiness_score -= 2
+            base["notes"].append("Đang sát vùng cao → không BUY đuổi")
+
+    readiness_label = _scale_readiness_label(readiness_score)
+    base["readiness"] = readiness_label
+    base["logic_lines"].append(f"Scale readiness: {readiness_label}")
+
+    # điều kiện hiện tại
+    condition_ok = (
+        direction in ("BUY", "SELL")
+        and readiness_score >= 3
+        and sniper_dir == direction
+        and sniper_trigger in ("READY", "TRIGGERED")
+        and not late_move
+    )
+    base["condition"] = "ĐỦ" if condition_ok else "CHƯA ĐỦ"
+
+    # zone build
+    z = _m15_key_levels(m15c, bias_side=direction if direction in ("BUY", "SELL") else "BUY", lookback=120)
+    bos = z.get("bos_level")
+    pb_ext = z.get("pullback_extreme")
+    pad = _zone_pad_from_atr(atr15, 0.18)
+
+    if lo is None or hi is None or last_px is None or direction == "NONE":
+        base["notes"].append("Không dựng được vùng scale")
+        return base
+
+    # pullback zones
+    rng = max(1e-9, hi - lo)
+
+    if direction == "SELL":
+        # 3 vùng từ thấp đến cao: 38 / 50 / 61.8 của nhịp hồi trong range hiện tại
+        z1_mid = lo + 0.38 * rng
+        z2_mid = lo + 0.50 * rng
+        z3_mid = lo + 0.618 * rng
+
+        # nếu có bos/pb_ext thì kéo vùng scale gần playbook hơn
+        if bos is not None:
+            z2_mid = max(z2_mid, float(bos))
+        if pb_ext is not None:
+            z3_mid = max(z3_mid, float(pb_ext))
+
+        base["orders"] = [
+            {"name": "Lệnh 1", "zone_lo": z1_mid - pad, "zone_hi": z1_mid + pad, "lot": float(lot1)},
+            {"name": "Lệnh 2", "zone_lo": z2_mid - pad, "zone_hi": z2_mid + pad, "lot": float(lot2)},
+            {"name": "Lệnh 3", "zone_lo": z3_mid - pad, "zone_hi": z3_mid + pad, "lot": float(lot3)},
+        ]
+        base["invalid"] = hi + max(pad, 0.35 * atr15)
+
+        # TP tham khảo: chia về dưới
+        base["tp1"] = last_px - float(total_tp_cent)
+        base["tp2"] = last_px - float(total_tp_cent) * 1.6
+
+    elif direction == "BUY":
+        z1_mid = hi - 0.38 * rng
+        z2_mid = hi - 0.50 * rng
+        z3_mid = hi - 0.618 * rng
+
+        if bos is not None:
+            z2_mid = min(z2_mid, float(bos))
+        if pb_ext is not None:
+            z3_mid = min(z3_mid, float(pb_ext))
+
+        base["orders"] = [
+            {"name": "Lệnh 1", "zone_lo": z1_mid - pad, "zone_hi": z1_mid + pad, "lot": float(lot1)},
+            {"name": "Lệnh 2", "zone_lo": z2_mid - pad, "zone_hi": z2_mid + pad, "lot": float(lot2)},
+            {"name": "Lệnh 3", "zone_lo": z3_mid - pad, "zone_hi": z3_mid + pad, "lot": float(lot3)},
+        ]
+        base["invalid"] = lo - max(pad, 0.35 * atr15)
+
+        base["tp1"] = last_px + float(total_tp_cent)
+        base["tp2"] = last_px + float(total_tp_cent) * 1.6
+
+    # notes
+    base["notes"].append("Chỉ vào lệnh khi giá chạm vùng và có phản ứng rõ")
+    base["notes"].append("KHÔNG scale đuổi")
+    base["notes"].append("KHÔNG add nếu mất cây chỉ hướng")
+
+    return base
+
+
+def format_scale_plan(plan: dict) -> str:
+    symbol = str(plan.get("symbol") or "n/a")
+    tf = str(plan.get("tf") or "M15/H1")
+    direction = str(plan.get("direction") or "NONE")
+    condition = str(plan.get("condition") or "CHƯA ĐỦ")
+    readiness = str(plan.get("readiness") or "LOW")
+
+    lines = []
+    lines.append(f"📌 {symbol} SCALE | {tf}")
+    lines.append("")
+    lines.append(f"🧭 Hướng scale: {direction}")
+    lines.append(f"📌 Điều kiện hiện tại: {condition}")
+    lines.append("")
+    lines.append("🎯 Logic scale:")
+    for s in (plan.get("logic_lines") or []):
+        lines.append(f"- {s}")
+
+    lines.append("")
+    lines.append("📍 Vùng scale:")
+    for od in (plan.get("orders") or []):
+        lines.append(f"- {od.get('name')}: {_nf2(od.get('zone_lo'))} – {_nf2(od.get('zone_hi'))} | lot {od.get('lot'):.2f}")
+
+    lines.append("")
+    lines.append("🎯 Mục tiêu:")
+    lines.append(f"- TP tổng: +{int(float(plan.get('tp_total_cent') or 0))} cent")
+    if plan.get("tp1") is not None:
+        lines.append(f"- TP1 tham khảo: {_nf2(plan.get('tp1'))}")
+    if plan.get("tp2") is not None:
+        lines.append(f"- TP2 tham khảo: {_nf2(plan.get('tp2'))}")
+
+    lines.append("")
+    lines.append("🧯 Invalidation:")
+    lines.append(f"- Nếu M15 đóng {'trên' if direction == 'SELL' else 'dưới'} {_nf2(plan.get('invalid'))} → bỏ kịch bản {direction} scale")
+
+    notes = plan.get("notes") or []
+    if notes:
+        lines.append("")
+        lines.append("⚠️ Lưu ý:")
+        for s in notes[:4]:
+            lines.append(f"- {s}")
+
+    lines.append("")
+    lines.append("🧠 Kết luận:")
+    lines.append(f"- Hiện tại {condition} ĐIỀU KIỆN SCALE")
+
+    return "\n".join(lines).strip()
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
