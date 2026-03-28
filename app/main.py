@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from app.data_source import get_candles, ingest_mt5_candles
-from app.pro_analysis import analyze_pro, format_signal, get_now_status
+from app.pro_analysis import analyze_pro, format_signal, build_scale_plan, format_scale_plan, get_now_status
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
@@ -94,7 +94,11 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_m
     for i, part in enumerate(parts, start=1):
         header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
         _send_telegram(header + part, chat_id=chat_id)
-
+        
+def _is_scale_command(text: str) -> bool:
+    t = (text or "").strip().upper()
+    return t in ("BTC SCALE", "XAU SCALE", "XAG SCALE", "BTC/USD SCALE", "XAU/USD SCALE", "XAG/USD SCALE")
+    
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
 
@@ -1446,7 +1450,45 @@ async def telegram_webhook(request: Request):
 
     if not text:
         return "OK"
+    # ===== SCALE COMMAND =====
+    if _is_scale_command(text):
+        symbol = _parse_symbol_from_text(text)
 
+        try:
+            m15, src15 = _as_list_and_source_from_get_candles(get_candles(symbol, "15min", limit=260))
+            m30, src30 = _as_list_and_source_from_get_candles(get_candles(symbol, "30min", limit=260))
+            h1, src1h = _as_list_and_source_from_get_candles(get_candles(symbol, "1h", limit=260))
+            h4, src4h = _as_list_and_source_from_get_candles(get_candles(symbol, "4h", limit=260))
+
+            plan = build_scale_plan(
+                symbol=symbol,
+                m15=m15,
+                m30=m30,
+                h1=h1,
+                h4=h4,
+                total_tp_cent=500.0,
+                lot1=0.30,
+                lot2=0.30,
+                lot3=0.50,
+            )
+
+            ds = src30 or src15 or src1h or src4h
+            if ds:
+                plan["data_source"] = ds
+
+            msg = format_scale_plan(plan)
+            if ds:
+                msg = msg.replace(f"📌 {symbol} SCALE | M15/H1", f"📌 {symbol} SCALE | M15/H1\n📡 Dữ liệu: {ds}")
+
+            _send_long_telegram(msg, chat_id=chat_id)
+            return {"ok": True, "type": "scale", "symbol": symbol}
+
+        except Exception as e:
+            logger.exception("SCALE failed for %s: %s", symbol, e)
+            _send_telegram(f"❌ SCALE lỗi cho {symbol}: {e}", chat_id=chat_id)
+            return {"ok": False, "type": "scale", "symbol": symbol, "error": str(e)}
+                
+    
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
     parsed = parse_manual_trade(text)
     if parsed:
