@@ -1637,32 +1637,6 @@ async def telegram_webhook(request: Request):
                         sig.setdefault("meta", {})["data_source"] = ds
                 except Exception:
                     pass
-
-                # ===== SCALE ALERT (separate from NOW) =====
-                scale_plan = None
-                should_send_scale = False
-                try:
-                    scale_plan = build_scale_plan_v2(
-                        symbol=sym,
-                        m15=data["m15"],
-                        m30=data["m30"],
-                        h1=data["h1"],
-                        h4=data["h4"],
-                        total_tp_cent=500.0,
-                        lot1=0.30,
-                        lot2=0.30,
-                        lot3=0.50,
-                    )
-
-                    if ds:
-                        scale_plan["data_source"] = ds
-
-                    should_send_scale = _should_send_scale_alert(sym, scale_plan)
-
-                except Exception as e:
-                    logger.exception("[CRON] %s: SCALE build failed: %s", sym, e)
-                    scale_plan = None
-                    should_send_scale = False
                 
                 stars = int(sig.get("stars", 0) or 0)
                 force_send = _force_send(sig)
@@ -1740,6 +1714,32 @@ async def cron_run(token: str = "", request: Request = None):
                         sig.setdefault("meta", {})["data_source"] = ds
                 except Exception:
                     pass
+
+                # ===== SCALE ALERT (separate from NOW) =====
+                scale_plan = None
+                should_send_scale = False
+                try:
+                    scale_plan = build_scale_plan_v2(
+                        symbol=sym,
+                        m15=data["m15"],
+                        m30=data["m30"],
+                        h1=data["h1"],
+                        h4=data["h4"],
+                        total_tp_cent=500.0,
+                        lot1=0.30,
+                        lot2=0.30,
+                        lot3=0.50,
+                    )
+
+                    if ds:
+                        scale_plan["data_source"] = ds
+
+                    should_send_scale = _should_send_scale_alert(sym, scale_plan)
+
+                except Exception as e:
+                    logger.exception("[CRON] %s: SCALE build failed: %s", sym, e)
+                    scale_plan = None
+                    should_send_scale = False
                 stars = int(sig.get("stars", 0) or 0)
                 rec = sig.get("recommendation", "")
                 now_status = get_now_status(sig)
