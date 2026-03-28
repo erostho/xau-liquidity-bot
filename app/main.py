@@ -9,8 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from app.data_source import get_candles, ingest_mt5_candles
-from app.pro_analysis import analyze_pro, format_signal, build_scale_plan, format_scale_plan, get_now_status
-
+from app.pro_analysis import analyze_pro, format_signal, build_scale_plan_v2, format_scale_plan_v2, get_now_status
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
@@ -97,7 +96,10 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_m
         
 def _is_scale_command(text: str) -> bool:
     t = (text or "").strip().upper()
-    return t in ("BTC SCALE", "XAU SCALE", "XAG SCALE", "BTC/USD SCALE", "XAU/USD SCALE", "XAG/USD SCALE")
+    return t in (
+        "BTC SCALE", "XAU SCALE", "XAG SCALE",
+        "BTC/USD SCALE", "XAU/USD SCALE", "XAG/USD SCALE"
+    )
     
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
@@ -1450,7 +1452,8 @@ async def telegram_webhook(request: Request):
 
     if not text:
         return "OK"
-    # ===== SCALE COMMAND =====
+
+    # ===== SCALE V2 COMMAND =====
     if _is_scale_command(text):
         symbol = _parse_symbol_from_text(text)
 
@@ -1460,7 +1463,7 @@ async def telegram_webhook(request: Request):
             h1, src1h = _as_list_and_source_from_get_candles(get_candles(symbol, "1h", limit=260))
             h4, src4h = _as_list_and_source_from_get_candles(get_candles(symbol, "4h", limit=260))
 
-            plan = build_scale_plan(
+            plan = build_scale_plan_v2(
                 symbol=symbol,
                 m15=m15,
                 m30=m30,
@@ -1473,20 +1476,17 @@ async def telegram_webhook(request: Request):
             )
 
             ds = src30 or src15 or src1h or src4h
-            if ds:
-                plan["data_source"] = ds
-
-            msg = format_scale_plan(plan)
+            msg = format_scale_plan_v2(plan)
             if ds:
                 msg = msg.replace(f"📌 {symbol} SCALE | M15/H1", f"📌 {symbol} SCALE | M15/H1\n📡 Dữ liệu: {ds}")
 
             _send_long_telegram(msg, chat_id=chat_id)
-            return "ok"
+            return "OK"
 
         except Exception as e:
-            logger.exception("SCALE failed for %s: %s", symbol, e)
+            logger.exception("SCALE V2 failed for %s: %s", symbol, e)
             _send_telegram(f"❌ SCALE lỗi cho {symbol}: {e}", chat_id=chat_id)
-            return f"ERROR SCALE {symbol}: {e}"
+            return "ERROR"
                 
     
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
