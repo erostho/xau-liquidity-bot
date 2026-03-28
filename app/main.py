@@ -1764,6 +1764,13 @@ async def cron_run(token: str = "", request: Request = None):
                     logger.info("[CRON] %s: no telegram send | setup=%s entry=%s", sym, setup_score, entry_score)
                 # ===== SEND SCALE ALERT SEPARATELY =====
                 if should_send_scale and scale_plan:
+                logger.info(
+                            "[CRON][SCALE ALERT] %s: SEND | stage=%s readiness=%s direction=%s",
+                            sym,
+                            scale_plan.get("stage_num"),
+                            scale_plan.get("readiness"),
+                            scale_plan.get("direction"),
+                        )
                     try:
                         scale_msg = format_scale_plan_v2(scale_plan)
 
