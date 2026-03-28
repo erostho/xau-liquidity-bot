@@ -1774,6 +1774,13 @@ async def cron_run(token: str = "", request: Request = None):
                             )
 
                         scale_msg = "🚀 SCALE ALERT\n━━━━━━━━━━━━━━\n" + scale_msg
+                        logger.info(
+                            "[CRON][SCALE ALERT] %s: SEND | stage=%s readiness=%s direction=%s",
+                            sym,
+                            scale_plan.get("stage_num"),
+                            scale_plan.get("readiness"),
+                            scale_plan.get("direction"),
+                        )
                         _send_telegram(scale_msg, chat_id=ADMIN_CHAT_ID)
 
                     except Exception as e:
