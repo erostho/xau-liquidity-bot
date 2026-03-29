@@ -94,7 +94,8 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_m
     for i, part in enumerate(parts, start=1):
         header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
         _send_telegram(header + part, chat_id=chat_id)
-
+        
+    
 def _parse_symbol_from_text(text: str) -> str:
     t = text.lower()
 
@@ -115,7 +116,6 @@ def _is_scale_command(text: str) -> bool:
         "BTC SCALE", "XAU SCALE", "XAG SCALE",
         "BTC/USD SCALE", "XAU/USD SCALE", "XAG/USD SCALE"
     )
-
 
 
 import re
@@ -646,7 +646,41 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if favored == "SELL":
             return f"{base} | Ưu tiên SELL"
         return f"{base} | Ưu tiên NONE"
+    def _review_confidence_risk(final_score: int, tradeable_label: str, side: str, pos, ntz_obj: dict, htf_obj: dict, liquidation_obj: dict) -> tuple[str, str]:
+        confidence = "LOW"
+        if tradeable_label == "YES" and final_score >= 75:
+            confidence = "HIGH"
+        elif final_score >= 55:
+            confidence = "MEDIUM"
 
+        risk_points = 0
+        if isinstance(ntz_obj, dict) and ntz_obj.get("active"):
+            risk_points += 2
+        if isinstance(liquidation_obj, dict) and liquidation_obj.get("ok"):
+            risk_points += 2
+        htf_state = str((htf_obj or {}).get("state") or "").upper()
+        if str(side).upper() == "BUY" and "BEARISH" in htf_state:
+            risk_points += 2
+        if str(side).upper() == "SELL" and "BULLISH" in htf_state:
+            risk_points += 2
+        try:
+            rp = float(pos)
+            if str(side).upper() == "BUY" and rp > 0.80:
+                risk_points += 2
+            elif str(side).upper() == "SELL" and rp < 0.20:
+                risk_points += 2
+            elif 0.30 <= rp <= 0.70:
+                risk_points += 1
+        except Exception:
+            pass
+
+        if risk_points >= 5:
+            risk = "HIGH"
+        elif risk_points >= 3:
+            risk = "MEDIUM"
+        else:
+            risk = "LOW"
+        return confidence, risk
     def _grade_from_verdict(v: str) -> str:
         vv = str(v or "").upper()
         if "ĐÚNG" in vv:
@@ -1040,6 +1074,24 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         if "BEARISH" in htf_state:
             lines.append("- ⚠️ BUY chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
 
+    psych_warnings = []
+    try:
+        rp = float(pos)
+        if rp <= 0.10 and str(side).upper() == "SELL":
+            psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
+        elif rp >= 0.90 and str(side).upper() == "BUY":
+            psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
+    except Exception:
+        pass
+    if isinstance(liquidation, dict) and liquidation.get("ok"):
+        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
+    if str(side).upper() == "BUY" and isinstance(htf_pressure_v4, dict) and "BEARISH" in str(htf_pressure_v4.get("state") or "").upper():
+        psych_warnings.append("⚠️ Đây là lệnh ngược xu hướng chính → chỉ giữ ngắn hạn")
+    if psych_warnings:
+        lines.append("")
+        lines.append("🧠 Cảnh báo tâm lý:")
+        for s in psych_warnings[:4]:
+            lines.append(f"- {s}")
     lines.append("")
     lines.append("⚙️ Hành động:")
     for s in (location_ctx.get("action_lines") or []):
@@ -1140,16 +1192,71 @@ def _force_send(sig: dict) -> bool:
 
     return False
 
+def _load_scale_state() -> dict:
+    try:
+        with open(SCALE_ALERT_STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
-def _should_send_scale_alert(plan: dict) -> bool:
-    """Separate SCALE ALERT gate for cron; does not affect NOW logic."""
+def _save_scale_state(st: dict) -> None:
+    tmp = f"{SCALE_ALERT_STATE_PATH}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, SCALE_ALERT_STATE_PATH)
+def _should_send_scale_alert(symbol: str, plan: dict) -> bool:
+    """
+    Gửi SCALE riêng mỗi 15' nhưng có cooldown + chống lặp trạng thái.
+    Rule:
+    - Stage 3: luôn đáng gửi
+    - Stage 2: chỉ gửi khi readiness HIGH
+    - Stage 1: không gửi
+    """
     try:
         direction = str(plan.get("direction") or "").upper()
         stage_num = int(plan.get("stage_num") or 1)
         readiness = str(plan.get("readiness") or "").upper()
+
         if direction not in ("BUY", "SELL"):
             return False
-        return stage_num >= 2 and readiness in ("MEDIUM", "HIGH")
+
+        if stage_num == 1:
+            return False
+
+        if stage_num == 2 and readiness not in ("MEDIUM", "HIGH"):
+            return False
+
+        if stage_num == 3:
+            pass
+        elif stage_num == 2 and readiness == "HIGH":
+            pass
+        else:
+            return False
+
+        st = _load_scale_state()
+        now_ts = int(time.time())
+        key = f"{symbol}_SCALE"
+
+        current_sig = {
+            "direction": direction,
+            "stage_num": stage_num,
+            "readiness": readiness,
+            "condition": str(plan.get("condition") or ""),
+            "invalid": str(plan.get("invalid") or ""),
+        }
+
+        prev = st.get(key, {})
+        last_ts = int(prev.get("ts", 0))
+        prev_sig = prev.get("sig", {})
+
+        # nếu y hệt trạng thái cũ và chưa hết cooldown -> không gửi
+        if prev_sig == current_sig and (now_ts - last_ts) < SCALE_ALERT_COOLDOWN_MIN * 60:
+            return False
+
+        st[key] = {"ts": now_ts, "sig": current_sig}
+        _save_scale_state(st)
+        return True
+
     except Exception:
         return False
 # =========================
@@ -1157,7 +1264,7 @@ def _should_send_scale_alert(plan: dict) -> bool:
 # =========================
 
 REGIME_ALERT_STATE_PATH = os.getenv("REGIME_ALERT_STATE_PATH", "regime_alert_state.json")
-REGIME_ALERT_COOLDOWN_MIN = int(os.getenv("REGIME_ALERT_COOLDOWN_MIN", "120"))  # 2h
+REGIME_ALERT_COOLDOWN_MIN = int(os.getenv("REGIME_ALERT_COOLDOWN_MIN", "60"))  # 2h
 REGIME_CHOP_THRESHOLD = float(os.getenv("REGIME_CHOP_THRESHOLD", "6.8"))        # 0..10
 REGIME_ALERT_ENABLED = os.getenv("REGIME_ALERT_ENABLED", "1").strip() != "0"
 
@@ -1402,7 +1509,40 @@ async def telegram_webhook(request: Request):
 
     if not text:
         return "OK"
+    # ===== SCALE V2 COMMAND =====
+    if _is_scale_command(text):
+        symbol = _parse_symbol_from_text(text)
 
+        try:
+            m15, src15 = _as_list_and_source_from_get_candles(get_candles(symbol, "15min", limit=260))
+            m30, src30 = _as_list_and_source_from_get_candles(get_candles(symbol, "30min", limit=260))
+            h1, src1h = _as_list_and_source_from_get_candles(get_candles(symbol, "1h", limit=260))
+            h4, src4h = _as_list_and_source_from_get_candles(get_candles(symbol, "4h", limit=260))
+
+            plan = build_scale_plan_v2(
+                symbol=symbol,
+                m15=m15,
+                m30=m30,
+                h1=h1,
+                h4=h4,
+                total_tp_cent=500.0,
+                lot1=0.30,
+                lot2=0.30,
+                lot3=0.50,
+            )
+
+            ds = src30 or src15 or src1h or src4h
+            msg = format_scale_plan_v2(plan)
+            if ds:
+                msg = msg.replace(f"📌 {symbol} SCALE | M15/H1", f"📌 {symbol} SCALE | M15/H1\n📡 Dữ liệu: {ds}")
+
+            _send_long_telegram(msg, chat_id=chat_id)
+            return "OK"
+
+        except Exception as e:
+            logger.exception("SCALE V2 failed for %s: %s", symbol, e)
+            _send_telegram(f"❌ SCALE lỗi cho {symbol}: {e}", chat_id=chat_id)
+            return "ERROR"
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
     parsed = parse_manual_trade(text)
     if parsed:
@@ -1431,27 +1571,6 @@ async def telegram_webhook(request: Request):
 
     low = text.lower()
 
-    # 0.5) SCALE command
-    if _is_scale_command(text):
-        sym = _parse_symbol_from_text(text)
-        try:
-            data = _fetch_triplet(sym, limit=260)
-            plan = build_scale_plan_v2(
-                symbol=sym,
-                m15=data["m15"],
-                m30=data["m30"],
-                h1=data["h1"],
-                h4=data["h4"],
-            )
-            ds = data.get("data_source") if isinstance(data, dict) else None
-            msg = format_scale_plan_v2(plan)
-            if ds:
-                msg = msg.replace(f"📌 {sym} SCALE | M15/H1", f"📌 {sym} SCALE | M15/H1\n📡 Dữ liệu: {ds}")
-            _send_long_telegram(msg, chat_id=chat_id)
-        except Exception as e:
-            logger.exception("scale failed: %s", e)
-            _send_telegram(f"❌ SCALE failed ({sym}): {e}", chat_id=chat_id)
-        return "OK"
 
     # 1) "now/scan" -> mới chạy analyze_pro
     if "now" in low or "scan" in low or "all" in low:
@@ -1576,6 +1695,31 @@ async def cron_run(token: str = "", request: Request = None):
                         sig.setdefault("meta", {})["data_source"] = ds
                 except Exception:
                     pass
+                # ===== SCALE ALERT (separate from NOW) =====
+                scale_plan = None
+                should_send_scale = False
+                try:
+                    scale_plan = build_scale_plan_v2(
+                        symbol=sym,
+                        m15=data["m15"],
+                        m30=data["m30"],
+                        h1=data["h1"],
+                        h4=data["h4"],
+                        total_tp_cent=500.0,
+                        lot1=0.30,
+                        lot2=0.30,
+                        lot3=0.50,
+                    )
+
+                    if ds:
+                        scale_plan["data_source"] = ds
+
+                    should_send_scale = _should_send_scale_alert(sym, scale_plan)
+
+                except Exception as e:
+                    logger.exception("[CRON] %s: SCALE build failed: %s", sym, e)
+                    scale_plan = None
+                    should_send_scale = False                    
                 stars = int(sig.get("stars", 0) or 0)
                 short_hint = sig.get("short_hint") or []
                 entry = sig.get("entry")
@@ -1584,35 +1728,54 @@ async def cron_run(token: str = "", request: Request = None):
                 rec = sig.get("recommendation", "")
                 
                 # ----- LUỒNG A: KÈO CHÍNH -----
-                if stars >= MIN_STARS and rec != "CHỜ":
-                    _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
-                # ----- LUỒNG B (DISABLED): KÈO NGẮN HẠN / SCALE / SCALP -----
-                # Đã tắt theo cấu hình chiến lược: chỉ gửi kèo theo scoring engine FULL/HALF.
-
-                # ----- CÒN LẠI: KHÔNG GỬI -----
+                should_send_main = stars >= MIN_STARS
+                #and rec != "CHỜ"
+                should_send_now = setup_score >= 65 and entry_score >= 50
+                #and tradeable_now == "YES"
+                if should_send_main or force_send or should_send_now:
+                    msg = format_signal(sig)
+                    if should_send_now and not should_send_main:
+                        msg = "🚨 **NOW ALERT**\n----------------\n" + msg
+                    _send_telegram(msg, chat_id=ADMIN_CHAT_ID)
+                #if should_send_main or force_send or should_send_now:
+                    #_send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
                 else:
-                    logger.info("[CRON] %s: only observation, no trade", sym)
+                    logger.info("[CRON] %s: no telegram send | setup=%s entry=%s", sym, setup_score, entry_score)
 
-                # ----- SCALE ALERT (separate branch) -----
-                try:
-                    scale_plan = build_scale_plan_v2(
-                        symbol=sym,
-                        m15=data["m15"],
-                        m30=data["m30"],
-                        h1=data["h1"],
-                        h4=data["h4"],
-                    )
-                    if _should_send_scale_alert(scale_plan):
+                # ===== SEND SCALE ALERT SEPARATELY =====
+                if should_send_scale and scale_plan:
+                    try:
                         scale_msg = format_scale_plan_v2(scale_plan)
-                        ds = data.get("data_source") if isinstance(data, dict) else None
+                
                         if ds:
-                            scale_msg = scale_msg.replace(f"📌 {sym} SCALE | M15/H1", f"📌 {sym} SCALE | M15/H1\n📡 Dữ liệu: {ds}")
+                            scale_msg = scale_msg.replace(
+                                f"📌 {sym} SCALE | M15/H1",
+                                f"📌 {sym} SCALE | M15/H1\n📡 Dữ liệu: {ds}"
+                            )
+                
                         scale_msg = "🚀 SCALE ALERT\n━━━━━━━━━━━━━━\n" + scale_msg
+                
+                        logger.info(
+                            "[CRON][SCALE ALERT] %s: SEND | stage=%s readiness=%s direction=%s",
+                            sym,
+                            scale_plan.get("stage_num", "n/a"),
+                            scale_plan.get("readiness", "n/a"),
+                            scale_plan.get("direction", "n/a"),
+                        )
+                
                         _send_telegram(scale_msg, chat_id=ADMIN_CHAT_ID)
-                    else:
-                        logger.info("[CRON][SCALE] %s: no scale alert", sym)
-                except Exception as e:
-                    logger.exception("[CRON][SCALE] %s failed: %s", sym, e)
+                
+                    except Exception as e:
+                        logger.exception("[CRON][SCALE SEND] %s failed: %s", sym, e)
+                else:
+                    if scale_plan:
+                        logger.info(
+                            "[CRON][SCALE] %s: skip send | stage=%s readiness=%s direction=%s",
+                            sym,
+                            scale_plan.get("stage_num", "n/a"),
+                            scale_plan.get("readiness", "n/a"),
+                            scale_plan.get("direction", "n/a"),
+                        )
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
