@@ -147,6 +147,9 @@ def _ema(values: List[float], period: int) -> List[float]:
         ema.append(ema[-1] + k * (v - ema[-1]))
     pad = [ema[0]] * (period - 1)
     return pad + ema
+
+
+
 def _calc_ema_pack(candles: Sequence[Any]) -> Dict[str, Any]:
     """EMA 34-89-200 pack on M15 for context/filter only."""
     if not candles or len(candles) < 210:
@@ -184,6 +187,7 @@ def _calc_ema_pack(candles: Sequence[Any]) -> Dict[str, Any]:
         "alignment": alignment,
         "zone": zone,
     }
+
 def _rsi(values, period: int = 14):
     # Accept: list[float] OR list[candle]
     if not values:
@@ -699,6 +703,7 @@ def _grade_v6(meta: Dict[str, Any], trade_mode: str, sweep_grade: str, close_con
     spread = meta.get("spread", {}) or {}
     revs = meta.get("reversal_warnings", []) or []
     playbook_v4 = meta.get("playbook_v4", {}) or {}
+    ema_pack = meta.get("ema") if isinstance(meta.get("ema"), dict) else {}
 
     if spread.get("state") == "BLOCK":
         return "SKIP"
@@ -3037,6 +3042,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     close_confirm_v4 = meta.get("close_confirm_v4") if isinstance(meta.get("close_confirm_v4"), dict) else {}
     macro_v4 = meta.get("macro_v4") if isinstance(meta.get("macro_v4"), dict) else {}
     playbook_v4 = meta.get("playbook_v4") if isinstance(meta.get("playbook_v4"), dict) else {}
+    ema_pack = meta.get("ema") if isinstance(meta.get("ema"), dict) else {}
 
     ctx_lines = sig.get("context_lines") or []
     liq_lines = sig.get("liquidity_lines") or []
