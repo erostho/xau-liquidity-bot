@@ -2314,7 +2314,157 @@ def _scale_readiness_v2(
 
     return "MEDIUM"
 
+def _find_last_impulse_leg(m15c, side: str, lookback: int = 40) -> dict:
+    """
+    Tìm nhịp impulse gần nhất:
+    - SELL: nhịp giảm mạnh gần nhất
+    - BUY: nhịp tăng mạnh gần nhất
 
+    Return:
+    {
+        "ok": bool,
+        "leg_low": float|None,
+        "leg_high": float|None,
+        "start_idx": int|None,
+        "end_idx": int|None,
+        "reason": str,
+    }
+    """
+    out = {
+        "ok": False,
+        "leg_low": None,
+        "leg_high": None,
+        "start_idx": None,
+        "end_idx": None,
+        "reason": "not_found",
+    }
+
+    if not m15c or len(m15c) < 15:
+        out["reason"] = "not_enough_candles"
+        return out
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    use = closed[-lookback:] if len(closed) >= lookback else closed
+
+    atr15 = _atr(closed, 14) or 0.0
+    if atr15 <= 0:
+        out["reason"] = "atr_not_ready"
+        return out
+
+    best_score = -1.0
+    best = None
+
+    for i in range(3, len(use)):
+        c = use[i]
+        prev = use[i - 1]
+
+        body = abs(float(c.close) - float(c.open))
+        rng = max(1e-9, float(c.high) - float(c.low))
+
+        # impulse candle phải đủ mạnh
+        strong_body = body >= 0.55 * rng
+        big_enough = body >= 0.9 * atr15
+
+        if side == "SELL":
+            direction_ok = float(c.close) < float(c.open)
+            break_ok = float(c.close) < min(float(x.low) for x in use[max(0, i-4):i])
+        else:
+            direction_ok = float(c.close) > float(c.open)
+            break_ok = float(c.close) > max(float(x.high) for x in use[max(0, i-4):i])
+
+        if not (strong_body and big_enough and direction_ok and break_ok):
+            continue
+
+        # gom thêm 1-2 nến quanh impulse để lấy whole leg
+        left = max(0, i - 2)
+        right = min(len(use) - 1, i + 1)
+        leg = use[left:right + 1]
+
+        leg_low = min(float(x.low) for x in leg)
+        leg_high = max(float(x.high) for x in leg)
+
+        # score = độ mạnh thân + độ rộng leg
+        score = body / max(1e-9, atr15) + (leg_high - leg_low) / max(1e-9, atr15)
+
+        if score > best_score:
+            best_score = score
+            best = {
+                "ok": True,
+                "leg_low": leg_low,
+                "leg_high": leg_high,
+                "start_idx": left,
+                "end_idx": right,
+                "reason": "ok",
+            }
+
+    if best:
+        return best
+
+    return out
+
+
+def _build_scale_zones_from_impulse(
+    current_price: float,
+    side: str,
+    leg_low: float,
+    leg_high: float,
+    atr15: float,
+    lot1: float,
+    lot2: float,
+    lot3: float,
+) -> dict:
+    """
+    Dựng vùng scale từ impulse:
+    - SELL: vùng scale nằm phía trên current price
+    - BUY : vùng scale nằm phía dưới current price
+    """
+    rng = max(1e-9, float(leg_high) - float(leg_low))
+    pad = max(1e-9, float(atr15 or 0.0) * 0.12)
+
+    if side == "SELL":
+        # hồi lên trong nhịp giảm: 38 / 50 / 61.8 tính từ đáy lên
+        z1_mid = leg_low + 0.382 * rng
+        z2_mid = leg_low + 0.500 * rng
+        z3_mid = leg_low + 0.618 * rng
+
+        orders = [
+            {"name": "Lệnh 1", "zone_lo": z1_mid - pad, "zone_hi": z1_mid + pad, "lot": float(lot1)},
+            {"name": "Lệnh 2", "zone_lo": z2_mid - pad, "zone_hi": z2_mid + pad, "lot": float(lot2)},
+            {"name": "Lệnh 3", "zone_lo": z3_mid - pad, "zone_hi": z3_mid + pad, "lot": float(lot3)},
+        ]
+
+        # chỉ giữ các vùng nằm trên current_price, nếu không thì coi là đã lỡ
+        valid_orders = [o for o in orders if float(o["zone_hi"]) > float(current_price)]
+        invalid = leg_high + max(pad, 0.35 * atr15)
+
+        return {
+            "orders": valid_orders,
+            "invalid": invalid,
+            "tp1": leg_low,
+            "tp2": leg_low - 0.8 * rng,
+        }
+
+    else:
+        # hồi xuống trong nhịp tăng: 38 / 50 / 61.8 tính từ đỉnh xuống
+        z1_mid = leg_high - 0.382 * rng
+        z2_mid = leg_high - 0.500 * rng
+        z3_mid = leg_high - 0.618 * rng
+
+        orders = [
+            {"name": "Lệnh 1", "zone_lo": z1_mid - pad, "zone_hi": z1_mid + pad, "lot": float(lot1)},
+            {"name": "Lệnh 2", "zone_lo": z2_mid - pad, "zone_hi": z2_mid + pad, "lot": float(lot2)},
+            {"name": "Lệnh 3", "zone_lo": z3_mid - pad, "zone_hi": z3_mid + pad, "lot": float(lot3)},
+        ]
+
+        valid_orders = [o for o in orders if float(o["zone_lo"]) < float(current_price)]
+        invalid = leg_low - max(pad, 0.35 * atr15)
+
+        return {
+            "orders": valid_orders,
+            "invalid": invalid,
+            "tp1": leg_high,
+            "tp2": leg_high + 0.8 * rng,
+        }
 def build_scale_plan_v2(
     symbol: str,
     m15,
@@ -2452,40 +2602,43 @@ def build_scale_plan_v2(
         base["notes"].append("Chưa dựng được vùng scale")
         return base
 
-    rng = max(1e-9, hi - lo)
-    pad = _zone_pad_from_atr(atr15, 0.18)
+    # ===== Build zones from impulse leg instead of raw range =====
+    impulse = _find_last_impulse_leg(m15c, side=direction, lookback=40)
 
+    if not impulse.get("ok"):
+        base["notes"].append("Chưa tìm được impulse leg rõ để dựng vùng scale")
+        return base
+
+    leg_low = float(impulse["leg_low"])
+    leg_high = float(impulse["leg_high"])
+
+    zone_pack = _build_scale_zones_from_impulse(
+        current_price=float(last_px),
+        side=direction,
+        leg_low=leg_low,
+        leg_high=leg_high,
+        atr15=float(atr15),
+        lot1=float(lot1),
+        lot2=float(lot2),
+        lot3=float(lot3),
+    )
+
+    base["orders"] = zone_pack.get("orders") or []
+    base["invalid"] = zone_pack.get("invalid")
+    base["tp1"] = zone_pack.get("tp1")
+    base["tp2"] = zone_pack.get("tp2")
+
+    if not base["orders"]:
+        base["notes"].append("Vùng scale hợp lệ đã ở sau lưng giá hiện tại → chờ nhịp mới")
+        return base
+
+    # note đúng hướng
     if direction == "SELL":
-        z1_mid = lo + 0.38 * rng
-        z2_mid = lo + 0.50 * rng
-        z3_mid = lo + 0.618 * rng
-
-        base["orders"] = [
-            {"name": "Lệnh 1", "zone_lo": z1_mid - pad, "zone_hi": z1_mid + pad, "lot": float(lot1)},
-            {"name": "Lệnh 2", "zone_lo": z2_mid - pad, "zone_hi": z2_mid + pad, "lot": float(lot2)},
-            {"name": "Lệnh 3", "zone_lo": z3_mid - pad, "zone_hi": z3_mid + pad, "lot": float(lot3)},
-        ]
-        base["invalid"] = hi + max(pad, 0.35 * atr15)
-        base["tp1"] = last_px - float(total_tp_cent)
-        base["tp2"] = last_px - float(total_tp_cent) * 1.6
-
+        base["notes"].append("SELL scale = chờ giá hồi lên vùng rồi mới bán")
         if range_pos is not None and range_pos < 0.20:
             base["notes"].append("Đang ở vùng thấp → không SELL đuổi")
-
-    elif direction == "BUY":
-        z1_mid = hi - 0.38 * rng
-        z2_mid = hi - 0.50 * rng
-        z3_mid = hi - 0.618 * rng
-
-        base["orders"] = [
-            {"name": "Lệnh 1", "zone_lo": z1_mid - pad, "zone_hi": z1_mid + pad, "lot": float(lot1)},
-            {"name": "Lệnh 2", "zone_lo": z2_mid - pad, "zone_hi": z2_mid + pad, "lot": float(lot2)},
-            {"name": "Lệnh 3", "zone_lo": z3_mid - pad, "zone_hi": z3_mid + pad, "lot": float(lot3)},
-        ]
-        base["invalid"] = lo - max(pad, 0.35 * atr15)
-        base["tp1"] = last_px + float(total_tp_cent)
-        base["tp2"] = last_px + float(total_tp_cent) * 1.6
-
+    else:
+        base["notes"].append("BUY scale = chờ giá hồi xuống vùng rồi mới mua")
         if range_pos is not None and range_pos > 0.80:
             base["notes"].append("Đang ở vùng cao → không BUY đuổi")
 
