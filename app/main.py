@@ -21,8 +21,8 @@ CRON_LOCK = asyncio.Lock()
 LAST_CRON_TS = 0
 MIN_CRON_GAP_SEC = int(os.getenv("MIN_CRON_GAP_SEC", "25"))
 
-# Default symbols (override by env SYMBOLS="XAU/USD,BTC/USD")
-DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD").split(",") if s.strip()]
+# Default symbols (override by env SYMBOLS="XAU/USD,BTC/USD,XAG/USD")
+DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD,XAG/USD").split(",") if s.strip()]
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # default chat for cron
