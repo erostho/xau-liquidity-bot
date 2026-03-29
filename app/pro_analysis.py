@@ -148,6 +148,46 @@ def _ema(values: List[float], period: int) -> List[float]:
     pad = [ema[0]] * (period - 1)
     return pad + ema
 
+
+
+def _calc_ema_pack(candles: Sequence[Any]) -> Dict[str, Any]:
+    """EMA 34-89-200 pack on M15 for context/filter only."""
+    if not candles or len(candles) < 210:
+        return {}
+    closes = [float(_c_val(c, "close", 0.0) or 0.0) for c in candles]
+    e34 = _ema(closes, 34)
+    e89 = _ema(closes, 89)
+    e200 = _ema(closes, 200)
+    if not e34 or not e89 or not e200:
+        return {}
+    ema34 = float(e34[-1])
+    ema89 = float(e89[-1])
+    ema200 = float(e200[-1])
+    last = float(closes[-1])
+    trend = "MIXED"
+    alignment = "NO"
+    if ema34 > ema89 > ema200:
+        trend = "BULLISH"
+        alignment = "YES"
+    elif ema34 < ema89 < ema200:
+        trend = "BEARISH"
+        alignment = "YES"
+    zone = "MIXED"
+    if last > ema34 > ema89:
+        zone = "TRÊN EMA34/89"
+    elif ema89 < last <= ema34:
+        zone = "GIỮA EMA34-89"
+    elif last <= ema89:
+        zone = "DƯỚI EMA89"
+    return {
+        "ema34": ema34,
+        "ema89": ema89,
+        "ema200": ema200,
+        "trend": trend,
+        "alignment": alignment,
+        "zone": zone,
+    }
+
 def _rsi(values, period: int = 14):
     # Accept: list[float] OR list[candle]
     if not values:
