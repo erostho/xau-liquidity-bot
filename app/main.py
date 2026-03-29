@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from app.data_source import get_candles, ingest_mt5_candles
-from app.pro_analysis import analyze_pro, format_signal
+from app.pro_analysis import analyze_pro, format_signal, build_scale_plan_v2, format_scale_plan_v2, get_now_status
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
@@ -1726,7 +1726,11 @@ async def cron_run(token: str = "", request: Request = None):
                 sl = sig.get("sl")
                 tp1 = sig.get("tp1")
                 rec = sig.get("recommendation", "")
-                
+                now_status = get_now_status(sig)
+                setup_score = int(now_status.get("setup_score", 0) or 0)
+                entry_score = int(now_status.get("entry_score_now", 0) or 0)
+                tradeable_now = str(now_status.get("tradeable_now") or "NO")
+                force_send = _force_send(sig)                
                 # ----- LUỒNG A: KÈO CHÍNH -----
                 should_send_main = stars >= MIN_STARS
                 #and rec != "CHỜ"
