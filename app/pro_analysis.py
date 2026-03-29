@@ -147,9 +147,6 @@ def _ema(values: List[float], period: int) -> List[float]:
         ema.append(ema[-1] + k * (v - ema[-1]))
     pad = [ema[0]] * (period - 1)
     return pad + ema
-
-
-
 def _calc_ema_pack(candles: Sequence[Any]) -> Dict[str, Any]:
     """EMA 34-89-200 pack on M15 for context/filter only."""
     if not candles or len(candles) < 210:
@@ -187,7 +184,6 @@ def _calc_ema_pack(candles: Sequence[Any]) -> Dict[str, Any]:
         "alignment": alignment,
         "zone": zone,
     }
-
 def _rsi(values, period: int = 14):
     # Accept: list[float] OR list[candle]
     if not values:
