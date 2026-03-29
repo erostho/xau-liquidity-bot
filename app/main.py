@@ -22,7 +22,7 @@ LAST_CRON_TS = 0
 MIN_CRON_GAP_SEC = int(os.getenv("MIN_CRON_GAP_SEC", "25"))
 
 # Default symbols (override by env SYMBOLS="XAU/USD,BTC/USD,XAG/USD")
-DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,BTC/USD,XAG/USD").split(",") if s.strip()]
+DEFAULT_SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "XAU/USD,XAG/USD,BTC/USD").split(",") if s.strip()]
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # default chat for cron
@@ -108,6 +108,14 @@ def _parse_symbol_from_text(text: str) -> str:
         return "BTC/USD"
 
     return DEFAULT_SYMBOLS[0] if DEFAULT_SYMBOLS else "XAU/USD"
+
+def _is_scale_command(text: str) -> bool:
+    t = (text or "").strip().upper()
+    return t in (
+        "BTC SCALE", "XAU SCALE", "XAG SCALE",
+        "BTC/USD SCALE", "XAU/USD SCALE", "XAG/USD SCALE"
+    )
+
 
 
 import re
@@ -1131,6 +1139,19 @@ def _force_send(sig: dict) -> bool:
         return True
 
     return False
+
+
+def _should_send_scale_alert(plan: dict) -> bool:
+    """Separate SCALE ALERT gate for cron; does not affect NOW logic."""
+    try:
+        direction = str(plan.get("direction") or "").upper()
+        stage_num = int(plan.get("stage_num") or 1)
+        readiness = str(plan.get("readiness") or "").upper()
+        if direction not in ("BUY", "SELL"):
+            return False
+        return stage_num >= 2 and readiness in ("MEDIUM", "HIGH")
+    except Exception:
+        return False
 # =========================
 # REGIME ALERT (CHOP / STOP-HUNT) - independent of stars
 # =========================
@@ -1410,6 +1431,28 @@ async def telegram_webhook(request: Request):
 
     low = text.lower()
 
+    # 0.5) SCALE command
+    if _is_scale_command(text):
+        sym = _parse_symbol_from_text(text)
+        try:
+            data = _fetch_triplet(sym, limit=260)
+            plan = build_scale_plan_v2(
+                symbol=sym,
+                m15=data["m15"],
+                m30=data["m30"],
+                h1=data["h1"],
+                h4=data["h4"],
+            )
+            ds = data.get("data_source") if isinstance(data, dict) else None
+            msg = format_scale_plan_v2(plan)
+            if ds:
+                msg = msg.replace(f"📌 {sym} SCALE | M15/H1", f"📌 {sym} SCALE | M15/H1\n📡 Dữ liệu: {ds}")
+            _send_long_telegram(msg, chat_id=chat_id)
+        except Exception as e:
+            logger.exception("scale failed: %s", e)
+            _send_telegram(f"❌ SCALE failed ({sym}): {e}", chat_id=chat_id)
+        return "OK"
+
     # 1) "now/scan" -> mới chạy analyze_pro
     if "now" in low or "scan" in low or "all" in low:
         if "scan" in low or "all" in low:
@@ -1549,6 +1592,27 @@ async def cron_run(token: str = "", request: Request = None):
                 # ----- CÒN LẠI: KHÔNG GỬI -----
                 else:
                     logger.info("[CRON] %s: only observation, no trade", sym)
+
+                # ----- SCALE ALERT (separate branch) -----
+                try:
+                    scale_plan = build_scale_plan_v2(
+                        symbol=sym,
+                        m15=data["m15"],
+                        m30=data["m30"],
+                        h1=data["h1"],
+                        h4=data["h4"],
+                    )
+                    if _should_send_scale_alert(scale_plan):
+                        scale_msg = format_scale_plan_v2(scale_plan)
+                        ds = data.get("data_source") if isinstance(data, dict) else None
+                        if ds:
+                            scale_msg = scale_msg.replace(f"📌 {sym} SCALE | M15/H1", f"📌 {sym} SCALE | M15/H1\n📡 Dữ liệu: {ds}")
+                        scale_msg = "🚀 SCALE ALERT\n━━━━━━━━━━━━━━\n" + scale_msg
+                        _send_telegram(scale_msg, chat_id=ADMIN_CHAT_ID)
+                    else:
+                        logger.info("[CRON][SCALE] %s: no scale alert", sym)
+                except Exception as e:
+                    logger.exception("[CRON][SCALE] %s failed: %s", sym, e)
             except Exception as e:
                 logger.exception("[CRON] %s failed: %s", sym, e)
 
