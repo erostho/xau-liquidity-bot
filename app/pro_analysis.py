@@ -148,8 +148,6 @@ def _ema(values: List[float], period: int) -> List[float]:
     pad = [ema[0]] * (period - 1)
     return pad + ema
 
-
-
 def _calc_ema_pack(candles: Sequence[Any]) -> Dict[str, Any]:
     """EMA 34-89-200 pack on M15 for context/filter only."""
     if not candles or len(candles) < 210:
@@ -1741,7 +1739,1022 @@ def _attach_gd4_meta(base: Dict[str, Any], session_v4: Dict[str, Any], htf_press
     meta["close_confirm_v4"] = close_confirm_v4
     meta["macro_v4"] = macro_v4
     meta["playbook_v4"] = playbook_v4
+def _clamp(v: float, lo: float, hi: float) -> float:
+    try:
+        return max(lo, min(hi, float(v)))
+    except Exception:
+        return lo
 
+
+def _compression_label(m15c: Sequence[Any], volq: Dict[str, Any], atr15: float) -> Dict[str, Any]:
+    """
+    Đo độ nén đơn giản:
+    - ATR ngắn co lại
+    - range 6 nến gần nhất nhỏ hơn range 24 nến
+    - volume thấp
+    """
+    if not m15c or len(m15c) < 30:
+        return {
+            "score": 0,
+            "label": "LOW",
+            "timing": "CHƯA RÕ",
+            "reasons": ["thiếu dữ liệu nến"],
+        }
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    last6 = closed[-6:]
+    last24 = closed[-24:]
+
+    def _avg_range(cs):
+        vals = [abs(float(c.high) - float(c.low)) for c in cs]
+        return sum(vals) / max(1, len(vals))
+
+    rng6 = _avg_range(last6)
+    rng24 = _avg_range(last24)
+
+    score = 0
+    reasons = []
+
+    # 1) range co
+    if rng24 > 0 and rng6 <= 0.72 * rng24:
+        score += 1
+        reasons.append("range ngắn đang co lại")
+
+    # 2) ATR hiện tại không lớn
+    if atr15 and rng6 <= 0.85 * float(atr15):
+        score += 1
+        reasons.append("biên độ gần nhỏ hơn ATR")
+
+    # 3) volume thấp
+    vol_state = str((volq or {}).get("state") or "").upper()
+    vol_ratio = float((volq or {}).get("ratio") or 1.0)
+    if vol_state == "LOW" or vol_ratio <= 0.85:
+        score += 1
+        reasons.append("volume cạn dần")
+
+    if score >= 3:
+        label = "HIGH"
+        timing = "SẮP XẢY RA"
+    elif score == 2:
+        label = "MEDIUM"
+        timing = "ĐANG TÍCH LŨY"
+    else:
+        label = "LOW"
+        timing = "CHƯA RÕ"
+
+    return {
+        "score": score,
+        "label": label,
+        "timing": timing,
+        "reasons": reasons,
+        "rng6": rng6,
+        "rng24": rng24,
+    }
+
+
+def _liquidity_side_hint(range_pos: Optional[float], m15_struct_tag: str) -> Dict[str, Any]:
+    """
+    Gợi ý thanh khoản nằm đâu theo vị trí hiện tại + cấu trúc.
+    Không cần quá phức tạp ở bản đầu.
+    """
+    above = False
+    below = False
+    reasons = []
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    tag = str(m15_struct_tag or "").upper()
+
+    if rp is not None:
+        if rp <= 0.30:
+            below = True
+            reasons.append("liquidity nằm dưới")
+        elif rp >= 0.70:
+            above = True
+            reasons.append("liquidity nằm trên")
+
+    if "LL" in tag or "LH" in tag:
+        below = True
+    if "HH" in tag or "HL" in tag:
+        above = True
+
+    return {
+        "above": above,
+        "below": below,
+        "reasons": reasons,
+    }
+
+
+def _predict_pump_dump_v1(
+    symbol: str,
+    m15c: Sequence[Any],
+    h1_trend: str,
+    htf_pressure_v4: Dict[str, Any],
+    market_state_v2: str,
+    flow_state: Dict[str, Any],
+    range_pos: Optional[float],
+    volq: Dict[str, Any],
+    atr15: float,
+    m15_struct_tag: str,
+    liquidation_evt: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Trả về:
+    - Compression
+    - Bias bung
+    - Xác suất
+    - Thời điểm
+    - Lý do
+    """
+    comp = _compression_label(m15c, volq, atr15)
+    liq = _liquidity_side_hint(range_pos, m15_struct_tag)
+
+    pump_score = 0
+    dump_score = 0
+    reasons = []
+
+    # 1) Structure M15
+    tag = str(m15_struct_tag or "").upper()
+    if "LL" in tag or "LH" in tag:
+        dump_score += 2
+        reasons.append("cấu trúc giảm")
+    elif "HH" in tag or "HL" in tag:
+        pump_score += 2
+        reasons.append("cấu trúc tăng")
+
+    # 2) HTF bias
+    htf_state = str((htf_pressure_v4 or {}).get("state") or "").upper()
+    if "BEARISH" in htf_state or str(h1_trend).lower() == "bearish":
+        dump_score += 1
+        reasons.append("H1/HTF yếu")
+    elif "BULLISH" in htf_state or str(h1_trend).lower() == "bullish":
+        pump_score += 1
+        reasons.append("H1/HTF mạnh")
+
+    # 3) Range position
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    if rp is not None:
+        if rp <= 0.30:
+            dump_score += 1
+            reasons.append("nén sát đáy range")
+        elif rp >= 0.70:
+            pump_score += 1
+            reasons.append("nén sát đỉnh range")
+
+    # 4) Liquidity side
+    if liq.get("below"):
+        dump_score += 1
+        reasons.append("liquidity nằm dưới")
+    if liq.get("above"):
+        pump_score += 1
+        reasons.append("liquidity nằm trên")
+
+    # 5) Flow
+    favored = str((flow_state or {}).get("favored_side") or "").upper()
+    if favored == "SELL":
+        dump_score += 1
+    elif favored == "BUY":
+        pump_score += 1
+
+    # 6) liquidation vừa xảy ra thì nghiêng theo hướng quét gần nhất nhưng hạ độ tin cậy
+    just_liquidated = bool((liquidation_evt or {}).get("ok"))
+    if just_liquidated:
+        side = str((liquidation_evt or {}).get("side") or "").upper()
+        if "SELL" in side:
+            dump_score += 1
+            reasons.append("vừa có sell liquidation")
+        elif "BUY" in side:
+            pump_score += 1
+            reasons.append("vừa có buy liquidation")
+
+    # Kết luận hướng
+    if dump_score > pump_score:
+        bias = "DUMP nghiêng hơn"
+        edge = dump_score - pump_score
+    elif pump_score > dump_score:
+        bias = "PUMP nghiêng hơn"
+        edge = pump_score - dump_score
+    else:
+        bias = "NEUTRAL"
+        edge = 0
+
+    # Xác suất
+    comp_label = comp.get("label", "LOW")
+    if bias == "NEUTRAL":
+        probability = "LOW"
+    elif comp_label == "HIGH" and edge >= 2:
+        probability = "HIGH"
+    elif comp_label in ("HIGH", "MEDIUM"):
+        probability = "MEDIUM"
+    else:
+        probability = "LOW"
+
+    # liquidation vừa xảy ra => hạ 1 nấc để tránh quá tự tin
+    if just_liquidated and probability == "HIGH":
+        probability = "MEDIUM"
+
+    timing = comp.get("timing", "CHƯA RÕ")
+
+    final_reasons = []
+    for x in reasons:
+        if x not in final_reasons:
+            final_reasons.append(x)
+
+    return {
+        "compression": comp_label,
+        "bias": bias,
+        "probability": probability,
+        "timing": timing,
+        "reasons": final_reasons[:4],
+        "pump_score": pump_score,
+        "dump_score": dump_score,
+    }
+
+def _entry_sniper_v1(
+    m15c,
+    m15_struct: dict | None,
+    atr15: float | None,
+    volq: dict | None = None,
+) -> dict:
+    """
+    Entry Sniper:
+    - Cây chỉ hướng
+    - Điểm nổ
+    - Trạng thái
+    """
+
+    out = {
+        "direction": "NONE",
+        "strength": "-",
+        "trigger": "NONE",
+        "state": "KHÔNG CÓ SETUP",
+        "reason": "",
+    }
+
+    if not m15c or len(m15c) < 25:
+        out["reason"] = "thiếu dữ liệu M15"
+        return out
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    if len(closed) < 10:
+        out["reason"] = "thiếu nến đã đóng"
+        return out
+
+    last = closed[-1]
+    prev = closed[-2]
+
+    def _body(c):
+        return abs(float(c.close) - float(c.open))
+
+    def _range(c):
+        return max(1e-9, float(c.high) - float(c.low))
+
+    # ===== 1) Cây chỉ hướng =====
+    body_last = _body(last)
+    range_last = _range(last)
+
+    avg_body = sum(_body(x) for x in closed[-6:]) / max(1, len(closed[-6:]))
+    big_body = body_last >= 0.55 * range_last
+    displacement = body_last >= 1.35 * max(avg_body, 1e-9)
+
+    direction = "NONE"
+    strength = "-"
+
+    # dựa thêm vào cấu trúc ngắn hạn
+    m15_tag = str((m15_struct or {}).get("tag") or "").upper()
+
+    if float(last.close) < float(last.open) and big_body and displacement:
+        direction = "SELL"
+        strength = "STRONG" if body_last >= 1.6 * max(avg_body, 1e-9) else "MEDIUM"
+
+    elif float(last.close) > float(last.open) and big_body and displacement:
+        direction = "BUY"
+        strength = "STRONG" if body_last >= 1.6 * max(avg_body, 1e-9) else "MEDIUM"
+
+    # cấu trúc hỗ trợ tăng độ tin cậy
+    if direction == "SELL" and ("LL" in m15_tag or "LH" in m15_tag):
+        if strength == "MEDIUM":
+            strength = "STRONG"
+    if direction == "BUY" and ("HH" in m15_tag or "HL" in m15_tag):
+        if strength == "MEDIUM":
+            strength = "STRONG"
+
+    # nếu chưa có cây chỉ hướng
+    if direction == "NONE":
+        out["reason"] = "chưa có cây chỉ hướng rõ"
+        return out
+
+    out["direction"] = direction
+    out["strength"] = strength
+
+    # ===== 2) Điểm nổ =====
+    # Ý tưởng đơn giản:
+    # - READY: sau cây chỉ hướng có hồi yếu / giữ hướng
+    # - TRIGGERED: phá tiếp theo hướng đó
+    trigger = "NONE"
+    state = "CHỜ"
+
+    recent_high = max(float(x.high) for x in closed[-6:-1]) if len(closed) >= 6 else float(last.high)
+    recent_low = min(float(x.low) for x in closed[-6:-1]) if len(closed) >= 6 else float(last.low)
+
+    vol_state = str((volq or {}).get("state") or "").upper()
+
+    if direction == "SELL":
+        # READY: nến trước đó đã là cây chỉ hướng, nến hiện tại hồi yếu / không vượt nổi
+        weak_pullback = float(last.close) <= (float(last.open) + 0.35 * range_last)
+        # TRIGGERED: phá đáy gần + có follow-through
+        triggered = float(last.close) < recent_low
+
+        if triggered:
+            trigger = "TRIGGERED"
+            state = "CÓ THỂ VÀO"
+        elif weak_pullback or vol_state == "HIGH":
+            trigger = "READY"
+            state = "SẮP NỔ"
+
+    elif direction == "BUY":
+        weak_pullback = float(last.close) >= (float(last.open) - 0.35 * range_last)
+        triggered = float(last.close) > recent_high
+
+        if triggered:
+            trigger = "TRIGGERED"
+            state = "CÓ THỂ VÀO"
+        elif weak_pullback or vol_state == "HIGH":
+            trigger = "READY"
+            state = "SẮP NỔ"
+
+    out["trigger"] = trigger
+    out["state"] = state
+    out["reason"] = f"body={body_last:.2f} | avg_body={avg_body:.2f} | m15={m15_tag or 'n/a'}"
+
+    return out
+
+def _liquidity_strength_label(score: int) -> str:
+    if score >= 4:
+        return "HIGH"
+    if score >= 2:
+        return "MEDIUM"
+    if score >= 1:
+        return "LOW"
+    return "LOW"
+
+
+def _fmt_price_range(a, b) -> str:
+    try:
+        if a is None and b is None:
+            return "n/a"
+        if b is None or abs(float(a) - float(b)) < 1e-9:
+            return f"{float(a):.2f}"
+        lo = min(float(a), float(b))
+        hi = max(float(a), float(b))
+        return f"{lo:.2f} – {hi:.2f}"
+    except Exception:
+        return "n/a"
+
+
+def _build_liquidity_map_v1(
+    symbol: str,
+    m15c,
+    h1_trend: str,
+    htf_pressure_v4: dict | None,
+    flow_state: dict | None,
+    range_pos: float | None,
+    market_state_v2: str | None,
+    playbook_v2: dict | None,
+    liquidation_evt: dict | None,
+    m15_struct_tag: str | None,
+    range_low: float | None,
+    range_high: float | None,
+) -> dict:
+    """
+    Fake heatmap / liquidity map:
+    - Liquidity trên
+    - Liquidity dưới
+    - Sweep bias (khả năng quét)
+    """
+    out = {
+        "above_strength": "LOW",
+        "below_strength": "LOW",
+        "above_zone": None,
+        "below_zone": None,
+        "state_text": "Chưa thấy sweep/spring rõ",
+        "sweep_bias": "NEUTRAL",
+        "reasons": [],
+    }
+
+    if not m15c or len(m15c) < 20:
+        out["state_text"] = "Thiếu dữ liệu để đọc thanh khoản"
+        return out
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    use = closed[-20:] if len(closed) >= 20 else closed
+
+    highs = [float(c.high) for c in use]
+    lows = [float(c.low) for c in use]
+
+    recent_hi = max(highs)
+    recent_lo = min(lows)
+
+    # ===== 1) Cụm liquidity trên / dưới =====
+    # đếm số lần chạm vùng high / low gần nhau
+    hi_band = max(1e-9, (recent_hi - recent_lo) * 0.08)
+    lo_band = hi_band
+
+    above_hits = sum(1 for x in highs if abs(x - recent_hi) <= hi_band)
+    below_hits = sum(1 for x in lows if abs(x - recent_lo) <= lo_band)
+
+    above_score = 0
+    below_score = 0
+
+    if above_hits >= 2:
+        above_score += 2
+    if above_hits >= 4:
+        above_score += 1
+
+    if below_hits >= 2:
+        below_score += 2
+    if below_hits >= 4:
+        below_score += 1
+
+    # structure phụ trợ
+    tag = str(m15_struct_tag or "").upper()
+    if "HH" in tag or "HL" in tag:
+        above_score += 1
+    if "LL" in tag or "LH" in tag:
+        below_score += 1
+
+    # zones
+    above_zone_lo = recent_hi - hi_band
+    above_zone_hi = recent_hi
+    below_zone_lo = recent_lo
+    below_zone_hi = recent_lo + lo_band
+
+    out["above_strength"] = _liquidity_strength_label(above_score)
+    out["below_strength"] = _liquidity_strength_label(below_score)
+    out["above_zone"] = (above_zone_lo, above_zone_hi)
+    out["below_zone"] = (below_zone_lo, below_zone_hi)
+
+    # ===== 2) state text =====
+    liq_evt = liquidation_evt or {}
+    if liq_evt.get("ok"):
+        side = str(liq_evt.get("side") or "")
+        kind = str(liq_evt.get("kind") or "")
+        out["state_text"] = f"Vừa có quét mạnh: {side} | {kind}"
+    else:
+        out["state_text"] = "Chưa thấy sweep/spring rõ"
+
+    # ===== 3) Sweep bias: khả năng quét đầu nào =====
+    # dùng HTF + flow + vị trí giá + playbook
+    pump_score = 0
+    dump_score = 0
+    reasons = []
+
+    htf_state = str((htf_pressure_v4 or {}).get("state") or "").upper()
+    flow_favored = str((flow_state or {}).get("favored_side") or "").upper()
+    plan = str((playbook_v2 or {}).get("plan") or "").upper()
+    ms = str(market_state_v2 or "").upper()
+
+    # HTF
+    if "BEARISH" in htf_state or str(h1_trend).lower() == "bearish":
+        dump_score += 2
+        reasons.append("HTF nghiêng giảm")
+    elif "BULLISH" in htf_state or str(h1_trend).lower() == "bullish":
+        pump_score += 2
+        reasons.append("HTF nghiêng tăng")
+
+    # Flow
+    if flow_favored == "SELL":
+        dump_score += 1
+        reasons.append("flow ưu tiên SELL")
+    elif flow_favored == "BUY":
+        pump_score += 1
+        reasons.append("flow ưu tiên BUY")
+
+    # Vị trí trong range
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    if rp is not None:
+        if rp <= 0.20:
+            pump_score += 1
+            reasons.append("đang ở vùng thấp")
+        elif rp >= 0.80:
+            dump_score += 1
+            reasons.append("đang ở vùng cao")
+
+    # Playbook / market state
+    if plan in ("BOUNCE_TO_SELL", "SELL_RALLY", "WAIT_BOUNCE_TO_SELL"):
+        dump_score += 2
+        reasons.append("playbook nghiêng SELL")
+    elif plan in ("DIP_TO_BUY", "BUY_DIP", "WAIT_PULLBACK_TO_BUY"):
+        pump_score += 2
+        reasons.append("playbook nghiêng BUY")
+
+    if ms in ("CHOP", "TRANSITION"):
+        reasons.append("market nhiễu")
+
+    # Nếu đang ở vùng thấp nhưng bias lớn là SELL -> thường dễ quét lên rồi mới dump
+    if rp is not None and rp <= 0.20 and dump_score > pump_score:
+        out["sweep_bias"] = "UP → DOWN"
+        reasons.append("dễ quét lên trước rồi mới dump")
+    elif rp is not None and rp >= 0.80 and pump_score > dump_score:
+        out["sweep_bias"] = "DOWN → UP"
+        reasons.append("dễ quét xuống trước rồi mới pump")
+    else:
+        if dump_score > pump_score:
+            out["sweep_bias"] = "DOWN"
+        elif pump_score > dump_score:
+            out["sweep_bias"] = "UP"
+        else:
+            out["sweep_bias"] = "NEUTRAL"
+
+    # Nếu vừa liquidation mạnh thì giảm độ tự tin, thiên về quét 2 đầu
+    if liq_evt.get("ok") and out["sweep_bias"] in ("DOWN", "UP"):
+        out["sweep_bias"] = out["sweep_bias"] + " (cẩn thận quét 2 đầu)"
+
+    dedup = []
+    for r in reasons:
+        if r not in dedup:
+            dedup.append(r)
+    out["reasons"] = dedup[:4]
+
+    return out
+
+def _nf2(x) -> str:
+    try:
+        return f"{float(x):.2f}"
+    except Exception:
+        return "n/a"
+
+
+def _zone_pad_from_atr(atr15: float | None, ratio: float = 0.18) -> float:
+    a = float(atr15 or 0.0)
+    if a <= 0:
+        return 0.0
+    return max(1e-9, a * ratio)
+
+
+def _scale_stage_v2(
+    direction: str,
+    sniper_dir: str,
+    sniper_trigger: str,
+) -> tuple[int, str]:
+    """
+    Stage V2:
+    1 = chưa có setup
+    2 = chuẩn bị
+    3 = vào lệnh
+    """
+    direction = str(direction or "NONE").upper()
+    sniper_dir = str(sniper_dir or "NONE").upper()
+    sniper_trigger = str(sniper_trigger or "NONE").upper()
+
+    if direction not in ("BUY", "SELL"):
+        return 1, "Chưa có setup"
+
+    if sniper_dir == "NONE":
+        return 1, "Chưa có setup"
+
+    if sniper_dir == direction and sniper_trigger in ("READY", "TRIGGERED"):
+        return 3, "Vào lệnh"
+
+    return 2, "Chuẩn bị"
+
+
+def _scale_readiness_v2(
+    direction: str,
+    sniper_dir: str,
+    sniper_trigger: str,
+    late_move: bool,
+) -> str:
+    direction = str(direction or "NONE").upper()
+    sniper_dir = str(sniper_dir or "NONE").upper()
+    sniper_trigger = str(sniper_trigger or "NONE").upper()
+
+    if direction not in ("BUY", "SELL"):
+        return "LOW"
+
+    if sniper_dir == "NONE":
+        return "LOW"
+
+    if late_move:
+        return "LOW"
+
+    if sniper_dir == direction and sniper_trigger in ("READY", "TRIGGERED"):
+        return "HIGH"
+
+    return "MEDIUM"
+
+def _find_last_impulse_leg(m15c, side: str, lookback: int = 40) -> dict:
+    """
+    Tìm nhịp impulse gần nhất:
+    - SELL: nhịp giảm mạnh gần nhất
+    - BUY: nhịp tăng mạnh gần nhất
+
+    Return:
+    {
+        "ok": bool,
+        "leg_low": float|None,
+        "leg_high": float|None,
+        "start_idx": int|None,
+        "end_idx": int|None,
+        "reason": str,
+    }
+    """
+    out = {
+        "ok": False,
+        "leg_low": None,
+        "leg_high": None,
+        "start_idx": None,
+        "end_idx": None,
+        "reason": "not_found",
+    }
+
+    if not m15c or len(m15c) < 15:
+        out["reason"] = "not_enough_candles"
+        return out
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    use = closed[-lookback:] if len(closed) >= lookback else closed
+
+    atr15 = _atr(closed, 14) or 0.0
+    if atr15 <= 0:
+        out["reason"] = "atr_not_ready"
+        return out
+
+    best_score = -1.0
+    best = None
+
+    for i in range(3, len(use)):
+        c = use[i]
+        prev = use[i - 1]
+
+        body = abs(float(c.close) - float(c.open))
+        rng = max(1e-9, float(c.high) - float(c.low))
+
+        # impulse candle phải đủ mạnh
+        strong_body = body >= 0.55 * rng
+        big_enough = body >= 0.9 * atr15
+
+        if side == "SELL":
+            direction_ok = float(c.close) < float(c.open)
+            break_ok = float(c.close) < min(float(x.low) for x in use[max(0, i-4):i])
+        else:
+            direction_ok = float(c.close) > float(c.open)
+            break_ok = float(c.close) > max(float(x.high) for x in use[max(0, i-4):i])
+
+        if not (strong_body and big_enough and direction_ok and break_ok):
+            continue
+
+        # gom thêm 1-2 nến quanh impulse để lấy whole leg
+        left = max(0, i - 2)
+        right = min(len(use) - 1, i + 1)
+        leg = use[left:right + 1]
+
+        leg_low = min(float(x.low) for x in leg)
+        leg_high = max(float(x.high) for x in leg)
+
+        # score = độ mạnh thân + độ rộng leg
+        score = body / max(1e-9, atr15) + (leg_high - leg_low) / max(1e-9, atr15)
+
+        if score > best_score:
+            best_score = score
+            best = {
+                "ok": True,
+                "leg_low": leg_low,
+                "leg_high": leg_high,
+                "start_idx": left,
+                "end_idx": right,
+                "reason": "ok",
+            }
+
+    if best:
+        return best
+
+    return out
+
+
+def _build_scale_zones_from_impulse(
+    current_price: float,
+    side: str,
+    leg_low: float,
+    leg_high: float,
+    atr15: float,
+    lot1: float,
+    lot2: float,
+    lot3: float,
+) -> dict:
+    """
+    Dựng vùng scale từ impulse:
+    - SELL: vùng scale nằm phía trên current price
+    - BUY : vùng scale nằm phía dưới current price
+    """
+    rng = max(1e-9, float(leg_high) - float(leg_low))
+    pad = max(1e-9, float(atr15 or 0.0) * 0.12)
+
+    if side == "SELL":
+        # hồi lên trong nhịp giảm: 38 / 50 / 61.8 tính từ đáy lên
+        z1_mid = leg_low + 0.382 * rng
+        z2_mid = leg_low + 0.500 * rng
+        z3_mid = leg_low + 0.618 * rng
+
+        orders = [
+            {"name": "Lệnh 1", "zone_lo": z1_mid - pad, "zone_hi": z1_mid + pad, "lot": float(lot1)},
+            {"name": "Lệnh 2", "zone_lo": z2_mid - pad, "zone_hi": z2_mid + pad, "lot": float(lot2)},
+            {"name": "Lệnh 3", "zone_lo": z3_mid - pad, "zone_hi": z3_mid + pad, "lot": float(lot3)},
+        ]
+
+        # chỉ giữ các vùng nằm trên current_price, nếu không thì coi là đã lỡ
+        valid_orders = [o for o in orders if float(o["zone_hi"]) > float(current_price)]
+        invalid = leg_high + max(pad, 0.35 * atr15)
+
+        return {
+            "orders": valid_orders,
+            "invalid": invalid,
+            "tp1": leg_low,
+            "tp2": leg_low - 0.8 * rng,
+        }
+
+    else:
+        # hồi xuống trong nhịp tăng: 38 / 50 / 61.8 tính từ đỉnh xuống
+        z1_mid = leg_high - 0.382 * rng
+        z2_mid = leg_high - 0.500 * rng
+        z3_mid = leg_high - 0.618 * rng
+
+        orders = [
+            {"name": "Lệnh 1", "zone_lo": z1_mid - pad, "zone_hi": z1_mid + pad, "lot": float(lot1)},
+            {"name": "Lệnh 2", "zone_lo": z2_mid - pad, "zone_hi": z2_mid + pad, "lot": float(lot2)},
+            {"name": "Lệnh 3", "zone_lo": z3_mid - pad, "zone_hi": z3_mid + pad, "lot": float(lot3)},
+        ]
+
+        valid_orders = [o for o in orders if float(o["zone_lo"]) < float(current_price)]
+        invalid = leg_low - max(pad, 0.35 * atr15)
+
+        return {
+            "orders": valid_orders,
+            "invalid": invalid,
+            "tp1": leg_high,
+            "tp2": leg_high + 0.8 * rng,
+        }
+def build_scale_plan_v2(
+    symbol: str,
+    m15,
+    m30,
+    h1,
+    h4,
+    total_tp_cent: float = 500.0,
+    lot1: float = 0.30,
+    lot2: float = 0.30,
+    lot3: float = 0.50,
+) -> dict:
+    """
+    SCALE V2:
+    - Stage 1: chưa có setup
+    - Stage 2: chuẩn bị
+    - Stage 3: vào lệnh
+    """
+    base = {
+        "symbol": symbol,
+        "tf": "M15/H1",
+        "direction": "NONE",
+        "condition": "CHƯA ĐỦ",
+        "stage_num": 1,
+        "stage_text": "Chưa có setup",
+        "readiness": "LOW",
+        "logic_lines": [],
+        "orders": [],
+        "tp_total_cent": float(total_tp_cent),
+        "tp1": None,
+        "tp2": None,
+        "invalid": None,
+        "notes": [],
+    }
+
+    m15c = _safe_candles(m15)
+    m30c = _safe_candles(m30)
+    h1c = _safe_candles(h1)
+    h4c = _safe_candles(h4)
+
+    if not m15c or not h1c or not h4c:
+        base["notes"].append("Thiếu dữ liệu M15/H1/H4")
+        return base
+
+    atr15 = _atr(m15c, 14) or 0.0
+    h1_trend = _trend_label(h1c)
+    h4_trend = _trend_label(h4c)
+
+    # ===== Bias lớn =====
+    if h1_trend == "bearish":
+        direction = "SELL"
+    elif h1_trend == "bullish":
+        direction = "BUY"
+    else:
+        direction = "NONE"
+
+    base["direction"] = direction
+    base["logic_lines"].append(f"Bias lớn: {direction if direction != 'NONE' else 'CHƯA RÕ'}")
+
+    # ===== Structure / Sniper =====
+    m15_struct = _m15_key_levels(
+        m15c,
+        bias_side=direction if direction in ("BUY", "SELL") else "BUY",
+        lookback=120,
+    )
+
+    try:
+        sniper = _entry_sniper_v1(
+            m15c=m15c,
+            m15_struct=m15_struct,
+            atr15=atr15,
+            volq=_vol_quality(m15c, n=20),
+        )
+    except Exception:
+        sniper = {"direction": "NONE", "strength": "-", "trigger": "NONE", "state": "KHÔNG CÓ SETUP"}
+
+    sniper_dir = str(sniper.get("direction") or "NONE").upper()
+    sniper_strength = str(sniper.get("strength") or "-")
+    sniper_trigger = str(sniper.get("trigger") or "NONE").upper()
+
+    base["logic_lines"].append(f"Cây chỉ hướng: {sniper_dir} ({sniper_strength})")
+    base["logic_lines"].append(f"Điểm nổ: {sniper_trigger if sniper_trigger != 'NONE' else 'NONE'}")
+
+    # ===== Range / position =====
+    lo, hi, last_px = _range_levels(m15c[:-1] if len(m15c) > 1 else m15c, n=20)
+    range_pos = None
+    if lo is not None and hi is not None and hi > lo and last_px is not None:
+        range_pos = (last_px - lo) / max(1e-9, hi - lo)
+
+    late_move = False
+    if range_pos is not None:
+        if range_pos <= 0.15 or range_pos >= 0.85:
+            late_move = True
+
+    # ===== Stage V2 =====
+    stage_num, stage_text = _scale_stage_v2(
+        direction=direction,
+        sniper_dir=sniper_dir,
+        sniper_trigger=sniper_trigger,
+    )
+
+    # nếu đang late move thì vẫn không nên vào, dù có bias
+    if late_move and stage_num == 3:
+        stage_num, stage_text = 2, "Chuẩn bị"
+
+    base["stage_num"] = stage_num
+    base["stage_text"] = stage_text
+    base["logic_lines"].append(f"Giai đoạn: {stage_num} | {stage_text}")
+
+    # ===== Readiness =====
+    readiness = _scale_readiness_v2(
+        direction=direction,
+        sniper_dir=sniper_dir,
+        sniper_trigger=sniper_trigger,
+        late_move=late_move,
+    )
+
+    if stage_num == 1:
+        readiness = "LOW"
+
+    base["readiness"] = readiness
+    base["logic_lines"].append(f"Scale readiness: {readiness}")
+
+    # ===== Condition =====
+    condition_ok = (
+        stage_num == 3
+        and direction in ("BUY", "SELL")
+        and sniper_dir == direction
+        and sniper_trigger in ("READY", "TRIGGERED")
+        and not late_move
+    )
+    base["condition"] = "ĐỦ" if condition_ok else "CHƯA ĐỦ"
+
+    # ===== Build scale zones =====
+    if lo is None or hi is None or last_px is None or direction == "NONE":
+        base["notes"].append("Chưa dựng được vùng scale")
+        return base
+
+    # ===== Build zones from impulse leg instead of raw range =====
+    impulse = _find_last_impulse_leg(m15c, side=direction, lookback=40)
+
+    if not impulse.get("ok"):
+        base["notes"].append("Chưa tìm được impulse leg rõ để dựng vùng scale")
+        return base
+
+    leg_low = float(impulse["leg_low"])
+    leg_high = float(impulse["leg_high"])
+
+    zone_pack = _build_scale_zones_from_impulse(
+        current_price=float(last_px),
+        side=direction,
+        leg_low=leg_low,
+        leg_high=leg_high,
+        atr15=float(atr15),
+        lot1=float(lot1),
+        lot2=float(lot2),
+        lot3=float(lot3),
+    )
+
+    base["orders"] = zone_pack.get("orders") or []
+    base["invalid"] = zone_pack.get("invalid")
+    base["tp1"] = zone_pack.get("tp1")
+    base["tp2"] = zone_pack.get("tp2")
+
+    if not base["orders"]:
+        base["notes"].append("Vùng scale hợp lệ đã ở sau lưng giá hiện tại → chờ nhịp mới")
+        return base
+
+    # note đúng hướng
+    if direction == "SELL":
+        base["notes"].append("SELL scale = chờ giá hồi lên vùng rồi mới bán")
+        if range_pos is not None and range_pos < 0.20:
+            base["notes"].append("Đang ở vùng thấp → không SELL đuổi")
+    else:
+        base["notes"].append("BUY scale = chờ giá hồi xuống vùng rồi mới mua")
+        if range_pos is not None and range_pos > 0.80:
+            base["notes"].append("Đang ở vùng cao → không BUY đuổi")
+
+    # ===== Notes V2 =====
+    if sniper_dir == "NONE":
+        base["notes"].append("Không có cây chỉ hướng → KHÔNG SCALE")
+
+    base["notes"].append("Chỉ scale khi giá hồi vào vùng + có phản ứng rõ")
+    base["notes"].append("KHÔNG scale đuổi")
+
+    return base
+
+
+def format_scale_plan_v2(plan: dict) -> str:
+    symbol = str(plan.get("symbol") or "n/a")
+    tf = str(plan.get("tf") or "M15/H1")
+    direction = str(plan.get("direction") or "NONE")
+    condition = str(plan.get("condition") or "CHƯA ĐỦ")
+    readiness = str(plan.get("readiness") or "LOW")
+    stage_num = int(plan.get("stage_num") or 1)
+    stage_text = str(plan.get("stage_text") or "Chưa có setup")
+
+    lines = []
+    lines.append(f"📌 {symbol} SCALE | {tf}")
+    lines.append("")
+    lines.append(f"🧭 Hướng scale: {direction}")
+    lines.append(f"📌 Điều kiện hiện tại: {condition}")
+    lines.append("")
+    lines.append("🎯 Logic scale:")
+    for s in (plan.get("logic_lines") or []):
+        lines.append(f"- {s}")
+
+    lines.append("")
+    lines.append("📍 Vùng scale (pullback zone):")
+    for od in (plan.get("orders") or []):
+        lines.append(f"- {od.get('name')}: {_nf2(od.get('zone_lo'))} – {_nf2(od.get('zone_hi'))} | lot {float(od.get('lot') or 0):.2f}")
+
+    lines.append("")
+    lines.append("🎯 Mục tiêu:")
+    lines.append(f"- TP tổng: +{int(float(plan.get('tp_total_cent') or 0))} cent")
+    lines.append("- TP theo cấu trúc M15")
+    if plan.get("tp1") is not None:
+        lines.append(f"- TP1 tham khảo: {_nf2(plan.get('tp1'))}")
+    if plan.get("tp2") is not None:
+        lines.append(f"- TP2 tham khảo: {_nf2(plan.get('tp2'))}")
+
+    lines.append("")
+    lines.append("🧯 Invalidation:")
+    if direction == "SELL":
+        lines.append(f"- Nếu M15 đóng trên {_nf2(plan.get('invalid'))} → bỏ kịch bản SELL")
+    elif direction == "BUY":
+        lines.append(f"- Nếu M15 đóng dưới {_nf2(plan.get('invalid'))} → bỏ kịch bản BUY")
+    else:
+        lines.append("- Chưa có invalid rõ")
+
+    notes = plan.get("notes") or []
+    if notes:
+        lines.append("")
+        lines.append("⚠️ Lưu ý:")
+        for s in notes[:4]:
+            lines.append(f"- {s}")
+
+    lines.append("")
+    lines.append("🧠 Kết luận:")
+    if stage_num == 1:
+        lines.append("- Giai đoạn 1 → chưa có setup")
+        lines.append("- KHÔNG vào lệnh")
+    elif stage_num == 2:
+        lines.append("- Giai đoạn 2 → chỉ chuẩn bị vùng")
+        lines.append("- Chưa có điểm vào → KHÔNG vào lệnh")
+    else:
+        lines.append("- Giai đoạn 3 → có thể bắt đầu scale")
+        lines.append(f"- Hiện tại {condition} ĐIỀU KIỆN SCALE")
+
+    return "\n".join(lines).strip()
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -2493,7 +3506,45 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     h1_struct = _structure_from_swings(h1c, lookback=260)
     h4_struct = _structure_from_swings(h4c, lookback=260)
     m15_struct = _m15_key_levels(m15c, bias_side=bias_side, lookback=120)
-
+    liquidity_map_v1 = _build_liquidity_map_v1(
+        symbol=symbol,
+        m15c=m15c,
+        h1_trend=h1_trend,
+        htf_pressure_v4=htf_pressure_v4,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        market_state_v2=market_state_v2,
+        playbook_v2=playbook_v2,
+        liquidation_evt=liquidation_evt,
+        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+        range_low=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_LOW"),
+        range_high=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_HIGH"),
+    )
+    base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1
+    
+    entry_sniper = _entry_sniper_v1(
+        m15c=m15c,
+        m15_struct=m15_struct,
+        atr15=atr15,
+        volq=volq,
+    )
+    base.setdefault("meta", {})["entry_sniper"] = entry_sniper
+    
+    pump_dump_v1 = _predict_pump_dump_v1(
+        symbol=symbol,
+        m15c=m15c,
+        h1_trend=h1_trend,
+        htf_pressure_v4=htf_pressure_v4,
+        market_state_v2=market_state_v2,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        volq=volq,
+        atr15=atr15,
+        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+        liquidation_evt=liquidation_evt,
+    )
+    base.setdefault("meta", {})["pump_dump_v1"] = pump_dump_v1
+    
     base.setdefault("meta", {})["structure"] = {
         "H4": h4_struct.get("tag"),
         "H1": h1_struct.get("tag"),
@@ -2996,7 +4047,216 @@ def _safe_float(x):
         return float(s)
     except Exception:
         return None
+def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
+    """Safe NOW-status snapshot for cron/filtering and Telegram rendering.
+    Always returns a dict and never raises.
+    """
+    try:
+        sig = sig if isinstance(sig, dict) else {}
+        meta = sig.get("meta") if isinstance(sig.get("meta"), dict) else {}
+        playbook = meta.get("playbook_v2") if isinstance(meta.get("playbook_v2"), dict) else {}
+        ntz = meta.get("no_trade_zone") if isinstance(meta.get("no_trade_zone"), dict) else {}
+        struct = meta.get("structure") if isinstance(meta.get("structure"), dict) else {}
+        session_v4 = meta.get("session_v4") if isinstance(meta.get("session_v4"), dict) else {}
+        htf_pressure_v4 = meta.get("htf_pressure_v4") if isinstance(meta.get("htf_pressure_v4"), dict) else {}
+        liq_evt = meta.get("liquidation") if isinstance(meta.get("liquidation"), dict) else {}
+        k = meta.get("key_levels") if isinstance(meta.get("key_levels"), dict) else {}
 
+        reasons = []
+        trade_reasons = []
+        setup = 50
+
+        htf_state = str(htf_pressure_v4.get("state") or "").upper()
+        if "STRONG" in htf_state:
+            setup += 12
+            reasons.append("HTF mạnh")
+        elif "WEAK" in htf_state:
+            setup += 6
+            reasons.append("HTF hơi nghiêng")
+        else:
+            setup -= 4
+            reasons.append("HTF chưa đồng thuận")
+
+        m15 = str((struct or {}).get("M15") or "").upper()
+        h1 = str((struct or {}).get("H1") or "").upper()
+        if m15 in ("HH-HL", "LL-LH"):
+            setup += 8
+            reasons.append("M15 rõ cấu trúc")
+        else:
+            setup -= 4
+            reasons.append("M15 chưa rõ")
+        if h1 in ("HH-HL", "LL-LH"):
+            setup += 6
+            reasons.append("H1 rõ cấu trúc")
+        elif h1 == "TRANSITION":
+            setup -= 3
+            reasons.append("H1 đang chuyển pha")
+
+        sess = str(session_v4.get("session_tag") or "").upper()
+        ft = str(session_v4.get("follow_through") or "").upper()
+        fake = str(session_v4.get("fake_move_risk") or "").upper()
+        if "CHOP" in sess:
+            setup -= 6
+            reasons.append("session nhiễu")
+        if ft == "YES":
+            setup += 5
+            reasons.append("có follow-through")
+        elif ft == "NO":
+            setup -= 5
+            reasons.append("thiếu follow-through")
+        if fake == "HIGH":
+            setup -= 8
+            reasons.append("fake risk cao")
+        elif fake == "MEDIUM":
+            setup -= 3
+            reasons.append("fake risk trung bình")
+
+        zlo = _safe_float(playbook.get("zone_low"))
+        zhi = _safe_float(playbook.get("zone_high"))
+        if zlo is not None and zhi is not None:
+            setup += 6
+            reasons.append("có vùng entry")
+        else:
+            setup -= 8
+            reasons.append("chưa có vùng entry")
+
+        rp = None
+        try:
+            rp = float(playbook.get("range_pos"))
+            if rp <= 0.20 or rp >= 0.80:
+                setup += 8
+                reasons.append("đang ở vùng biên")
+            elif 0.30 <= rp <= 0.70:
+                setup -= 10
+                reasons.append("đang ở giữa biên độ")
+        except Exception:
+            rp = None
+
+        if ntz.get("active"):
+            setup -= 8
+            reasons.append("đang ở no-trade zone")
+
+        setup = max(0, min(100, setup))
+
+        last_px = _safe_float(k.get("M15_LAST"))
+        if last_px is None:
+            last_px = _safe_float(sig.get("last_price"))
+        if last_px is None:
+            last_px = _safe_float(sig.get("current_price"))
+        entry = 50
+        tradeable_now = True
+
+        if zlo is None or zhi is None:
+            entry -= 20
+            tradeable_now = False
+            trade_reasons.append("chưa có vùng entry rõ")
+        elif last_px is not None:
+            lo, hi = min(zlo, zhi), max(zlo, zhi)
+            width = max(hi - lo, 1e-9)
+            dist = 0.0
+            if last_px < lo:
+                dist = (lo - last_px) / width
+            elif last_px > hi:
+                dist = (last_px - hi) / width
+            if lo <= last_px <= hi:
+                entry += 25
+            elif dist <= 0.20:
+                entry += 12
+                trade_reasons.append("giá đang gần vùng vào")
+            elif dist <= 0.50:
+                entry -= 8
+                tradeable_now = False
+                trade_reasons.append("chưa vào đúng vùng entry")
+            else:
+                entry -= 22
+                tradeable_now = False
+                trade_reasons.append("giá đang xa vùng entry")
+
+        rec = str(sig.get("recommendation") or "").upper()
+        if rp is not None:
+            if rec in ("🔴 SELL", "SELL", "BÁN") and rp < 0.20:
+                entry -= 25
+                tradeable_now = False
+                trade_reasons.append("SELL đang ở vùng thấp")
+            if rec in ("🟢 BUY", "BUY", "MUA") and rp > 0.80:
+                entry -= 25
+                tradeable_now = False
+                trade_reasons.append("BUY đang ở vùng cao")
+            if 0.30 <= rp <= 0.70:
+                entry -= 18
+                tradeable_now = False
+                trade_reasons.append("đang ở giữa biên độ")
+
+        if ntz.get("active"):
+            entry -= 15
+            tradeable_now = False
+            trade_reasons.append("đang ở vùng no-trade")
+
+        if setup < 60:
+            tradeable_now = False
+            trade_reasons.append("setup chưa đủ mạnh")
+        if entry < 60:
+            tradeable_now = False
+
+        entry = max(0, min(100, entry))
+
+        dedup_reasons = list(dict.fromkeys(reasons))[:5]
+        dedup_trade = list(dict.fromkeys(trade_reasons))[:4]
+
+        if tradeable_now and setup >= 75 and entry >= 70:
+            confidence_level = "HIGH"
+        elif setup >= 60 and entry >= 50:
+            confidence_level = "MEDIUM"
+        else:
+            confidence_level = "LOW"
+
+        risk_points = 0
+        if ntz.get("active"):
+            risk_points += 2
+        if liq_evt.get("ok"):
+            risk_points += 2
+        if fake == "HIGH":
+            risk_points += 2
+        elif fake == "MEDIUM":
+            risk_points += 1
+        if entry < 45:
+            risk_points += 2
+        elif entry < 60:
+            risk_points += 1
+        if setup < 60:
+            risk_points += 1
+
+        if risk_points >= 5:
+            risk_level = "HIGH"
+        elif risk_points >= 3:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+
+        return {
+            "setup_score": int(setup),
+            "entry_score_now": int(entry),
+            "tradeable_now": "YES" if tradeable_now else "NO",
+            "final_score": int(setup),
+            "tradeable": "YES" if tradeable_now else "NO",
+            "score_reasons": dedup_reasons,
+            "tradeable_reasons": dedup_trade,
+            "confidence_level": confidence_level,
+            "risk_level": risk_level,
+        }
+    except Exception as e:
+        return {
+            "setup_score": 0,
+            "entry_score_now": 0,
+            "tradeable_now": "NO",
+            "final_score": 0,
+            "tradeable": "NO",
+            "score_reasons": [f"get_now_status fallback: {e}"],
+            "tradeable_reasons": ["status fallback"],
+            "confidence_level": "LOW",
+            "risk_level": "HIGH",
+        }
+        
 def format_signal(sig: Dict[str, Any]) -> str:
     """Telegram formatter V5: dễ đọc hơn, giữ nguyên logic/meta hiện có."""
     def sf(x):
@@ -3761,17 +5021,31 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
         add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
-    add(lines, "")
-    add(lines, "💧 Thanh khoản:")
-    if liq_lines:
-        for s in liq_lines[:4]:
-            add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
+    liq_map = ((sig.get("meta") or {}).get("liquidity_map_v1") or {})
+    above_strength = str(liq_map.get("above_strength") or "LOW")
+    below_strength = str(liq_map.get("below_strength") or "LOW")
+    above_zone = liq_map.get("above_zone")
+    below_zone = liq_map.get("below_zone")
+    state_text = str(liq_map.get("state_text") or "Chưa thấy sweep/spring rõ")
+    sweep_bias = str(liq_map.get("sweep_bias") or "NEUTRAL")
+    
+    lines.append("")
+    lines.append("💧 Thanh khoản:")
+    if above_zone:
+        lines.append(f"- Liquidity trên: {above_strength} ({_fmt_price_range(above_zone[0], above_zone[1])})")
     else:
-        add(lines, "- Chưa thấy vùng quét thanh khoản rõ")
+        lines.append(f"- Liquidity trên: {above_strength}")
+    if below_zone:
+        lines.append(f"- Liquidity dưới: {below_strength} ({_fmt_price_range(below_zone[0], below_zone[1])})")
+    else:
+        lines.append(f"- Liquidity dưới: {below_strength}")
     if liq_evt.get("ok"):
-        add(lines, f"- Vừa có quét mạnh: {liq_evt.get('side')} | {liq_evt.get('kind')}")
+        add(lines, f"- ⚠️ Vừa có liquidation mạnh: {liq_evt.get('side')} | {liq_evt.get('kind')} → nguy cơ bật ngược cao")
     if sweep_grade_v6 and sweep_grade_v6 != "NONE":
-        add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")
+        add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")            
+    lines.append(f"- Trạng thái: {state_text}")
+    lines.append(f"- Khả năng quét: {sweep_bias}")
+    
 
     add(lines, "")
     add(lines, "✅ Xác nhận:")
@@ -3810,6 +5084,73 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- {s}")
     else:
         add(lines, "- Nếu cấu trúc hiện tại bị phá thì bỏ kịch bản")
+    psych_warnings = []
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+    try:
+        phase_num = int(phase.get('phase')) if phase and phase.get('phase') is not None else None
+    except Exception:
+        phase_num = None
+    rsi_now = None
+    for s in q_lines:
+        ss = str(s)
+        if 'RSI(14) M15:' in ss:
+            try:
+                rsi_now = float(ss.split(':')[-1].strip())
+                break
+            except Exception:
+                pass
+    if rp is not None and rp <= 0.10:
+        psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
+    elif rp is not None and rp >= 0.90:
+        psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
+    if phase_num is not None and phase_num >= 8:
+        psych_warnings.append("⚠️ Late move → vào lệnh dễ dính đảo chiều")
+    if liq_evt.get('ok'):
+        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
+    if rsi_now is not None and rsi_now < 30:
+        psych_warnings.append("⚠️ RSI quá bán → không nên SELL đuổi")
+    elif rsi_now is not None and rsi_now > 70:
+        psych_warnings.append("⚠️ RSI quá mua → không nên BUY đuổi")
+    if 'CHOP' in str(session_v4.get('session_tag') or '').upper():
+        psych_warnings.append("⚠️ Market đang nhiễu → dễ bị quét 2 đầu")
+    if psych_warnings:
+        add(lines, "")
+        add(lines, "🧠 Cảnh báo tâm lý:")
+        for s in psych_warnings[:5]:
+            add(lines, f"- {s}")
+
+    if q_lines:
+        add(lines, "")
+        add(lines, "🧪 Chi tiết bổ sung:")
+        for s in q_lines[:5]:
+            add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
+            
+    if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
+        add(lines, "")
+        add(lines, "🧩 Toàn Cảnh Thị Trường:")
+        if session_v4.get("session_tag"):
+            add(lines, f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
+        # FIX: define trước
+        if htf_pressure_v4.get("state"):
+            add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
+            htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
+            htf_state = str(htf_pressure_v4.get("state") or "")
+            if "BULLISH" in htf_state and rec ("SELL", "BÁN"):
+                add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+            if "BEARISH" in htf_state and rec ("BUY", "MUA"):
+                add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+        # session vs HTF
+        comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4)
+        if comment:
+            add(lines, f"- {comment}")
+        if macro_v4.get("headline"):
+            add(lines, f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
+        if playbook_v4.get("quality"):
+            trig = ", ".join(playbook_v4.get("trigger_pack") or [])
+            add(lines, f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
     
     add(lines, "")
     add(lines, "🧯 Trigger quan trọng:")
@@ -3831,7 +5172,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- Alignment: {ema_pack.get('alignment', 'NO')}")
         if ema_pack.get("zone"):
             add(lines, f"- Vị trí giá vs EMA: {ema_pack.get('zone')}")
-
+    pump_dump = ((sig.get("meta") or {}).get("pump_dump_v1") or {})
+    compression = str(pump_dump.get("compression") or "LOW")
+    bias_bung = str(pump_dump.get("bias") or "NEUTRAL")
+    probability = str(pump_dump.get("probability") or "LOW")
+    timing = str(pump_dump.get("timing") or "CHƯA RÕ")
+    reasons = pump_dump.get("reasons") or []
+    sniper = ((sig.get("meta") or {}).get("entry_sniper") or {})
+    lines.append("")
+    lines.append("🎯 ENTRY SNIPER:")
+    lines.append(f"- Cây chỉ hướng: {sniper.get('direction', 'NONE')} ({sniper.get('strength', '-')})")
+    lines.append(f"- Điểm nổ: {sniper.get('trigger', 'NONE')}")
+    lines.append(f"- Trạng thái: {sniper.get('state', 'KHÔNG CÓ SETUP')}")
+    lines.append("")
+    lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
+    lines.append(f"- Compression: {compression}")
+    lines.append(f"- Bias bung: {bias_bung}")
+    lines.append(f"- Xác suất: {probability}")
+    lines.append(f"- Thời điểm: {timing}")
+    if reasons:
+        lines.append(f"- Lý do: {' + '.join(reasons[:3])}")
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
     
@@ -3883,36 +5243,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
     except Exception:
         pass
-
-    if q_lines:
-        add(lines, "")
-        add(lines, "🧪 Chi tiết bổ sung:")
-        for s in q_lines[:5]:
-            add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
-            
-    if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
-        add(lines, "")
-        add(lines, "🧩 Toàn Cảnh Thị Trường:")
-        if session_v4.get("session_tag"):
-            add(lines, f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
-        # FIX: define trước
-        if htf_pressure_v4.get("state"):
-            add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-            htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
-            htf_state = str(htf_pressure_v4.get("state") or "")
-            if "BULLISH" in htf_state and rec in ("SELL", "BÁN"):
-                add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-            if "BEARISH" in htf_state and rec in ("BUY", "MUA"):
-                add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-        # session vs HTF
-        comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4)
-        if comment:
-            add(lines, f"- {comment}")
-        if macro_v4.get("headline"):
-            add(lines, f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
-        if playbook_v4.get("quality"):
-            trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-            add(lines, f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
 
     out = []
     for line in lines:
