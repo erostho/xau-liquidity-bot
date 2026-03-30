@@ -2547,7 +2547,9 @@ def build_scale_plan_v2(
     if not m15c or not h1c or not h4c:
         base["notes"].append("Thiếu dữ liệu M15/H1/H4")
         return base
-
+    ema_pack = _calc_ema_pack(m15c)
+    if ema_pack:
+        base["ema"] = ema_pack
     atr15 = _atr(m15c, 14) or 0.0
     h1_trend = _trend_label(h1c)
     h4_trend = _trend_label(h4c)
@@ -2724,7 +2726,21 @@ def format_scale_plan_v2(plan: dict) -> str:
         lines.append(f"- TP1 tham khảo: {_nf2(plan.get('tp1'))}")
     if plan.get("tp2") is not None:
         lines.append(f"- TP2 tham khảo: {_nf2(plan.get('tp2'))}")
-
+    
+    ema_pack = plan.get("ema") or {}
+    if ema_pack:
+        lines.append("")
+        lines.append("📉 EMA FILTER:")
+        if ema_pack.get("ema34") is not None:
+            lines.append(f"- EMA34: {_nf2(ema_pack.get('ema34'))}")
+        if ema_pack.get("ema89") is not None:
+            lines.append(f"- EMA89: {_nf2(ema_pack.get('ema89'))}")
+        if ema_pack.get("ema200") is not None:
+            lines.append(f"- EMA200: {_nf2(ema_pack.get('ema200'))}")
+        lines.append(f"- Trend: {ema_pack.get('trend', 'N/A')}")
+        lines.append(f"- Alignment: {ema_pack.get('alignment', 'NO')}")
+        if ema_pack.get("zone"):
+            lines.append(f"- Vị trí giá vs EMA: {ema_pack.get('zone')}")
     lines.append("")
     lines.append("🧯 Invalidation:")
     if direction == "SELL":
