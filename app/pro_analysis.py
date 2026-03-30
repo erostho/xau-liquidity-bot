@@ -2118,7 +2118,85 @@ def _fmt_price_range(a, b) -> str:
     except Exception:
         return "n/a"
 
+def _liq_tol_from_context(recent_hi: float, recent_lo: float, atr15: float | None) -> float:
+    span = max(1e-9, float(recent_hi) - float(recent_lo))
+    a = float(atr15 or 0.0)
+    return max(span * 0.015, a * 0.12 if a > 0 else span * 0.02)
 
+
+def _count_hits_near_level(values: list[float], level: float, tol: float) -> int:
+    return sum(1 for v in values if abs(float(v) - float(level)) <= tol)
+
+
+def _equal_cluster_strength(values: list[float], tol: float, min_hits: int = 2) -> tuple[int, tuple[float, float] | None]:
+    """
+    Tìm cụm equal highs / equal lows đơn giản.
+    Return:
+    - strength score (0..3)
+    - zone (lo, hi) hoặc None
+    """
+    if not values:
+        return 0, None
+
+    vals = sorted(float(v) for v in values)
+    best_hits = 0
+    best_center = None
+
+    for v in vals:
+        hits = [x for x in vals if abs(x - v) <= tol]
+        if len(hits) > best_hits:
+            best_hits = len(hits)
+            best_center = sum(hits) / len(hits)
+
+    if best_hits < min_hits or best_center is None:
+        return 0, None
+
+    if best_hits >= 4:
+        score = 3
+    elif best_hits == 3:
+        score = 2
+    else:
+        score = 1
+
+    return score, (best_center - tol, best_center + tol)
+
+
+def _distance_score(cur: float, zone: tuple[float, float] | None, recent_span: float) -> int:
+    """
+    Giá càng gần pool thanh khoản thì khả năng quét đầu đó càng cao hơn.
+    Score 0..3
+    """
+    if zone is None:
+        return 0
+
+    zlo, zhi = zone
+    if zlo <= cur <= zhi:
+        return 3
+
+    dist = min(abs(cur - zlo), abs(cur - zhi))
+    span = max(1e-9, recent_span)
+
+    if dist <= 0.08 * span:
+        return 3
+    if dist <= 0.16 * span:
+        return 2
+    if dist <= 0.28 * span:
+        return 1
+    return 0
+
+
+def _untouched_bonus(cur: float, highs: list[float], lows: list[float], recent_hi: float, recent_lo: float, tol: float) -> tuple[int, int]:
+    """
+    Pool nào ít bị chạm gần đây hơn thì hay còn stop hơn.
+    Return: (above_bonus, below_bonus)
+    """
+    hi_hits = _count_hits_near_level(highs[-8:], recent_hi, tol) if highs else 0
+    lo_hits = _count_hits_near_level(lows[-8:], recent_lo, tol) if lows else 0
+
+    above_bonus = 1 if hi_hits <= 1 else 0
+    below_bonus = 1 if lo_hits <= 1 else 0
+    return above_bonus, below_bonus
+    
 def _build_liquidity_map_v1(
     symbol: str,
     m15c,
@@ -2134,10 +2212,10 @@ def _build_liquidity_map_v1(
     range_high: float | None,
 ) -> dict:
     """
-    Fake heatmap / liquidity map:
-    - Liquidity trên
-    - Liquidity dưới
-    - Sweep bias (khả năng quét)
+    Liquidity map upgraded:
+    - vẫn giữ output keys cũ
+    - đọc rõ hơn pool thanh khoản trên / dưới
+    - cố gắng trả lời đầu nào dễ bị MM quét trước
     """
     out = {
         "above_strength": "LOW",
@@ -2154,54 +2232,89 @@ def _build_liquidity_map_v1(
         return out
 
     closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
-    use = closed[-20:] if len(closed) >= 20 else closed
+    use = closed[-24:] if len(closed) >= 24 else closed
+    if len(use) < 12:
+        out["state_text"] = "Thiếu dữ liệu để đọc thanh khoản"
+        return out
 
     highs = [float(c.high) for c in use]
     lows = [float(c.low) for c in use]
+    closes = [float(c.close) for c in use]
 
     recent_hi = max(highs)
     recent_lo = min(lows)
+    cur = float(closes[-1])
+    span = max(1e-9, recent_hi - recent_lo)
+    atr15 = _atr(closed, 14) or 0.0
+    tol = _liq_tol_from_context(recent_hi, recent_lo, atr15)
 
-    # ===== 1) Cụm liquidity trên / dưới =====
-    # đếm số lần chạm vùng high / low gần nhau
-    hi_band = max(1e-9, (recent_hi - recent_lo) * 0.08)
-    lo_band = hi_band
-
-    above_hits = sum(1 for x in highs if abs(x - recent_hi) <= hi_band)
-    below_hits = sum(1 for x in lows if abs(x - recent_lo) <= lo_band)
+    # ===== 1) cụm liquidity cơ bản =====
+    hi_hits = _count_hits_near_level(highs, recent_hi, tol)
+    lo_hits = _count_hits_near_level(lows, recent_lo, tol)
 
     above_score = 0
     below_score = 0
+    reasons = []
 
-    if above_hits >= 2:
+    if hi_hits >= 2:
         above_score += 2
-    if above_hits >= 4:
+        reasons.append("phía trên có cụm đỉnh gần nhau")
+    if hi_hits >= 4:
         above_score += 1
 
-    if below_hits >= 2:
+    if lo_hits >= 2:
         below_score += 2
-    if below_hits >= 4:
+        reasons.append("phía dưới có cụm đáy gần nhau")
+    if lo_hits >= 4:
         below_score += 1
 
-    # structure phụ trợ
+    # ===== 2) equal highs / equal lows =====
+    eh_score, eh_zone = _equal_cluster_strength(highs, tol, min_hits=2)
+    el_score, el_zone = _equal_cluster_strength(lows, tol, min_hits=2)
+
+    if eh_score > 0:
+        above_score += eh_score
+        out["above_zone"] = eh_zone
+        reasons.append("equal highs phía trên")
+    else:
+        out["above_zone"] = (recent_hi - tol, recent_hi)
+
+    if el_score > 0:
+        below_score += el_score
+        out["below_zone"] = el_zone
+        reasons.append("equal lows phía dưới")
+    else:
+        out["below_zone"] = (recent_lo, recent_lo + tol)
+
+    # ===== 3) structure phụ trợ =====
     tag = str(m15_struct_tag or "").upper()
     if "HH" in tag or "HL" in tag:
         above_score += 1
     if "LL" in tag or "LH" in tag:
         below_score += 1
 
-    # zones
-    above_zone_lo = recent_hi - hi_band
-    above_zone_hi = recent_hi
-    below_zone_lo = recent_lo
-    below_zone_hi = recent_lo + lo_band
+    # ===== 4) pool nào gần giá hơn → dễ sweep trước hơn =====
+    above_dist_score = _distance_score(cur, out["above_zone"], span)
+    below_dist_score = _distance_score(cur, out["below_zone"], span)
+    above_score += above_dist_score
+    below_score += below_dist_score
 
-    out["above_strength"] = _liquidity_strength_label(above_score)
-    out["below_strength"] = _liquidity_strength_label(below_score)
-    out["above_zone"] = (above_zone_lo, above_zone_hi)
-    out["below_zone"] = (below_zone_lo, below_zone_hi)
+    if above_dist_score > below_dist_score:
+        reasons.append("giá đang gần pool phía trên hơn")
+    elif below_dist_score > above_dist_score:
+        reasons.append("giá đang gần pool phía dưới hơn")
 
-    # ===== 2) state text =====
+    # ===== 5) pool nào còn untouched hơn =====
+    above_bonus, below_bonus = _untouched_bonus(cur, highs, lows, recent_hi, recent_lo, tol)
+    above_score += above_bonus
+    below_score += below_bonus
+
+    if above_bonus > 0:
+        reasons.append("pool phía trên còn tương đối untouched")
+    if below_bonus > 0:
+        reasons.append("pool phía dưới còn tương đối untouched")
+
+    # ===== 6) trạng thái / liquidation text =====
     liq_evt = liquidation_evt or {}
     if liq_evt.get("ok"):
         side = str(liq_evt.get("side") or "")
@@ -2210,16 +2323,18 @@ def _build_liquidity_map_v1(
     else:
         out["state_text"] = "Chưa thấy sweep/spring rõ"
 
-    # ===== 3) Sweep bias: khả năng quét đầu nào =====
-    # dùng HTF + flow + vị trí giá + playbook
+    # ===== 7) bias tổng hợp như cũ, nhưng cho liquidity weight lớn hơn =====
     pump_score = 0
     dump_score = 0
-    reasons = []
 
     htf_state = str((htf_pressure_v4 or {}).get("state") or "").upper()
     flow_favored = str((flow_state or {}).get("favored_side") or "").upper()
     plan = str((playbook_v2 or {}).get("plan") or "").upper()
     ms = str(market_state_v2 or "").upper()
+
+    # liquidity actual pools
+    pump_score += below_score
+    dump_score += above_score
 
     # HTF
     if "BEARISH" in htf_state or str(h1_trend).lower() == "bearish":
@@ -2237,7 +2352,7 @@ def _build_liquidity_map_v1(
         pump_score += 1
         reasons.append("flow ưu tiên BUY")
 
-    # Vị trí trong range
+    # Range position
     try:
         rp = float(range_pos) if range_pos is not None else None
     except Exception:
@@ -2251,7 +2366,7 @@ def _build_liquidity_map_v1(
             dump_score += 1
             reasons.append("đang ở vùng cao")
 
-    # Playbook / market state
+    # Playbook
     if plan in ("BOUNCE_TO_SELL", "SELL_RALLY", "WAIT_BOUNCE_TO_SELL"):
         dump_score += 2
         reasons.append("playbook nghiêng SELL")
@@ -2262,30 +2377,44 @@ def _build_liquidity_map_v1(
     if ms in ("CHOP", "TRANSITION"):
         reasons.append("market nhiễu")
 
-    # Nếu đang ở vùng thấp nhưng bias lớn là SELL -> thường dễ quét lên rồi mới dump
-    if rp is not None and rp <= 0.20 and dump_score > pump_score:
-        out["sweep_bias"] = "UP → DOWN"
-        reasons.append("dễ quét lên trước rồi mới dump")
-    elif rp is not None and rp >= 0.80 and pump_score > dump_score:
-        out["sweep_bias"] = "DOWN → UP"
-        reasons.append("dễ quét xuống trước rồi mới pump")
-    else:
-        if dump_score > pump_score:
-            out["sweep_bias"] = "DOWN"
-        elif pump_score > dump_score:
+    # ===== 8) output strength =====
+    out["above_strength"] = _liquidity_strength_label(above_score)
+    out["below_strength"] = _liquidity_strength_label(below_score)
+
+    # ===== 9) quyết định quét đầu nào trước =====
+    # Logic:
+    # - nếu price đang cao + pool trên mạnh + HTF bearish -> UP → DOWN
+    # - nếu price đang thấp + pool dưới mạnh + HTF bullish -> DOWN → UP
+    # - còn lại: nghiêng quét theo phía có score mạnh hơn
+    if rp is not None and rp >= 0.75 and above_score >= below_score:
+        if dump_score >= pump_score:
+            out["sweep_bias"] = "UP → DOWN"
+            reasons.append("ở vùng cao + pool trên rõ → dễ quét lên trước")
+        else:
             out["sweep_bias"] = "UP"
+    elif rp is not None and rp <= 0.25 and below_score >= above_score:
+        if pump_score >= dump_score:
+            out["sweep_bias"] = "DOWN → UP"
+            reasons.append("ở vùng thấp + pool dưới rõ → dễ quét xuống trước")
+        else:
+            out["sweep_bias"] = "DOWN"
+    else:
+        if dump_score - pump_score >= 2:
+            out["sweep_bias"] = "UP → DOWN" if above_score >= below_score else "DOWN"
+        elif pump_score - dump_score >= 2:
+            out["sweep_bias"] = "DOWN → UP" if below_score >= above_score else "UP"
         else:
             out["sweep_bias"] = "NEUTRAL"
 
-    # Nếu vừa liquidation mạnh thì giảm độ tự tin, thiên về quét 2 đầu
-    if liq_evt.get("ok") and out["sweep_bias"] in ("DOWN", "UP"):
+    # liquidation vừa xảy ra → hạ độ chắc chắn
+    if liq_evt.get("ok") and out["sweep_bias"] in ("UP", "DOWN", "UP → DOWN", "DOWN → UP"):
         out["sweep_bias"] = out["sweep_bias"] + " (cẩn thận quét 2 đầu)"
 
     dedup = []
     for r in reasons:
         if r not in dedup:
             dedup.append(r)
-    out["reasons"] = dedup[:4]
+    out["reasons"] = dedup[:5]
 
     return out
 
@@ -5061,7 +5190,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")            
     lines.append(f"- Trạng thái: {state_text}")
     lines.append(f"- Khả năng quét: {sweep_bias}")
-    
+    liq_reasons = liq_map.get("reasons") or []
+    if liq_reasons:
+        lines.append(f"- Lý do nghiêng quét: {', '.join(liq_reasons[:3])}")
 
     add(lines, "")
     add(lines, "✅ Xác nhận:")
