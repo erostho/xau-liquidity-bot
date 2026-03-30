@@ -1018,7 +1018,19 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append(f"- {s}")
     else:
         lines.append("- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
-
+    if ema_pack:
+        lines.append("")
+        lines.append("📉 EMA FILTER:")
+        if ema_pack.get("ema34") is not None:
+            lines.append(f"- EMA34: {_f(ema_pack.get('ema34'))}")
+        if ema_pack.get("ema89") is not None:
+            lines.append(f"- EMA89: {_f(ema_pack.get('ema89'))}")
+        if ema_pack.get("ema200") is not None:
+            lines.append(f"- EMA200: {_f(ema_pack.get('ema200'))}")
+        lines.append(f"- Trend: {ema_pack.get('trend', 'N/A')}")
+        lines.append(f"- Alignment: {ema_pack.get('alignment', 'NO')}")
+        if ema_pack.get("zone"):
+            lines.append(f"- Vị trí giá vs EMA: {ema_pack.get('zone')}")
     lines.append("")
     lines.append("🗺 Kịch bản chính:")
     main_plan_text = _review_main_plan(side, scenario_v3 if isinstance(scenario_v3, dict) else {}, playbook if isinstance(playbook, dict) else {}, grade, verdict_text, no_trade_zone if isinstance(no_trade_zone, dict) else {})
