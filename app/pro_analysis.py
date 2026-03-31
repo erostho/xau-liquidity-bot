@@ -3746,7 +3746,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         range_low=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_LOW"),
         range_high=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_HIGH"),
     )
-    print("MM_PLAY_DEBUG =", base.get("meta", {}).get("mm_real_play_v1"))
+
     base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1
     mm_play = _build_mm_real_play_v1(
         liq_map=liquidity_map_v1,
@@ -3756,7 +3756,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         ema_pack=ema_pack,
     )
     base.setdefault("meta", {})["mm_real_play_v1"] = mm_play
-    
+    print("MM_PLAY_DEBUG =", base.get("meta", {}).get("mm_real_play_v1"), flush=True) 
     entry_sniper = _entry_sniper_v1(
         m15c=m15c,
         m15_struct=m15_struct,
