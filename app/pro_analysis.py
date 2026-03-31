@@ -5293,18 +5293,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
     liq_reasons = liq_map.get("reasons") or []
     if liq_reasons:
         lines.append(f"- Lý do nghiêng quét: {', '.join(liq_reasons[:3])}")
-    lines.append("DEBUG_MM_BLOCK_ALIVE")  
-    mm_play = ((sig.get("meta") or {}).get("mm_real_play_v1") or {})
-    if mm_play:
-        lines.append("")
-        lines.append("🎯 KỊCH BẢN MM (REAL PLAY):")
-        lines.append(f"- Kịch bản: {mm_play.get('headline')}")
-        lines.append(f"- Đường đi: {mm_play.get('path')}")
-        lines.append(f"- Entry chuẩn: {mm_play.get('entry_hint')}")
-    
-        reasons = mm_play.get("reason") or []
-        if reasons:
-            lines.append(f"- Lý do: {', '.join(reasons[:3])}")
+        
+    meta = (sig.get("meta") or {})
+    mm_play = meta.get("mm_real_play_v1")
+    # fallback: nếu analyze_pro chưa nhét được vào meta thì build lại ngay tại format
+    if not isinstance(mm_play, dict) or not mm_play:
+        mm_play = _build_mm_real_play_v1(
+            liq_map=liq_map,
+            range_pos=(playbook or {}).get("range_pos"),
+            htf_pressure_v4=htf_pressure_v4,
+            playbook_v2=playbook,
+            ema_pack=(meta.get("ema") or {}),
+        )
+    lines.append("")
+    lines.append("🎯 KỊCH BẢN MM (REAL PLAY):")
+    lines.append(f"- Kịch bản: {mm_play.get('headline', 'Chưa rõ')}")
+    lines.append(f"- Đường đi: {mm_play.get('path', 'NEUTRAL')}")
+    lines.append(f"- Entry chuẩn: {mm_play.get('entry_hint', 'Chờ thêm xác nhận')}")
+    reasons = mm_play.get("reason") or []
+    if reasons:
+        lines.append(f"- Lý do: {', '.join(reasons[:3])}")
             
     add(lines, "")
     add(lines, "✅ Xác nhận:")
