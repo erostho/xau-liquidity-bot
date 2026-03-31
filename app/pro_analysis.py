@@ -3169,18 +3169,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         slope = (sum(last10)/10.0) - (sum(prev10)/10.0)
 
     def _predict_pump_dump_v1(
-    symbol: str,
-    m15c: Sequence[Any],
-    h1_trend: str,
-    htf_pressure_v4: Dict[str, Any],
-    market_state_v2: str,
-    flow_state: Dict[str, Any],
-    range_pos: Optional[float],
-    volq: Dict[str, Any],
-    atr15: float,
-    m15_struct_tag: str,
-    liquidation_evt: Dict[str, Any],
-) -> Dict[str, Any]:
+        symbol: str,
+        m15c: Sequence[Any],
+        h1_trend: str,
+        htf_pressure_v4: Dict[str, Any],
+        market_state_v2: str,
+        flow_state: Dict[str, Any],
+        range_pos: Optional[float],
+        volq: Dict[str, Any],
+        atr15: float,
+        m15_struct_tag: str,
+        liquidation_evt: Dict[str, Any],
+    ) -> Dict[str, Any]:
     """
     Trả về:
     - Compression
