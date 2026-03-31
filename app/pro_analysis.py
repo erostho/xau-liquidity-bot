@@ -3747,6 +3747,15 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         range_high=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_HIGH"),
     )
     base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1
+    mm_play = _build_mm_real_play_v1(
+        liq_map=liquidity_map_v1,
+        range_pos=range_pos,
+        htf_pressure_v4=htf_pressure_v4,
+        playbook_v2=playbook_v2,
+        ema_pack=ema_pack,
+    )
+    meta["mm_real_play_v1"] = mm_play
+    
     entry_sniper = _entry_sniper_v1(
         m15c=m15c,
         m15_struct=m15_struct,
@@ -4249,17 +4258,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
     base["last_price"] = float(last_close_15)
     base["current_price"] = float(last_close_15)
-    mm_play = _build_mm_real_play_v1(
-        liq_map=liquidity_map_v1,
-        range_pos=range_pos,
-        htf_pressure_v4=htf_pressure_v4,
-        playbook_v2=playbook_v2,
-        ema_pack=ema_pack,
-    )
-    
-    meta["mm_real_play_v1"] = mm_play
     return base
-
     # =========================
     # Formatter (MUST be named format_signal for main.py import)
     # =========================
