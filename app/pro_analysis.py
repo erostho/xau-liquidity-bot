@@ -1847,6 +1847,35 @@ def _liquidity_side_hint(range_pos: Optional[float], m15_struct_tag: str) -> Dic
         "reasons": reasons,
     }
 
+
+def _predict_pump_dump_v1(
+    symbol: str,
+    m15c: Sequence[Any],
+    h1_trend: str,
+    htf_pressure_v4: Dict[str, Any],
+    market_state_v2: str,
+    flow_state: Dict[str, Any],
+    range_pos: Optional[float],
+    volq: Dict[str, Any],
+    atr15: float,
+    m15_struct_tag: str,
+    liquidation_evt: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Trả về:
+    - Compression
+    - Bias bung
+    - Xác suất
+    - Thời điểm
+    - Lý do
+    """
+    comp = _compression_label(m15c, volq, atr15)
+    liq = _liquidity_side_hint(range_pos, m15_struct_tag)
+
+    pump_score = 0
+    dump_score = 0
+    reasons = []
+
     # 1) Structure M15
     tag = str(m15_struct_tag or "").upper()
     if "LL" in tag or "LH" in tag:
@@ -3007,7 +3036,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         major_bearish = str(h1_tag) in ("LL-LH", "LH–LL", "LH-LL")
     except Exception:
         major_bearish = False
-
+        return base
 
     m15c = _safe_candles(m15)
     m30c = _safe_candles(m30)
@@ -3168,34 +3197,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         prev10 = [c.close for c in use[-20:-10]]
         slope = (sum(last10)/10.0) - (sum(prev10)/10.0)
 
-    def _predict_pump_dump_v1(
-        symbol: str,
-        m15c: Sequence[Any],
-        h1_trend: str,
-        htf_pressure_v4: Dict[str, Any],
-        market_state_v2: str,
-        flow_state: Dict[str, Any],
-        range_pos: Optional[float],
-        volq: Dict[str, Any],
-        atr15: float,
-        m15_struct_tag: str,
-        liquidation_evt: Dict[str, Any],
-    ) -> Dict[str, Any]:
-    """
-    Trả về:
-    - Compression
-    - Bias bung
-    - Xác suất
-    - Thời điểm
-    - Lý do
-    """
-    comp = _compression_label(m15c, volq, atr15)
-    liq = _liquidity_side_hint(range_pos, m15_struct_tag)
-
-    pump_score = 0
-    dump_score = 0
-    reasons = []
-    
     # ===== 1) LIQUIDITY WARNING (chưa quét nhưng nguy hiểm) =====
     # Nguy cơ quét khi giá tiệm cận swing + có động lượng (rsi/slope) -> in vào context_lines
     def _liquidity_warning_lines(cur_price: float) -> List[str]:
@@ -4005,17 +4006,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     half_ok = (bias_ok == 1) and (score3 >= 2) and hl_hold_ok and (not major_bearish)
 
     # FULL must be a MAJOR signal: confirm M15 close breaks the MAJOR level (H1 HH/LL), not just a minor swing.
-    # FULL must be a MAJOR signal
     major_bos_level = h1_struct.get("hh") if bias_side == "BUY" else h1_struct.get("ll")
-    m15_last_close = float(m15c[-1].close) if m15c else None
     try:
-        major_bos_confirmed = (
-            major_bos_level is not None
-            and m15_last_close is not None
-            and (
-                (m15_last_close > float(major_bos_level)) if bias_side == "BUY"
-                else (m15_last_close < float(major_bos_level))
-            )
+        major_bos_confirmed = (major_bos_level is not None) and (
+            (m15_last_close > float(major_bos_level)) if bias_side == "BUY" else (m15_last_close < float(major_bos_level))
         )
     except Exception:
         major_bos_confirmed = False
