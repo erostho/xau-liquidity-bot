@@ -4224,17 +4224,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
-    
-    mm_play = _build_mm_real_play_v1(
-        liq_map=liquidity_map_v1,
-        range_pos=range_pos,
-        htf_pressure_v4=htf_pressure_v4,
-        playbook_v2=playbook_v2,
-        ema_pack=ema_pack,
-    )
-    
-    meta["mm_real_play_v1"] = mm_play
-    
+        
     sweep_grade_v6 = "NONE"
     if bias_side == "BUY":
         sweep_grade_v6 = spring_buy.get("grade") if spring_buy.get("ok") else sweep_buy.get("grade")
@@ -4259,6 +4249,15 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
     base["last_price"] = float(last_close_15)
     base["current_price"] = float(last_close_15)
+    mm_play = _build_mm_real_play_v1(
+        liq_map=liquidity_map_v1,
+        range_pos=range_pos,
+        htf_pressure_v4=htf_pressure_v4,
+        playbook_v2=playbook_v2,
+        ema_pack=ema_pack,
+    )
+    
+    meta["mm_real_play_v1"] = mm_play
     return base
 
     # =========================
