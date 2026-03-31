@@ -3757,6 +3757,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     )
     base.setdefault("meta", {})["mm_real_play_v1"] = mm_play
     print("MM_PLAY_DEBUG =", base.get("meta", {}).get("mm_real_play_v1"), flush=True) 
+    
     entry_sniper = _entry_sniper_v1(
         m15c=m15c,
         m15_struct=m15_struct,
@@ -5292,7 +5293,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     liq_reasons = liq_map.get("reasons") or []
     if liq_reasons:
         lines.append(f"- Lý do nghiêng quét: {', '.join(liq_reasons[:3])}")
-        
+    lines.append("DEBUG_MM_BLOCK_ALIVE")  
     mm_play = ((sig.get("meta") or {}).get("mm_real_play_v1") or {})
     if mm_play:
         lines.append("")
