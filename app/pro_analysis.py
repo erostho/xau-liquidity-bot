@@ -1966,7 +1966,12 @@ def _predict_pump_dump_v1(
     for x in reasons:
         if x not in final_reasons:
             final_reasons.append(x)
-
+    sweep = str(liquidity_map_v1.get("sweep_bias") or "")
+    if "UP → DOWN" in sweep:
+        pump_bias = "FAKE PUMP → DUMP"
+    
+    elif "DOWN → UP" in sweep:
+        pump_bias = "FAKE DUMP → PUMP"
     return {
         "compression": comp_label,
         "bias": bias,
@@ -1976,12 +1981,7 @@ def _predict_pump_dump_v1(
         "pump_score": pump_score,
         "dump_score": dump_score,
     }
-    sweep = str(liquidity_map_v1.get("sweep_bias") or "")
-    if "UP → DOWN" in sweep:
-        pump_bias = "FAKE PUMP → DUMP"
-    
-    elif "DOWN → UP" in sweep:
-        pump_bias = "FAKE DUMP → PUMP"
+
 
 def _entry_sniper_v1(
     m15c,
