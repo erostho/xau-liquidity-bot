@@ -3754,7 +3754,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         playbook_v2=playbook_v2,
         ema_pack=ema_pack,
     )
-    meta["mm_real_play_v1"] = mm_play
+    base.setdefault("meta", {})["mm_real_play_v1"] = mm_play
     
     entry_sniper = _entry_sniper_v1(
         m15c=m15c,
