@@ -1976,6 +1976,12 @@ def _predict_pump_dump_v1(
         "pump_score": pump_score,
         "dump_score": dump_score,
     }
+    sweep = str(liquidity_map_v1.get("sweep_bias") or "")
+    if "UP → DOWN" in sweep:
+        pump_bias = "FAKE PUMP → DUMP"
+    
+    elif "DOWN → UP" in sweep:
+        pump_bias = "FAKE DUMP → PUMP"
 
 def _entry_sniper_v1(
     m15c,
@@ -2417,7 +2423,82 @@ def _build_liquidity_map_v1(
     out["reasons"] = dedup[:5]
 
     return out
+def _build_mm_real_play_v1(
+    liq_map: dict | None,
+    range_pos: float | None,
+    htf_pressure_v4: dict | None,
+    playbook_v2: dict | None,
+    ema_pack: dict | None,
+) -> dict:
 
+    out = {
+        "headline": "Chưa có kịch bản MM rõ",
+        "path": "NEUTRAL",
+        "entry_hint": "Chờ thêm xác nhận",
+        "reason": [],
+    }
+
+    liq_map = liq_map or {}
+    htf_pressure_v4 = htf_pressure_v4 or {}
+    playbook_v2 = playbook_v2 or {}
+    ema_pack = ema_pack or {}
+
+    sweep_bias = str(liq_map.get("sweep_bias") or "NEUTRAL").upper()
+    above_strength = str(liq_map.get("above_strength") or "LOW").upper()
+    below_strength = str(liq_map.get("below_strength") or "LOW").upper()
+    htf_state = str(htf_pressure_v4.get("state") or "").upper()
+    plan = str(playbook_v2.get("plan") or "").upper()
+    ema_trend = str(ema_pack.get("trend") or "MIXED").upper()
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    reasons = []
+
+    # ===== UP → DOWN =====
+    if sweep_bias.startswith("UP → DOWN") or (
+        rp is not None and rp >= 0.80 and above_strength in ("HIGH", "MEDIUM")
+    ):
+        reasons.append("pool phía trên rõ")
+        if rp and rp >= 0.80:
+            reasons.append("giá ở vùng cao")
+        if "BEARISH" in htf_state:
+            reasons.append("HTF nghiêng giảm")
+
+        out["headline"] = "Quét đỉnh rồi đạp xuống"
+        out["path"] = "UP → DOWN"
+        out["entry_hint"] = "Chờ sweep đỉnh → fail giữ → SELL"
+        out["reason"] = reasons[:4]
+        return out
+
+    # ===== DOWN → UP =====
+    if sweep_bias.startswith("DOWN → UP") or (
+        rp is not None and rp <= 0.20 and below_strength in ("HIGH", "MEDIUM")
+    ):
+        reasons.append("pool phía dưới rõ")
+        if rp and rp <= 0.20:
+            reasons.append("giá ở vùng thấp")
+        if "BULLISH" in htf_state:
+            reasons.append("HTF nghiêng tăng")
+
+        out["headline"] = "Quét đáy rồi kéo lên"
+        out["path"] = "DOWN → UP"
+        out["entry_hint"] = "Chờ sweep đáy → bật mạnh → BUY"
+        out["reason"] = reasons[:4]
+        return out
+
+    # ===== SIDEWAY =====
+    if above_strength == "HIGH" and below_strength == "HIGH":
+        reasons.append("2 đầu đều có liquidity")
+
+    out["headline"] = "Market dễ quét 2 đầu"
+    out["path"] = "2-SIDE"
+    out["entry_hint"] = "Đứng ngoài chờ clear 1 phía"
+    out["reason"] = reasons[:4]
+
+    return out
 def _nf2(x) -> str:
     try:
         return f"{float(x):.2f}"
@@ -3666,7 +3747,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         range_high=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_HIGH"),
     )
     base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1
-    
     entry_sniper = _entry_sniper_v1(
         m15c=m15c,
         m15_struct=m15_struct,
@@ -4104,13 +4184,23 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             stars = min(stars, 2)
     except Exception:
         pass
-
+    try:
+        if range_pos is not None:
+            if range_pos >= 0.8:
+                if str(liquidity_map_v1.get("sweep_bias")).startswith("UP"):
+                    recommendation = "SELL"
+    
+            if range_pos <= 0.2:
+                if str(liquidity_map_v1.get("sweep_bias")).startswith("DOWN"):
+                    recommendation = "BUY"
+    except:
+        pass
     quality_lines.append("RR ~ 1:2")
     if rdist is not None:
         quality_lines.append(f"R~{rdist:.2f} | SL=MIN(Liq, ATR, Risk) (risk engine)")
-
     stars = max(1, min(5, int(stars)))
-
+    # FIX ưu tiên theo liquidity
+    
     # ===== GD2 final attach with scoring-aware no-trade =====
     no_trade_zone = _detect_no_trade_zone_v2(
         bias_side,
@@ -4134,7 +4224,17 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
-
+    
+    mm_play = _build_mm_real_play_v1(
+        liq_map=liquidity_map_v1,
+        range_pos=range_pos,
+        htf_pressure_v4=htf_pressure_v4,
+        playbook_v2=playbook_v2,
+        ema_pack=ema_pack,
+    )
+    
+    meta["mm_real_play_v1"] = mm_play
+    
     sweep_grade_v6 = "NONE"
     if bias_side == "BUY":
         sweep_grade_v6 = spring_buy.get("grade") if spring_buy.get("ok") else sweep_buy.get("grade")
@@ -4142,7 +4242,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         sweep_grade_v6 = spring_sell.get("grade") if spring_sell.get("ok") else sweep_sell.get("grade")
     base.setdefault("meta", {})["grade_v6"] = _grade_v6(base.get("meta", {}), trade_mode, sweep_grade_v6, close_confirm_v4)
     base["meta"]["sweep_grade_v6"] = sweep_grade_v6
-
     base.update({
         "context_lines": context_lines,
         "position_lines": position_lines,
@@ -4192,6 +4291,7 @@ def _safe_float(x):
         return float(s)
     except Exception:
         return None
+        
 def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
     """Safe NOW-status snapshot for cron/filtering and Telegram rendering.
     Always returns a dict and never raises.
@@ -5193,7 +5293,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
     liq_reasons = liq_map.get("reasons") or []
     if liq_reasons:
         lines.append(f"- Lý do nghiêng quét: {', '.join(liq_reasons[:3])}")
-
+        
+    mm_play = ((sig.get("meta") or {}).get("mm_real_play_v1") or {})
+    if mm_play:
+        lines.append("")
+        lines.append("🎯 KỊCH BẢN MM (REAL PLAY):")
+        lines.append(f"- Kịch bản: {mm_play.get('headline')}")
+        lines.append(f"- Đường đi: {mm_play.get('path')}")
+        lines.append(f"- Entry chuẩn: {mm_play.get('entry_hint')}")
+    
+        reasons = mm_play.get("reason") or []
+        if reasons:
+            lines.append(f"- Lý do: {', '.join(reasons[:3])}")
+            
     add(lines, "")
     add(lines, "✅ Xác nhận:")
     if struct:
