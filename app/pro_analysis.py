@@ -3457,7 +3457,120 @@ def _manual_guidance_v1(
         lines.append("Chưa có điểm nổ rõ.")
 
     return {"lines": lines[:6]}
+def _attach_vnext_meta(
+    base: dict,
+    *,
+    symbol: str,
+    m15c,
+    bias_side,
+    h1_trend,
+    h4_trend,
+    market_state_v2,
+    flow_state,
+    range_pos,
+    no_trade_zone,
+    liquidation_evt,
+    m15_struct,
+    rsi15,
+    div,
+    atr15,
+    liquidity_map_v1,
+    ema_pack,
+    playbook_v2,
+    close_confirm_v4,
+    sweep_buy,
+    sweep_sell,
+    spring_buy,
+    spring_sell,
+    entry_sniper,
+    playbook_v4=None,
+):
+    try:
+        context_verdict_v1 = _context_verdict_v1(
+            bias_side=bias_side,
+            h1_trend=h1_trend,
+            h4_trend=h4_trend,
+            market_state_v2=market_state_v2,
+            flow_state=flow_state,
+            range_pos=range_pos,
+            no_trade_zone=no_trade_zone,
+            liquidation_evt=liquidation_evt,
+            m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+        )
 
+        rsi_context_v1 = _rsi_context_v1(
+            rsi15=rsi15,
+            bias_side=bias_side,
+            h1_trend=h1_trend,
+            market_state_v2=market_state_v2,
+            div=div,
+            liquidation_evt=liquidation_evt,
+        )
+
+        fib_confluence_v1 = _fib_confluence_v1(
+            m15c=m15c,
+            bias_side=bias_side,
+            atr15=atr15,
+            liquidity_map_v1=liquidity_map_v1,
+            ema_pack=ema_pack,
+            playbook_v2=playbook_v2,
+        )
+
+        liquidity_completion_v1 = _liquidity_completion_v1(
+            sweep_buy=sweep_buy,
+            sweep_sell=sweep_sell,
+            spring_buy=spring_buy,
+            spring_sell=spring_sell,
+            close_confirm_v4=close_confirm_v4 or {"strength": "NO"},
+            entry_sniper=entry_sniper or {"trigger": "NONE"},
+            bias_side=bias_side,
+        )
+
+        trap_warning_v1 = _trap_warning_v1(
+            bias_side=bias_side,
+            context_verdict=context_verdict_v1,
+            rsi_ctx=rsi_context_v1,
+            no_trade_zone=no_trade_zone,
+            liquidation_evt=liquidation_evt,
+            range_pos=range_pos,
+            div=div,
+            close_confirm_v4=close_confirm_v4 or {"strength": "NO"},
+        )
+
+        manual_likelihood_v1 = _manual_likelihood_v1(
+            bias_side=bias_side,
+            context_verdict=context_verdict_v1,
+            trap_warning=trap_warning_v1,
+            fib_conf=fib_confluence_v1,
+            liq_done=liquidity_completion_v1,
+            close_confirm_v4=close_confirm_v4 or {"strength": "NO"},
+            entry_sniper=entry_sniper or {"direction": "NONE", "trigger": "NONE"},
+            playbook_v4=playbook_v4 or {"quality": "LOW"},
+        )
+
+        manual_guidance_v1 = _manual_guidance_v1(
+            bias_side=bias_side,
+            context_verdict=context_verdict_v1,
+            liq_done=liquidity_completion_v1,
+            fib_conf=fib_confluence_v1,
+            close_confirm_v4=close_confirm_v4 or {"strength": "NO"},
+            entry_sniper=entry_sniper or {"trigger": "NONE"},
+            playbook_v2=playbook_v2 or {},
+        )
+
+        meta = base.setdefault("meta", {})
+        meta["context_verdict_v1"] = context_verdict_v1
+        meta["rsi_context_v1"] = rsi_context_v1
+        meta["fib_confluence_v1"] = fib_confluence_v1
+        meta["liquidity_completion_v1"] = liquidity_completion_v1
+        meta["trap_warning_v1"] = trap_warning_v1
+        meta["manual_likelihood_v1"] = manual_likelihood_v1
+        meta["manual_guidance_v1"] = manual_guidance_v1
+
+    except Exception as e:
+        base.setdefault("meta", {})["vnext_error"] = str(e)
+
+    return base
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -3852,6 +3965,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
                 base["last_price"] = float(last_close_15)
                 base["current_price"] = float(last_close_15)
+                _attach_vnext_meta(
+                    base,
+                    symbol=symbol,
+                    m15c=m15c,
+                    bias_side=bias_guess,
+                    h1_trend=h1_trend,
+                    h4_trend=h4_trend,
+                    market_state_v2=market_state_v2,
+                    flow_state=flow_state,
+                    range_pos=range_pos,
+                    no_trade_zone=no_trade_zone,
+                    liquidation_evt=liquidation_evt,
+                    m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+                    rsi15=rsi15,
+                    div=div,
+                    atr15=atr15,
+                    liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
+                    ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
+                    playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
+                    close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
+                    sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
+                    sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
+                    spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
+                    spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
+                    entry_sniper=base.get("meta", {}).get("entry_sniper"),
+                    playbook_v4=base.get("meta", {}).get("playbook_v4"),
+                )
                 return base
 
         if post_sweep_sell:
@@ -3870,6 +4010,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
                 base["last_price"] = float(last_close_15)
                 base["current_price"] = float(last_close_15)
+                _attach_vnext_meta(
+                    base,
+                    symbol=symbol,
+                    m15c=m15c,
+                    bias_side=bias_guess,
+                    h1_trend=h1_trend,
+                    h4_trend=h4_trend,
+                    market_state_v2=market_state_v2,
+                    flow_state=flow_state,
+                    range_pos=range_pos,
+                    no_trade_zone=no_trade_zone,
+                    liquidation_evt=liquidation_evt,
+                    m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+                    rsi15=rsi15,
+                    div=div,
+                    atr15=atr15,
+                    liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
+                    ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
+                    playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
+                    close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
+                    sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
+                    sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
+                    spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
+                    spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
+                    entry_sniper=base.get("meta", {}).get("entry_sniper"),
+                    playbook_v4=base.get("meta", {}).get("playbook_v4"),
+                )
                 return base
 
     # ===== Quality =====
@@ -3980,6 +4147,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         base["last_price"] = float(last_close_15)
         base["current_price"] = float(last_close_15)
+        _attach_vnext_meta(
+            base,
+            symbol=symbol,
+            m15c=m15c,
+            bias_side=bias_guess,
+            h1_trend=h1_trend,
+            h4_trend=h4_trend,
+            market_state_v2=market_state_v2,
+            flow_state=flow_state,
+            range_pos=range_pos,
+            no_trade_zone=no_trade_zone,
+            liquidation_evt=liquidation_evt,
+            m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+            rsi15=rsi15,
+            div=div,
+            atr15=atr15,
+            liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
+            ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
+            playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
+            close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
+            sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
+            sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
+            spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
+            spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
+            entry_sniper=base.get("meta", {}).get("entry_sniper"),
+            playbook_v4=base.get("meta", {}).get("playbook_v4"),
+        )
         return base
 
     # ---- H1 confirm (hard filter)
@@ -3998,6 +4192,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
             base["last_price"] = float(last_close_15)
             base["current_price"] = float(last_close_15)
+            _attach_vnext_meta(
+                base,
+                symbol=symbol,
+                m15c=m15c,
+                bias_side=bias_guess,
+                h1_trend=h1_trend,
+                h4_trend=h4_trend,
+                market_state_v2=market_state_v2,
+                flow_state=flow_state,
+                range_pos=range_pos,
+                no_trade_zone=no_trade_zone,
+                liquidation_evt=liquidation_evt,
+                m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+                rsi15=rsi15,
+                div=div,
+                atr15=atr15,
+                liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
+                ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
+                playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
+                close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
+                sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
+                sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
+                spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
+                spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
+                entry_sniper=base.get("meta", {}).get("entry_sniper"),
+                playbook_v4=base.get("meta", {}).get("playbook_v4"),
+            )
             return base
         if bias == "SELL" and h1_trend != "bearish":
             base.update({
@@ -4012,6 +4233,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
             base["last_price"] = float(last_close_15)
             base["current_price"] = float(last_close_15)
+            _attach_vnext_meta(
+                base,
+                symbol=symbol,
+                m15c=m15c,
+                bias_side=bias_guess,
+                h1_trend=h1_trend,
+                h4_trend=h4_trend,
+                market_state_v2=market_state_v2,
+                flow_state=flow_state,
+                range_pos=range_pos,
+                no_trade_zone=no_trade_zone,
+                liquidation_evt=liquidation_evt,
+                m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+                rsi15=rsi15,
+                div=div,
+                atr15=atr15,
+                liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
+                ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
+                playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
+                close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
+                sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
+                sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
+                spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
+                spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
+                entry_sniper=base.get("meta", {}).get("entry_sniper"),
+                playbook_v4=base.get("meta", {}).get("playbook_v4"),
+            )
             return base
 
     recommendation = "🔴 SELL" if bias == "SELL" else "🟢 BUY"
@@ -4071,6 +4319,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         base["last_price"] = float(last_close_15)
         base["current_price"] = float(last_close_15)
+        _attach_vnext_meta(
+            base,
+            symbol=symbol,
+            m15c=m15c,
+            bias_side=bias_guess,
+            h1_trend=h1_trend,
+            h4_trend=h4_trend,
+            market_state_v2=market_state_v2,
+            flow_state=flow_state,
+            range_pos=range_pos,
+            no_trade_zone=no_trade_zone,
+            liquidation_evt=liquidation_evt,
+            m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+            rsi15=rsi15,
+            div=div,
+            atr15=atr15,
+            liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
+            ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
+            playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
+            close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
+            sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
+            sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
+            spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
+            spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
+            entry_sniper=base.get("meta", {}).get("entry_sniper"),
+            playbook_v4=base.get("meta", {}).get("playbook_v4"),
+        )
         return base
     # ===== PRO adjustments: divergence/candle/volume affect confidence & management =====
     # 1) Divergence: nếu đánh ngược divergence → warn mạnh
