@@ -4659,62 +4659,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     if rdist is not None:
         quality_lines.append(f"R~{rdist:.2f} | SL=MIN(Liq, ATR, Risk) (risk engine)")
     stars = max(1, min(5, int(stars)))
-    # ===== VNEXT RENDER APPEND =====
-    try:
-        cv = context_verdict_v1
-        context_lines.append(f"Context verdict: {cv.get('verdict')}")
-        if cv.get("reason"):
-            context_lines.append(" | ".join(cv.get("reason")[:2]))
-    except Exception:
-        pass
 
-    try:
-        rc = rsi_context_v1
-        quality_lines.append(f"RSI context: {rc.get('message')}")
-    except Exception:
-        pass
-
-    try:
-        liqd = liquidity_completion_v1
-        quality_lines.append(f"Liquidity done: {liqd.get('state')} | {liqd.get('message')}")
-    except Exception:
-        pass
-
-    try:
-        fibc = fib_confluence_v1
-        if fibc.get("ok"):
-            quality_lines.append(
-                f"Fib confluence: YES | zone {_fmt(fibc.get('zone_low'))} – {_fmt(fibc.get('zone_high'))}"
-            )
-        else:
-            quality_lines.append("Fib confluence: NO")
-    except Exception:
-        pass
-
-    try:
-        tw = trap_warning_v1
-        if tw.get("active"):
-            for s in tw.get("warnings", [])[:4]:
-                notes.append(f"⚠️ Trap: {s}")
-    except Exception:
-        pass
-
-    try:
-        ml = manual_likelihood_v1
-        notes.append(
-            f"📊 Manual likelihood | BUY={int(ml.get('buy_likelihood', 0))}/100 | "
-            f"SELL={int(ml.get('sell_likelihood', 0))}/100 | "
-            f"Trap={int(ml.get('trap_risk', 0))}/100"
-        )
-    except Exception:
-        pass
-
-    try:
-        mg = manual_guidance_v1
-        for s in mg.get("lines", [])[:4]:
-            notes.append(f"🧭 {s}")
-    except Exception:
-        pass
     # FIX ưu tiên theo liquidity
     # ===== GD2 final attach with scoring-aware no-trade =====
     no_trade_zone = _detect_no_trade_zone_v2(
@@ -4831,10 +4776,65 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base.setdefault("meta", {})["manual_likelihood_v1"] = manual_likelihood_v1
     base.setdefault("meta", {})["manual_guidance_v1"] = manual_guidance_v1    
     base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1    
+    
+    # ===== VNEXT RENDER APPEND =====
+    try:
+        cv = context_verdict_v1
+        context_lines.append(f"Context verdict: {cv.get('verdict')}")
+        if cv.get("reason"):
+            context_lines.append(" | ".join(cv.get("reason")[:2]))
+    except Exception:
+        pass
+
+    try:
+        rc = rsi_context_v1
+        quality_lines.append(f"RSI context: {rc.get('message')}")
+    except Exception:
+        pass
+
+    try:
+        liqd = liquidity_completion_v1
+        quality_lines.append(f"Liquidity done: {liqd.get('state')} | {liqd.get('message')}")
+    except Exception:
+        pass
+
+    try:
+        fibc = fib_confluence_v1
+        if fibc.get("ok"):
+            quality_lines.append(
+                f"Fib confluence: YES | zone {_fmt(fibc.get('zone_low'))} – {_fmt(fibc.get('zone_high'))}"
+            )
+        else:
+            quality_lines.append("Fib confluence: NO")
+    except Exception:
+        pass
+
+    try:
+        tw = trap_warning_v1
+        if tw.get("active"):
+            for s in tw.get("warnings", [])[:4]:
+                notes.append(f"⚠️ Trap: {s}")
+    except Exception:
+        pass
+
+    try:
+        ml = manual_likelihood_v1
+        notes.append(
+            f"📊 Manual likelihood | BUY={int(ml.get('buy_likelihood', 0))}/100 | "
+            f"SELL={int(ml.get('sell_likelihood', 0))}/100 | "
+            f"Trap={int(ml.get('trap_risk', 0))}/100"
+        )
+    except Exception:
+        pass
+
+    try:
+        mg = manual_guidance_v1
+        for s in mg.get("lines", [])[:4]:
+            notes.append(f"🧭 {s}")
+    except Exception:
+        pass
 
     
-
-
     sweep_grade_v6 = "NONE"
     if bias_side == "BUY":
         sweep_grade_v6 = spring_buy.get("grade") if spring_buy.get("ok") else sweep_buy.get("grade")
