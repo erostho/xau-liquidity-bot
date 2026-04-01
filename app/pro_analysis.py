@@ -5841,6 +5841,34 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if flow:
         add(lines, f"💰 Dòng tiền: {flow_text(flow)}")
 
+    cv1 = meta.get("context_verdict_v1") or {}
+    rc1 = meta.get("rsi_context_v1") or {}
+    ml1 = meta.get("manual_likelihood_v1") or {}
+    tw1 = meta.get("trap_warning_v1") or {}
+    fg1 = meta.get("fib_confluence_v1") or {}
+    ld1 = meta.get("liquidity_completion_v1") or {}
+    
+    if cv1.get("verdict"):
+        add(lines, f"🧠 Context verdict: {cv1.get('verdict')}")
+    
+    if rc1.get("message"):
+        add(lines, f"📈 RSI context: {rc1.get('message')}")
+    
+    if ld1.get("state"):
+        add(lines, f"💧 Liquidity done: {ld1.get('state')} | {ld1.get('message')}")
+    
+    if fg1.get("ok"):
+        add(lines, f"📐 Fib confluence: YES | zone {nf(fg1.get('zone_low'))} – {nf(fg1.get('zone_high'))}")
+    else:
+        add(lines, "📐 Fib confluence: NO")
+    
+    if ml1:
+        add(lines, f"📊 Manual likelihood: BUY={int(ml1.get('buy_likelihood', 0))}/100 | SELL={int(ml1.get('sell_likelihood', 0))}/100 | Trap={int(ml1.get('trap_risk', 0))}/100")
+    
+    if tw1.get("active"):
+        for s in (tw1.get("warnings") or [])[:3]:
+            add(lines, f"⚠️ Trap: {s}")
+    
     add(lines, "")
     add(lines, "📍 Vị trí giá:")
     if last_px is not None:
