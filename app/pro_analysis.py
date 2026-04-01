@@ -4194,6 +4194,65 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         range_low=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_LOW"),
         range_high=base.get("meta", {}).get("key_levels", {}).get("M15_RANGE_HIGH"),
     )
+
+    mm_play = _build_mm_real_play_v1(
+        liq_map=liquidity_map_v1,
+        range_pos=range_pos,
+        htf_pressure_v4=htf_pressure_v4,
+        playbook_v2=playbook_v2,
+        ema_pack=ema_pack,
+    )
+    base.setdefault("meta", {})["mm_real_play_v1"] = mm_play
+    print("MM_PLAY_DEBUG =", base.get("meta", {}).get("mm_real_play_v1"), flush=True) 
+    
+    entry_sniper = _entry_sniper_v1(
+        m15c=m15c,
+        m15_struct=m15_struct,
+        atr15=atr15,
+        volq=volq,
+    )
+    base.setdefault("meta", {})["entry_sniper"] = entry_sniper
+    
+    pump_dump_v1 = _predict_pump_dump_v1(
+        symbol=symbol,
+        m15c=m15c,
+        h1_trend=h1_trend,
+        htf_pressure_v4=htf_pressure_v4,
+        market_state_v2=market_state_v2,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        volq=volq,
+        atr15=atr15,
+        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+        liquidation_evt=liquidation_evt,
+        liquidity_map_v1=liquidity_map_v1,
+    )
+    base.setdefault("meta", {})["pump_dump_v1"] = pump_dump_v1
+    
+    base.setdefault("meta", {})["structure"] = {
+        "H4": h4_struct.get("tag"),
+        "H1": h1_struct.get("tag"),
+        "M15": m15_struct.get("tag"),
+    }
+    base["meta"]["key_levels"] = {
+        "H1_HH": h1_struct.get("hh") or h1_struct.get("last_high"),
+        "H1_HL": h1_struct.get("hl") or h1_struct.get("last_low"),
+        "H1_LH": h1_struct.get("lh"),
+        "H1_LL": h1_struct.get("ll"),
+        "M15_BOS": m15_struct.get("bos_level"),
+        "M15_PB_EXT": m15_struct.get("pullback_extreme"),
+        # Always-available context levels (even when HH/HL/LH/LL are n/a)
+        "M15_RANGE_LOW": _range_levels(m15c, n=20)[0],
+        "M15_RANGE_HIGH": _range_levels(m15c, n=20)[1],
+        "M15_LAST": float(m15c[-1].close) if m15c else None,
+    }
+    ez_low_v6, ez_high_v6 = _entry_zone_v6(bias_side, base["meta"]["key_levels"], atr15)
+    base["meta"]["entry_zone_v6"] = {
+        "low": ez_low_v6,
+        "high": ez_high_v6,
+        "side": bias_side,
+    }
+
     # ===== VNEXT ADD-ON =====
     context_verdict_v1 = _context_verdict_v1(
         bias_side=bias_side,
@@ -4274,66 +4333,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base.setdefault("meta", {})["trap_warning_v1"] = trap_warning_v1
     base.setdefault("meta", {})["manual_likelihood_v1"] = manual_likelihood_v1
     base.setdefault("meta", {})["manual_guidance_v1"] = manual_guidance_v1    
-    base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1
-    mm_play = _build_mm_real_play_v1(
-        liq_map=liquidity_map_v1,
-        range_pos=range_pos,
-        htf_pressure_v4=htf_pressure_v4,
-        playbook_v2=playbook_v2,
-        ema_pack=ema_pack,
-    )
-    base.setdefault("meta", {})["mm_real_play_v1"] = mm_play
-    print("MM_PLAY_DEBUG =", base.get("meta", {}).get("mm_real_play_v1"), flush=True) 
-    
-    entry_sniper = _entry_sniper_v1(
-        m15c=m15c,
-        m15_struct=m15_struct,
-        atr15=atr15,
-        volq=volq,
-    )
-    base.setdefault("meta", {})["entry_sniper"] = entry_sniper
-    
-    pump_dump_v1 = _predict_pump_dump_v1(
-        symbol=symbol,
-        m15c=m15c,
-        h1_trend=h1_trend,
-        htf_pressure_v4=htf_pressure_v4,
-        market_state_v2=market_state_v2,
-        flow_state=flow_state,
-        range_pos=range_pos,
-        volq=volq,
-        atr15=atr15,
-        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
-        liquidation_evt=liquidation_evt,
-        liquidity_map_v1=liquidity_map_v1,
-    )
-    base.setdefault("meta", {})["pump_dump_v1"] = pump_dump_v1
-    
-    base.setdefault("meta", {})["structure"] = {
-        "H4": h4_struct.get("tag"),
-        "H1": h1_struct.get("tag"),
-        "M15": m15_struct.get("tag"),
-    }
-    base["meta"]["key_levels"] = {
-        "H1_HH": h1_struct.get("hh") or h1_struct.get("last_high"),
-        "H1_HL": h1_struct.get("hl") or h1_struct.get("last_low"),
-        "H1_LH": h1_struct.get("lh"),
-        "H1_LL": h1_struct.get("ll"),
-        "M15_BOS": m15_struct.get("bos_level"),
-        "M15_PB_EXT": m15_struct.get("pullback_extreme"),
-        # Always-available context levels (even when HH/HL/LH/LL are n/a)
-        "M15_RANGE_LOW": _range_levels(m15c, n=20)[0],
-        "M15_RANGE_HIGH": _range_levels(m15c, n=20)[1],
-        "M15_LAST": float(m15c[-1].close) if m15c else None,
-    }
+    base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1    
 
-    ez_low_v6, ez_high_v6 = _entry_zone_v6(bias_side, base["meta"]["key_levels"], atr15)
-    base["meta"]["entry_zone_v6"] = {
-        "low": ez_low_v6,
-        "high": ez_high_v6,
-        "side": bias_side,
-    }
-
+    
     # build levels_info list for rendering (2 decimals)
     levels_info = []
     kh = base["meta"]["key_levels"]
@@ -4356,8 +4358,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["wait_for"] = wait_for
     base.setdefault("meta", {})["where"] = where
     base["meta"]["wait_for"] = wait_for
-
-
 
     # Bias base: chỉ cần H1 có trend rõ (bull/bear)
     # Keep a MINOR plan (M15 execution) as default suggestion
