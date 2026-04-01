@@ -5847,7 +5847,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     tw1 = meta.get("trap_warning_v1") or {}
     fg1 = meta.get("fib_confluence_v1") or {}
     ld1 = meta.get("liquidity_completion_v1") or {}
-    
+    add(lines, "🧪 VNEXT TEST 999")
     if cv1.get("verdict"):
         add(lines, f"🧠 Context verdict: {cv1.get('verdict')}")
     
