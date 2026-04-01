@@ -3911,112 +3911,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             bias = "SELL"
         elif buy_ok:
             bias = "BUY"
-
-    # ---- defaults (avoid UnboundLocalError when structure/bias is n/a) ----
-    trade_mode = "HALF"  # default; will be overwritten once scoring is computed
-    entry_major = sl_major = tp1_major = tp2_major = None
-    entry_minor = sl_minor = tp1_minor = tp2_minor = None
-
-
-    # ===== GD2 recompute after bias decision =====
-    bias_for_gd2 = bias if bias in ("BUY", "SELL") else bias_guess
-    market_state_v2 = _detect_market_state_v2(h1_trend, h4_trend, range_pos, atr15, avg20, avg80, div, liquidation_evt)
-    flow_state = _detect_flow_state_v2(symbol, h1_trend, h4_trend, market_state_v2, range_pos)
-    no_trade_zone = _detect_no_trade_zone_v2(bias_for_gd2, market_state_v2, range_pos, liq_warn, liquidation_evt, confirmation_ok=None)
-    playbook_v2 = _detect_playbook_v2(symbol, bias_for_gd2, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
-    phase_369_v2 = _detect_phase_369_v2(bias_for_gd2, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
-    _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
-    _attach_gd3_meta(
-        base,
-        _build_narrative_v3(symbol, bias_for_gd2, market_state_v2, flow_state, liquidation_evt, playbook_v2, no_trade_zone),
-        _build_scenario_v3(bias_for_gd2, playbook_v2, base.get("meta", {}).get("key_levels", {}), flow_state, market_state_v2, no_trade_zone),
-    )
-    session_v4 = _session_engine_v4(m15c, market_state_v2)
-    htf_pressure_v4 = _htf_pressure_v4(h1c, h4c)
-    close_confirm_v4 = _close_confirmation_v4(m15c, bias_for_gd2, (base.get('meta', {}).get('key_levels', {}) or {}).get('M15_BOS'))
-    macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
-    playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
-    _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
-    # ===== VNEXT ADD-ON =====
-    context_verdict_v1 = _context_verdict_v1(
-        bias_side=bias_side,
-        h1_trend=h1_trend,
-        h4_trend=h4_trend,
-        market_state_v2=market_state_v2,
-        flow_state=flow_state,
-        range_pos=range_pos,
-        no_trade_zone=no_trade_zone,
-        liquidation_evt=liquidation_evt,
-        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
-    )
-
-    rsi_context_v1 = _rsi_context_v1(
-        rsi15=rsi15,
-        bias_side=bias_side,
-        h1_trend=h1_trend,
-        market_state_v2=market_state_v2,
-        div=div,
-        liquidation_evt=liquidation_evt,
-    )
-
-    fib_confluence_v1 = _fib_confluence_v1(
-        m15c=m15c,
-        bias_side=bias_side,
-        atr15=atr15,
-        liquidity_map_v1=liquidity_map_v1,
-        ema_pack=ema_pack,
-        playbook_v2=playbook_v2,
-    )
-
-    liquidity_completion_v1 = _liquidity_completion_v1(
-        sweep_buy=sweep_buy,
-        sweep_sell=sweep_sell,
-        spring_buy=spring_buy,
-        spring_sell=spring_sell,
-        close_confirm_v4=close_confirm_v4,
-        entry_sniper=entry_sniper,
-        bias_side=bias_side,
-    )
-
-    trap_warning_v1 = _trap_warning_v1(
-        bias_side=bias_side,
-        context_verdict=context_verdict_v1,
-        rsi_ctx=rsi_context_v1,
-        no_trade_zone=no_trade_zone,
-        liquidation_evt=liquidation_evt,
-        range_pos=range_pos,
-        div=div,
-        close_confirm_v4=close_confirm_v4,
-    )
-
-    manual_likelihood_v1 = _manual_likelihood_v1(
-        bias_side=bias_side,
-        context_verdict=context_verdict_v1,
-        trap_warning=trap_warning_v1,
-        fib_conf=fib_confluence_v1,
-        liq_done=liquidity_completion_v1,
-        close_confirm_v4=close_confirm_v4,
-        entry_sniper=entry_sniper,
-        playbook_v4=playbook_v4,
-    )
-
-    manual_guidance_v1 = _manual_guidance_v1(
-        bias_side=bias_side,
-        context_verdict=context_verdict_v1,
-        liq_done=liquidity_completion_v1,
-        fib_conf=fib_confluence_v1,
-        close_confirm_v4=close_confirm_v4,
-        entry_sniper=entry_sniper,
-        playbook_v2=playbook_v2,
-    )
-
-    base.setdefault("meta", {})["context_verdict_v1"] = context_verdict_v1
-    base.setdefault("meta", {})["rsi_context_v1"] = rsi_context_v1
-    base.setdefault("meta", {})["fib_confluence_v1"] = fib_confluence_v1
-    base.setdefault("meta", {})["liquidity_completion_v1"] = liquidity_completion_v1
-    base.setdefault("meta", {})["trap_warning_v1"] = trap_warning_v1
-    base.setdefault("meta", {})["manual_likelihood_v1"] = manual_likelihood_v1
-    base.setdefault("meta", {})["manual_guidance_v1"] = manual_guidance_v1
     if bias is None:
         # --------------------
         # Mode-based plan selection:
@@ -4836,6 +4730,15 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         liquidation_evt,
         confirmation_ok=bool(momentum_ok),
     )
+    # ---- defaults (avoid UnboundLocalError when structure/bias is n/a) ----
+    trade_mode = "HALF"  # default; will be overwritten once scoring is computed
+    entry_major = sl_major = tp1_major = tp2_major = None
+    entry_minor = sl_minor = tp1_minor = tp2_minor = None
+    # ===== GD2 recompute after bias decision =====
+    bias_for_gd2 = bias if bias in ("BUY", "SELL") else bias_guess
+    market_state_v2 = _detect_market_state_v2(h1_trend, h4_trend, range_pos, atr15, avg20, avg80, div, liquidation_evt)
+    flow_state = _detect_flow_state_v2(symbol, h1_trend, h4_trend, market_state_v2, range_pos)
+    #no_trade_zone = _detect_no_trade_zone_v2(bias_for_gd2, market_state_v2, range_pos, liq_warn, liquidation_evt, confirmation_ok=None)
     playbook_v2 = _detect_playbook_v2(symbol, bias_side, h1_trend, market_state_v2, m15c, flow_state, no_trade_zone, liquidation_evt)
     phase_369_v2 = _detect_phase_369_v2(bias_side, market_state_v2, playbook_v2, range_pos, liquidation_evt, no_trade_zone)
     _attach_gd2_meta(base, flow_state, market_state_v2, liquidation_evt, no_trade_zone, phase_369_v2, playbook_v2)
@@ -4850,7 +4753,86 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
-    
+    # ===== VNEXT ADD-ON =====
+    context_verdict_v1 = _context_verdict_v1(
+        bias_side=bias_side,
+        h1_trend=h1_trend,
+        h4_trend=h4_trend,
+        market_state_v2=market_state_v2,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        no_trade_zone=no_trade_zone,
+        liquidation_evt=liquidation_evt,
+        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+    )
+
+    rsi_context_v1 = _rsi_context_v1(
+        rsi15=rsi15,
+        bias_side=bias_side,
+        h1_trend=h1_trend,
+        market_state_v2=market_state_v2,
+        div=div,
+        liquidation_evt=liquidation_evt,
+    )
+
+    fib_confluence_v1 = _fib_confluence_v1(
+        m15c=m15c,
+        bias_side=bias_side,
+        atr15=atr15,
+        liquidity_map_v1=liquidity_map_v1,
+        ema_pack=ema_pack,
+        playbook_v2=playbook_v2,
+    )
+
+    liquidity_completion_v1 = _liquidity_completion_v1(
+        sweep_buy=sweep_buy,
+        sweep_sell=sweep_sell,
+        spring_buy=spring_buy,
+        spring_sell=spring_sell,
+        close_confirm_v4=close_confirm_v4,
+        entry_sniper=entry_sniper,
+        bias_side=bias_side,
+    )
+
+    trap_warning_v1 = _trap_warning_v1(
+        bias_side=bias_side,
+        context_verdict=context_verdict_v1,
+        rsi_ctx=rsi_context_v1,
+        no_trade_zone=no_trade_zone,
+        liquidation_evt=liquidation_evt,
+        range_pos=range_pos,
+        div=div,
+        close_confirm_v4=close_confirm_v4,
+    )
+
+    manual_likelihood_v1 = _manual_likelihood_v1(
+        bias_side=bias_side,
+        context_verdict=context_verdict_v1,
+        trap_warning=trap_warning_v1,
+        fib_conf=fib_confluence_v1,
+        liq_done=liquidity_completion_v1,
+        close_confirm_v4=close_confirm_v4,
+        entry_sniper=entry_sniper,
+        playbook_v4=playbook_v4,
+    )
+
+    manual_guidance_v1 = _manual_guidance_v1(
+        bias_side=bias_side,
+        context_verdict=context_verdict_v1,
+        liq_done=liquidity_completion_v1,
+        fib_conf=fib_confluence_v1,
+        close_confirm_v4=close_confirm_v4,
+        entry_sniper=entry_sniper,
+        playbook_v2=playbook_v2,
+    )
+
+    base.setdefault("meta", {})["context_verdict_v1"] = context_verdict_v1
+    base.setdefault("meta", {})["rsi_context_v1"] = rsi_context_v1
+    base.setdefault("meta", {})["fib_confluence_v1"] = fib_confluence_v1
+    base.setdefault("meta", {})["liquidity_completion_v1"] = liquidity_completion_v1
+    base.setdefault("meta", {})["trap_warning_v1"] = trap_warning_v1
+    base.setdefault("meta", {})["manual_likelihood_v1"] = manual_likelihood_v1
+    base.setdefault("meta", {})["manual_guidance_v1"] = manual_guidance_v1    
 
     sweep_grade_v6 = "NONE"
     if bias_side == "BUY":
