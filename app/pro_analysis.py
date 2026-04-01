@@ -2981,7 +2981,482 @@ def format_scale_plan_v2(plan: dict) -> str:
         lines.append(f"- Hiện tại {condition} ĐIỀU KIỆN SCALE")
 
     return "\n".join(lines).strip()
-    
+
+# =========================
+# VNEXT ADD-ON (append-only)
+# Context / RSI / Fib / Trap / Liquidity completion / Manual likelihood / Manual guidance
+# =========================
+
+def _context_verdict_v1(
+    bias_side: str | None,
+    h1_trend: str,
+    h4_trend: str,
+    market_state_v2: str,
+    flow_state: dict | None,
+    range_pos: float | None,
+    no_trade_zone: dict | None,
+    liquidation_evt: dict | None,
+    m15_struct_tag: str | None,
+) -> dict:
+    out = {
+        "verdict": "CHƯA CÓ CẢNH",
+        "state": "NEUTRAL",
+        "reason": [],
+    }
+
+    flow_side = str((flow_state or {}).get("favored_side") or "NONE").upper()
+    tag = str(m15_struct_tag or "").upper()
+    ntz = bool((no_trade_zone or {}).get("active"))
+    liq = bool((liquidation_evt or {}).get("ok"))
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    if (
+        bias_side == "SELL"
+        and h1_trend == "bearish"
+        and h4_trend == "bearish"
+        and flow_side in ("SELL", "NONE")
+        and not ntz
+    ):
+        if rp is not None and rp >= 0.45:
+            out["verdict"] = "ĐÚNG CẢNH SELL"
+            out["state"] = "SELL_CONTINUATION"
+            out["reason"] = ["khung lớn giảm", "đang hồi trong xu hướng giảm"]
+            return out
+
+    if (
+        bias_side == "BUY"
+        and h1_trend == "bullish"
+        and h4_trend == "bullish"
+        and flow_side in ("BUY", "NONE")
+        and not ntz
+    ):
+        if rp is not None and rp <= 0.55:
+            out["verdict"] = "ĐÚNG CẢNH BUY"
+            out["state"] = "BUY_CONTINUATION"
+            out["reason"] = ["khung lớn tăng", "đang điều chỉnh trong xu hướng tăng"]
+            return out
+
+    if bias_side == "BUY" and h1_trend == "bearish":
+        out["verdict"] = "SAI CẢNH BUY"
+        out["state"] = "COUNTERTREND_BUY"
+        out["reason"] = ["đang ngược H1", "dễ bắt đáy hỏng"]
+        return out
+
+    if bias_side == "SELL" and h1_trend == "bullish":
+        out["verdict"] = "SAI CẢNH SELL"
+        out["state"] = "COUNTERTREND_SELL"
+        out["reason"] = ["đang ngược H1", "dễ bắt đỉnh hỏng"]
+        return out
+
+    if liq:
+        out["verdict"] = "CHỜ SAU LIQUIDATION"
+        out["state"] = "POST_LIQUIDATION"
+        out["reason"] = ["vừa có quét mạnh", "chưa nên follow ngay"]
+        return out
+
+    if ntz or market_state_v2 in ("CHOP", "TRANSITION"):
+        out["verdict"] = "CHƯA CÓ CẢNH"
+        out["state"] = "NO_EDGE"
+        out["reason"] = ["market nhiễu", "chưa có edge rõ"]
+        return out
+
+    if "LH" in tag or "LL" in tag:
+        out["verdict"] = "NGHIÊNG CẢNH SELL"
+        out["state"] = "SELL_BIAS"
+        out["reason"] = ["M15 đang yếu", "thiên về hướng giảm"]
+        return out
+
+    if "HL" in tag or "HH" in tag:
+        out["verdict"] = "NGHIÊNG CẢNH BUY"
+        out["state"] = "BUY_BIAS"
+        out["reason"] = ["M15 đang khỏe", "thiên về hướng tăng"]
+        return out
+
+    return out
+
+
+def _rsi_context_v1(
+    rsi15: float | None,
+    bias_side: str | None,
+    h1_trend: str,
+    market_state_v2: str,
+    div: dict | None,
+    liquidation_evt: dict | None,
+) -> dict:
+    out = {
+        "state": "NEUTRAL",
+        "message": "RSI trung tính",
+        "meaning": "RSI chỉ là nhịp của giá, chưa nói lên điểm vào",
+    }
+
+    rsi = float(rsi15 or 50.0)
+    bear_div = bool((div or {}).get("bear"))
+    bull_div = bool((div or {}).get("bull"))
+    just_liq = bool((liquidation_evt or {}).get("ok"))
+
+    if rsi >= 75:
+        if h1_trend == "bullish" and not bear_div and not just_liq:
+            out["state"] = "ACCELERATION_UP"
+            out["message"] = "RSI cao = đà tăng mạnh, chưa phải tín hiệu SELL"
+            out["meaning"] = "thị trường đang tăng tốc"
+            return out
+        if bear_div or market_state_v2 in ("EXHAUSTION_UP", "POST_SHORT_COVER"):
+            out["state"] = "EXHAUSTION_UP"
+            out["message"] = "RSI cao + dấu hiệu kiệt sức"
+            out["meaning"] = "cẩn thận mua đuổi / dễ bị phân phối"
+            return out
+
+    if rsi <= 25:
+        if h1_trend == "bearish" and not bull_div and not just_liq:
+            out["state"] = "ACCELERATION_DOWN"
+            out["message"] = "RSI thấp = đà giảm mạnh, chưa phải tín hiệu BUY"
+            out["meaning"] = "thị trường đang giảm tốc mạnh theo xu hướng"
+            return out
+        if bull_div or market_state_v2 in ("EXHAUSTION_DOWN", "POST_LIQUIDATION_BOUNCE"):
+            out["state"] = "EXHAUSTION_DOWN"
+            out["message"] = "RSI thấp + dấu hiệu kiệt sức"
+            out["meaning"] = "cẩn thận bán đuổi / dễ bật hồi"
+            return out
+
+    if bear_div:
+        out["state"] = "BEARISH_DIVERGENCE"
+        out["message"] = "RSI đang yếu đi so với giá"
+        out["meaning"] = "đà tăng không còn sạch"
+        return out
+
+    if bull_div:
+        out["state"] = "BULLISH_DIVERGENCE"
+        out["message"] = "RSI đang mạnh lên so với giá"
+        out["meaning"] = "đà giảm đang yếu dần"
+        return out
+
+    return out
+
+
+def _fib_confluence_v1(
+    m15c,
+    bias_side: str | None,
+    atr15: float | None,
+    liquidity_map_v1: dict | None,
+    ema_pack: dict | None,
+    playbook_v2: dict | None,
+) -> dict:
+    out = {
+        "ok": False,
+        "level": None,
+        "zone_low": None,
+        "zone_high": None,
+        "score": 0,
+        "reason": [],
+    }
+
+    if not m15c or len(m15c) < 20 or bias_side not in ("BUY", "SELL"):
+        return out
+
+    impulse = _find_last_impulse_leg(m15c, side=bias_side, lookback=40)
+    if not impulse.get("ok"):
+        return out
+
+    leg_low = float(impulse["leg_low"])
+    leg_high = float(impulse["leg_high"])
+    rng = max(1e-9, leg_high - leg_low)
+    pad = max(1e-9, float(atr15 or 0.0) * 0.12)
+
+    if bias_side == "BUY":
+        fib50 = leg_high - 0.500 * rng
+        fib618 = leg_high - 0.618 * rng
+        fib705 = leg_high - 0.705 * rng
+    else:
+        fib50 = leg_low + 0.500 * rng
+        fib618 = leg_low + 0.618 * rng
+        fib705 = leg_low + 0.705 * rng
+
+    zone_low = min(fib50, fib618, fib705) - pad
+    zone_high = max(fib50, fib618, fib705) + pad
+
+    score = 0
+    reason = []
+
+    if ema_pack:
+        e34 = _safe_float(ema_pack.get("ema34"))
+        e89 = _safe_float(ema_pack.get("ema89"))
+        if e34 is not None and zone_low <= e34 <= zone_high:
+            score += 1
+            reason.append("fib trùng EMA34")
+        if e89 is not None and zone_low <= e89 <= zone_high:
+            score += 1
+            reason.append("fib trùng EMA89")
+
+    pz_lo = _safe_float((playbook_v2 or {}).get("zone_low"))
+    pz_hi = _safe_float((playbook_v2 or {}).get("zone_high"))
+    if pz_lo is not None and pz_hi is not None:
+        if not (pz_hi < zone_low or pz_lo > zone_high):
+            score += 1
+            reason.append("fib trùng vùng playbook")
+
+    liq_zone = None
+    if bias_side == "BUY":
+        liq_zone = (liquidity_map_v1 or {}).get("below_zone")
+    else:
+        liq_zone = (liquidity_map_v1 or {}).get("above_zone")
+
+    if isinstance(liq_zone, (list, tuple)) and len(liq_zone) == 2:
+        l1, l2 = float(liq_zone[0]), float(liq_zone[1])
+        if not (l2 < zone_low or l1 > zone_high):
+            score += 1
+            reason.append("fib trùng liquidity zone")
+
+    best = fib618
+    out.update({
+        "ok": score >= 2,
+        "level": best,
+        "zone_low": zone_low,
+        "zone_high": zone_high,
+        "score": score,
+        "reason": reason[:4],
+    })
+    return out
+
+
+def _trap_warning_v1(
+    bias_side: str | None,
+    context_verdict: dict | None,
+    rsi_ctx: dict | None,
+    no_trade_zone: dict | None,
+    liquidation_evt: dict | None,
+    range_pos: float | None,
+    div: dict | None,
+    close_confirm_v4: dict | None,
+) -> dict:
+    warns = []
+
+    verdict = str((context_verdict or {}).get("state") or "")
+    rsi_state = str((rsi_ctx or {}).get("state") or "")
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    if verdict == "COUNTERTREND_BUY":
+        warns.append("BUY đang ngược xu hướng chính → dễ bắt đáy hỏng")
+    if verdict == "COUNTERTREND_SELL":
+        warns.append("SELL đang ngược xu hướng chính → dễ bắt đỉnh hỏng")
+
+    if (no_trade_zone or {}).get("active"):
+        warns.append("market đang ở no-trade zone → edge thấp")
+
+    if (liquidation_evt or {}).get("ok"):
+        warns.append("vừa có liquidation → dễ quét 2 đầu / hồi giả")
+
+    if rsi_state == "ACCELERATION_UP" and bias_side == "SELL":
+        warns.append("RSI đang tăng tốc chứ chưa kiệt → SELL dễ chết")
+    if rsi_state == "ACCELERATION_DOWN" and bias_side == "BUY":
+        warns.append("RSI đang giảm mạnh chứ chưa cạn → BUY dễ chết")
+
+    if bias_side == "BUY" and (div or {}).get("bear"):
+        warns.append("bearish divergence đang chống BUY")
+    if bias_side == "SELL" and (div or {}).get("bull"):
+        warns.append("bullish divergence đang chống SELL")
+
+    if rp is not None:
+        if bias_side == "BUY" and rp >= 0.85:
+            warns.append("BUY vùng cao → dễ mua đuổi")
+        if bias_side == "SELL" and rp <= 0.15:
+            warns.append("SELL vùng thấp → dễ bán đuổi")
+
+    if str((close_confirm_v4 or {}).get("strength") or "").upper() in ("NO", "N/A"):
+        warns.append("chưa có close confirmation rõ")
+
+    return {
+        "active": len(warns) > 0,
+        "warnings": warns[:6],
+    }
+
+
+def _liquidity_completion_v1(
+    sweep_buy: dict | None,
+    sweep_sell: dict | None,
+    spring_buy: dict | None,
+    spring_sell: dict | None,
+    close_confirm_v4: dict | None,
+    entry_sniper: dict | None,
+    bias_side: str | None,
+) -> dict:
+    out = {
+        "state": "NO",
+        "message": "Thanh khoản chưa hoàn tất",
+    }
+
+    sb = bool((sweep_buy or {}).get("ok"))
+    ss = bool((sweep_sell or {}).get("ok"))
+    spb = bool((spring_buy or {}).get("ok"))
+    sps = bool((spring_sell or {}).get("ok"))
+
+    confirm = str((close_confirm_v4 or {}).get("strength") or "NO").upper()
+    sniper_trigger = str((entry_sniper or {}).get("trigger") or "NONE").upper()
+
+    if bias_side == "BUY":
+        if (sb or spb) and confirm in ("WEAK", "STRONG"):
+            out["state"] = "YES"
+            out["message"] = "Đã quét đáy + có xác nhận giữ giá"
+            return out
+        if (sb or spb) and sniper_trigger in ("READY", "TRIGGERED"):
+            out["state"] = "PARTIAL"
+            out["message"] = "Đã quét đáy nhưng xác nhận chưa hoàn tất"
+            return out
+
+    if bias_side == "SELL":
+        if (ss or sps) and confirm in ("WEAK", "STRONG"):
+            out["state"] = "YES"
+            out["message"] = "Đã quét đỉnh + có xác nhận đạp xuống"
+            return out
+        if (ss or sps) and sniper_trigger in ("READY", "TRIGGERED"):
+            out["state"] = "PARTIAL"
+            out["message"] = "Đã quét đỉnh nhưng xác nhận chưa hoàn tất"
+            return out
+
+    return out
+
+
+def _manual_likelihood_v1(
+    bias_side: str | None,
+    context_verdict: dict | None,
+    trap_warning: dict | None,
+    fib_conf: dict | None,
+    liq_done: dict | None,
+    close_confirm_v4: dict | None,
+    entry_sniper: dict | None,
+    playbook_v4: dict | None,
+) -> dict:
+    buy_score = 35
+    sell_score = 35
+    trap_risk = 20
+
+    verdict = str((context_verdict or {}).get("state") or "")
+    liq_state = str((liq_done or {}).get("state") or "NO")
+    fib_ok = bool((fib_conf or {}).get("ok"))
+    confirm = str((close_confirm_v4 or {}).get("strength") or "NO").upper()
+    sniper_dir = str((entry_sniper or {}).get("direction") or "NONE").upper()
+    sniper_trigger = str((entry_sniper or {}).get("trigger") or "NONE").upper()
+    pbq = str((playbook_v4 or {}).get("quality") or "LOW").upper()
+
+    if verdict == "BUY_CONTINUATION":
+        buy_score += 20
+    if verdict == "SELL_CONTINUATION":
+        sell_score += 20
+    if verdict == "COUNTERTREND_BUY":
+        buy_score -= 15
+        trap_risk += 20
+    if verdict == "COUNTERTREND_SELL":
+        sell_score -= 15
+        trap_risk += 20
+
+    if liq_state == "YES":
+        if bias_side == "BUY":
+            buy_score += 12
+        elif bias_side == "SELL":
+            sell_score += 12
+    elif liq_state == "PARTIAL":
+        if bias_side == "BUY":
+            buy_score += 5
+        elif bias_side == "SELL":
+            sell_score += 5
+
+    if fib_ok:
+        if bias_side == "BUY":
+            buy_score += 8
+        elif bias_side == "SELL":
+            sell_score += 8
+
+    if confirm == "STRONG":
+        if bias_side == "BUY":
+            buy_score += 10
+        elif bias_side == "SELL":
+            sell_score += 10
+    elif confirm == "WEAK":
+        if bias_side == "BUY":
+            buy_score += 4
+        elif bias_side == "SELL":
+            sell_score += 4
+
+    if sniper_dir == bias_side and sniper_trigger in ("READY", "TRIGGERED"):
+        if bias_side == "BUY":
+            buy_score += 10
+        elif bias_side == "SELL":
+            sell_score += 10
+
+    if pbq == "HIGH":
+        if bias_side == "BUY":
+            buy_score += 6
+        elif bias_side == "SELL":
+            sell_score += 6
+
+    if (trap_warning or {}).get("active"):
+        trap_risk += 18
+
+    buy_score = max(0, min(100, buy_score))
+    sell_score = max(0, min(100, sell_score))
+    trap_risk = max(0, min(100, trap_risk))
+
+    return {
+        "buy_likelihood": buy_score,
+        "sell_likelihood": sell_score,
+        "trap_risk": trap_risk,
+        "best_side": "BUY" if buy_score > sell_score else ("SELL" if sell_score > buy_score else "NONE"),
+    }
+
+
+def _manual_guidance_v1(
+    bias_side: str | None,
+    context_verdict: dict | None,
+    liq_done: dict | None,
+    fib_conf: dict | None,
+    close_confirm_v4: dict | None,
+    entry_sniper: dict | None,
+    playbook_v2: dict | None,
+) -> dict:
+    lines = []
+
+    verdict = str((context_verdict or {}).get("verdict") or "")
+    liq_state = str((liq_done or {}).get("state") or "NO")
+    confirm = str((close_confirm_v4 or {}).get("strength") or "NO").upper()
+    sniper_trigger = str((entry_sniper or {}).get("trigger") or "NONE").upper()
+
+    lines.append(f"Cảnh hiện tại: {verdict}")
+
+    if liq_state == "NO":
+        lines.append("Chờ thị trường hút thanh khoản xong rồi đánh giá tiếp.")
+    elif liq_state == "PARTIAL":
+        lines.append("Đã có quét nhưng chưa hoàn tất → chờ close confirm / BOS rõ hơn.")
+    else:
+        lines.append("Liquidity đã tương đối hoàn tất, chỉ còn chờ xác nhận cuối.")
+
+    if fib_conf.get("ok"):
+        lines.append(
+            f"Vùng Fib đáng chú ý: {_fmt(fib_conf.get('zone_low'))} – {_fmt(fib_conf.get('zone_high'))}"
+        )
+
+    if confirm in ("NO", "N/A"):
+        lines.append("Chờ nến đóng xác nhận rõ hơn, tránh vào vì cảm giác.")
+    elif confirm == "WEAK":
+        lines.append("Đã có xác nhận yếu, nên quan sát thêm follow-through.")
+    elif confirm == "STRONG":
+        lines.append("Đã có close confirm mạnh hơn, có thể theo dõi sát để tự trade tay.")
+
+    if sniper_trigger == "READY":
+        lines.append("Setup đang ở trạng thái READY: chỉ chờ điểm nổ.")
+    elif sniper_trigger == "TRIGGERED":
+        lines.append("Setup đã TRIGGERED: trader tay có thể tự đánh giá để bấm.")
+    else:
+        lines.append("Chưa có điểm nổ rõ.")
+
+    return {"lines": lines[:6]}
+
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -3462,7 +3937,86 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
+    # ===== VNEXT ADD-ON =====
+    context_verdict_v1 = _context_verdict_v1(
+        bias_side=bias_side,
+        h1_trend=h1_trend,
+        h4_trend=h4_trend,
+        market_state_v2=market_state_v2,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        no_trade_zone=no_trade_zone,
+        liquidation_evt=liquidation_evt,
+        m15_struct_tag=m15_struct.get("tag") if isinstance(m15_struct, dict) else "n/a",
+    )
 
+    rsi_context_v1 = _rsi_context_v1(
+        rsi15=rsi15,
+        bias_side=bias_side,
+        h1_trend=h1_trend,
+        market_state_v2=market_state_v2,
+        div=div,
+        liquidation_evt=liquidation_evt,
+    )
+
+    fib_confluence_v1 = _fib_confluence_v1(
+        m15c=m15c,
+        bias_side=bias_side,
+        atr15=atr15,
+        liquidity_map_v1=liquidity_map_v1,
+        ema_pack=ema_pack,
+        playbook_v2=playbook_v2,
+    )
+
+    liquidity_completion_v1 = _liquidity_completion_v1(
+        sweep_buy=sweep_buy,
+        sweep_sell=sweep_sell,
+        spring_buy=spring_buy,
+        spring_sell=spring_sell,
+        close_confirm_v4=close_confirm_v4,
+        entry_sniper=entry_sniper,
+        bias_side=bias_side,
+    )
+
+    trap_warning_v1 = _trap_warning_v1(
+        bias_side=bias_side,
+        context_verdict=context_verdict_v1,
+        rsi_ctx=rsi_context_v1,
+        no_trade_zone=no_trade_zone,
+        liquidation_evt=liquidation_evt,
+        range_pos=range_pos,
+        div=div,
+        close_confirm_v4=close_confirm_v4,
+    )
+
+    manual_likelihood_v1 = _manual_likelihood_v1(
+        bias_side=bias_side,
+        context_verdict=context_verdict_v1,
+        trap_warning=trap_warning_v1,
+        fib_conf=fib_confluence_v1,
+        liq_done=liquidity_completion_v1,
+        close_confirm_v4=close_confirm_v4,
+        entry_sniper=entry_sniper,
+        playbook_v4=playbook_v4,
+    )
+
+    manual_guidance_v1 = _manual_guidance_v1(
+        bias_side=bias_side,
+        context_verdict=context_verdict_v1,
+        liq_done=liquidity_completion_v1,
+        fib_conf=fib_confluence_v1,
+        close_confirm_v4=close_confirm_v4,
+        entry_sniper=entry_sniper,
+        playbook_v2=playbook_v2,
+    )
+
+    base.setdefault("meta", {})["context_verdict_v1"] = context_verdict_v1
+    base.setdefault("meta", {})["rsi_context_v1"] = rsi_context_v1
+    base.setdefault("meta", {})["fib_confluence_v1"] = fib_confluence_v1
+    base.setdefault("meta", {})["liquidity_completion_v1"] = liquidity_completion_v1
+    base.setdefault("meta", {})["trap_warning_v1"] = trap_warning_v1
+    base.setdefault("meta", {})["manual_likelihood_v1"] = manual_likelihood_v1
+    base.setdefault("meta", {})["manual_guidance_v1"] = manual_guidance_v1
     if bias is None:
         # --------------------
         # Mode-based plan selection:
@@ -4216,8 +4770,63 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     if rdist is not None:
         quality_lines.append(f"R~{rdist:.2f} | SL=MIN(Liq, ATR, Risk) (risk engine)")
     stars = max(1, min(5, int(stars)))
+    # ===== VNEXT RENDER APPEND =====
+    try:
+        cv = context_verdict_v1
+        context_lines.append(f"Context verdict: {cv.get('verdict')}")
+        if cv.get("reason"):
+            context_lines.append(" | ".join(cv.get("reason")[:2]))
+    except Exception:
+        pass
+
+    try:
+        rc = rsi_context_v1
+        quality_lines.append(f"RSI context: {rc.get('message')}")
+    except Exception:
+        pass
+
+    try:
+        liqd = liquidity_completion_v1
+        quality_lines.append(f"Liquidity done: {liqd.get('state')} | {liqd.get('message')}")
+    except Exception:
+        pass
+
+    try:
+        fibc = fib_confluence_v1
+        if fibc.get("ok"):
+            quality_lines.append(
+                f"Fib confluence: YES | zone {_fmt(fibc.get('zone_low'))} – {_fmt(fibc.get('zone_high'))}"
+            )
+        else:
+            quality_lines.append("Fib confluence: NO")
+    except Exception:
+        pass
+
+    try:
+        tw = trap_warning_v1
+        if tw.get("active"):
+            for s in tw.get("warnings", [])[:4]:
+                notes.append(f"⚠️ Trap: {s}")
+    except Exception:
+        pass
+
+    try:
+        ml = manual_likelihood_v1
+        notes.append(
+            f"📊 Manual likelihood | BUY={int(ml.get('buy_likelihood', 0))}/100 | "
+            f"SELL={int(ml.get('sell_likelihood', 0))}/100 | "
+            f"Trap={int(ml.get('trap_risk', 0))}/100"
+        )
+    except Exception:
+        pass
+
+    try:
+        mg = manual_guidance_v1
+        for s in mg.get("lines", [])[:4]:
+            notes.append(f"🧭 {s}")
+    except Exception:
+        pass
     # FIX ưu tiên theo liquidity
-    
     # ===== GD2 final attach with scoring-aware no-trade =====
     no_trade_zone = _detect_no_trade_zone_v2(
         bias_side,
@@ -4241,7 +4850,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
-        
+    
+
     sweep_grade_v6 = "NONE"
     if bias_side == "BUY":
         sweep_grade_v6 = spring_buy.get("grade") if spring_buy.get("ok") else sweep_buy.get("grade")
