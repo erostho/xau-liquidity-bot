@@ -6153,15 +6153,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
     tw1 = meta.get("trap_warning_v1") or {}
     fg1 = meta.get("fib_confluence_v1") or {}
     ld1 = meta.get("liquidity_completion_v1") or {}
-    add(lines, "🧪 VNEXT TEST 999")
     if cv1.get("verdict"):
         add(lines, f"🧠 Context verdict: {cv1.get('verdict')}")
     
     if rc1.get("message"):
         add(lines, f"📈 RSI context: {rc1.get('message')}")
-    
-    if ld1.get("state"):
-        add(lines, f"💧 Liquidity done: {ld1.get('state')} | {ld1.get('message')}")
     
     if fg1.get("ok"):
         add(lines, f"📐 Fib confluence: YES | zone {nf(fg1.get('zone_low'))} – {nf(fg1.get('zone_high'))}")
@@ -6226,6 +6222,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     liq_reasons = liq_map.get("reasons") or []
     if liq_reasons:
         lines.append(f"- Lý do nghiêng quét: {', '.join(liq_reasons[:3])}")
+    if ld1.get("state"):
+        add(lines, f"💧 Liquidity done: {ld1.get('state')} | {ld1.get('message')}")
         
     meta = (sig.get("meta") or {})
     mm_play = meta.get("mm_real_play_v1")
