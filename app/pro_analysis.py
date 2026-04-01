@@ -1860,6 +1860,7 @@ def _predict_pump_dump_v1(
     atr15: float,
     m15_struct_tag: str,
     liquidation_evt: Dict[str, Any],
+    liquidity_map_v1: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Trả về:
@@ -4203,7 +4204,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         ema_pack=ema_pack,
     )
     base.setdefault("meta", {})["mm_real_play_v1"] = mm_play
-    print("MM_PLAY_DEBUG =", base.get("meta", {}).get("mm_real_play_v1"), flush=True) 
     
     entry_sniper = _entry_sniper_v1(
         m15c=m15c,
@@ -4252,7 +4252,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "high": ez_high_v6,
         "side": bias_side,
     }
-    
+
     # build levels_info list for rendering (2 decimals)
     levels_info = []
     kh = base["meta"]["key_levels"]
@@ -4749,6 +4749,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     macro_v4 = _macro_intermarket_v4(symbol, flow_state, h1_trend, market_state_v2)
     playbook_v4 = _refine_playbook_v4(playbook_v2, close_confirm_v4, session_v4, htf_pressure_v4, macro_v4)
     _attach_gd4_meta(base, session_v4, htf_pressure_v4, close_confirm_v4, macro_v4, playbook_v4)
+
     # ===== VNEXT ADD-ON =====
     context_verdict_v1 = _context_verdict_v1(
         bias_side=bias_side,
@@ -4830,6 +4831,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base.setdefault("meta", {})["manual_likelihood_v1"] = manual_likelihood_v1
     base.setdefault("meta", {})["manual_guidance_v1"] = manual_guidance_v1    
     base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1    
+
+    
+
 
     sweep_grade_v6 = "NONE"
     if bias_side == "BUY":
