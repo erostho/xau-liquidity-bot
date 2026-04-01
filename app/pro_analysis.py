@@ -3611,7 +3611,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     quality_lines = base["quality_lines"]
     notes = base.setdefault("notes", [])
     score = 0
-
+    m15_struct = {}
+    h1_struct = {}
+    h4_struct = {}
+    liquidity_map_v1 = {}
+    entry_sniper = {}
+    playbook_v4 = {}
+    close_confirm_v4 = {"strength": "NO"}
     # ---- Safety / normalize candles
     if not m15 or not m30 or not h1:
         base["note_lines"].append("⚠️ Thiếu dữ liệu M15/M30/H1 → không phân tích được.")
@@ -3977,20 +3983,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     range_pos=range_pos,
                     no_trade_zone=no_trade_zone,
                     liquidation_evt=liquidation_evt,
-                    m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+                    m15_struct=(locals().get("m15_struct") or {}),
                     rsi15=rsi15,
                     div=div,
                     atr15=atr15,
-                    liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
-                    ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
-                    playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
-                    close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
-                    sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
-                    sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
-                    spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
-                    spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
-                    entry_sniper=base.get("meta", {}).get("entry_sniper"),
-                    playbook_v4=base.get("meta", {}).get("playbook_v4"),
+                    liquidity_map_v1=(locals().get("liquidity_map_v1") or {}),
+                    ema_pack=(ema_pack if isinstance(ema_pack, dict) else {}),
+                    playbook_v2=(playbook_v2 if isinstance(playbook_v2, dict) else {}),
+                    close_confirm_v4=(locals().get("close_confirm_v4") or {"strength": "NO"}),
+                    sweep_buy=(sweep_buy if isinstance(sweep_buy, dict) else {}),
+                    sweep_sell=(sweep_sell if isinstance(sweep_sell, dict) else {}),
+                    spring_buy=(spring_buy if isinstance(spring_buy, dict) else {}),
+                    spring_sell=(spring_sell if isinstance(spring_sell, dict) else {}),
+                    entry_sniper=(locals().get("entry_sniper") or {}),
+                    playbook_v4=(locals().get("playbook_v4") or {}),
                 )
                 return base
 
@@ -4022,20 +4028,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     range_pos=range_pos,
                     no_trade_zone=no_trade_zone,
                     liquidation_evt=liquidation_evt,
-                    m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+                    m15_struct=(locals().get("m15_struct") or {}),
                     rsi15=rsi15,
                     div=div,
                     atr15=atr15,
-                    liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
-                    ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
-                    playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
-                    close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
-                    sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
-                    sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
-                    spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
-                    spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
-                    entry_sniper=base.get("meta", {}).get("entry_sniper"),
-                    playbook_v4=base.get("meta", {}).get("playbook_v4"),
+                    liquidity_map_v1=(locals().get("liquidity_map_v1") or {}),
+                    ema_pack=(ema_pack if isinstance(ema_pack, dict) else {}),
+                    playbook_v2=(playbook_v2 if isinstance(playbook_v2, dict) else {}),
+                    close_confirm_v4=(locals().get("close_confirm_v4") or {"strength": "NO"}),
+                    sweep_buy=(sweep_buy if isinstance(sweep_buy, dict) else {}),
+                    sweep_sell=(sweep_sell if isinstance(sweep_sell, dict) else {}),
+                    spring_buy=(spring_buy if isinstance(spring_buy, dict) else {}),
+                    spring_sell=(spring_sell if isinstance(spring_sell, dict) else {}),
+                    entry_sniper=(locals().get("entry_sniper") or {}),
+                    playbook_v4=(locals().get("playbook_v4") or {}),
                 )
                 return base
 
@@ -4159,20 +4165,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             range_pos=range_pos,
             no_trade_zone=no_trade_zone,
             liquidation_evt=liquidation_evt,
-            m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+            m15_struct=(locals().get("m15_struct") or {}),
             rsi15=rsi15,
             div=div,
             atr15=atr15,
-            liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
-            ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
-            playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
-            close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
-            sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
-            sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
-            spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
-            spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
-            entry_sniper=base.get("meta", {}).get("entry_sniper"),
-            playbook_v4=base.get("meta", {}).get("playbook_v4"),
+            liquidity_map_v1=(locals().get("liquidity_map_v1") or {}),
+            ema_pack=(ema_pack if isinstance(ema_pack, dict) else {}),
+            playbook_v2=(playbook_v2 if isinstance(playbook_v2, dict) else {}),
+            close_confirm_v4=(locals().get("close_confirm_v4") or {"strength": "NO"}),
+            sweep_buy=(sweep_buy if isinstance(sweep_buy, dict) else {}),
+            sweep_sell=(sweep_sell if isinstance(sweep_sell, dict) else {}),
+            spring_buy=(spring_buy if isinstance(spring_buy, dict) else {}),
+            spring_sell=(spring_sell if isinstance(spring_sell, dict) else {}),
+            entry_sniper=(locals().get("entry_sniper") or {}),
+            playbook_v4=(locals().get("playbook_v4") or {}),
         )
         return base
 
@@ -4204,20 +4210,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 range_pos=range_pos,
                 no_trade_zone=no_trade_zone,
                 liquidation_evt=liquidation_evt,
-                m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+                m15_struct=(locals().get("m15_struct") or {}),
                 rsi15=rsi15,
                 div=div,
                 atr15=atr15,
-                liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
-                ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
-                playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
-                close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
-                sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
-                sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
-                spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
-                spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
-                entry_sniper=base.get("meta", {}).get("entry_sniper"),
-                playbook_v4=base.get("meta", {}).get("playbook_v4"),
+                liquidity_map_v1=(locals().get("liquidity_map_v1") or {}),
+                ema_pack=(ema_pack if isinstance(ema_pack, dict) else {}),
+                playbook_v2=(playbook_v2 if isinstance(playbook_v2, dict) else {}),
+                close_confirm_v4=(locals().get("close_confirm_v4") or {"strength": "NO"}),
+                sweep_buy=(sweep_buy if isinstance(sweep_buy, dict) else {}),
+                sweep_sell=(sweep_sell if isinstance(sweep_sell, dict) else {}),
+                spring_buy=(spring_buy if isinstance(spring_buy, dict) else {}),
+                spring_sell=(spring_sell if isinstance(spring_sell, dict) else {}),
+                entry_sniper=(locals().get("entry_sniper") or {}),
+                playbook_v4=(locals().get("playbook_v4") or {}),
             )
             return base
         if bias == "SELL" and h1_trend != "bearish":
@@ -4245,20 +4251,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 range_pos=range_pos,
                 no_trade_zone=no_trade_zone,
                 liquidation_evt=liquidation_evt,
-                m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+                m15_struct=(locals().get("m15_struct") or {}),
                 rsi15=rsi15,
                 div=div,
                 atr15=atr15,
-                liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
-                ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
-                playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
-                close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
-                sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
-                sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
-                spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
-                spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
-                entry_sniper=base.get("meta", {}).get("entry_sniper"),
-                playbook_v4=base.get("meta", {}).get("playbook_v4"),
+                liquidity_map_v1=(locals().get("liquidity_map_v1") or {}),
+                ema_pack=(ema_pack if isinstance(ema_pack, dict) else {}),
+                playbook_v2=(playbook_v2 if isinstance(playbook_v2, dict) else {}),
+                close_confirm_v4=(locals().get("close_confirm_v4") or {"strength": "NO"}),
+                sweep_buy=(sweep_buy if isinstance(sweep_buy, dict) else {}),
+                sweep_sell=(sweep_sell if isinstance(sweep_sell, dict) else {}),
+                spring_buy=(spring_buy if isinstance(spring_buy, dict) else {}),
+                spring_sell=(spring_sell if isinstance(spring_sell, dict) else {}),
+                entry_sniper=(locals().get("entry_sniper") or {}),
+                playbook_v4=(locals().get("playbook_v4") or {}),
             )
             return base
 
@@ -4331,20 +4337,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             range_pos=range_pos,
             no_trade_zone=no_trade_zone,
             liquidation_evt=liquidation_evt,
-            m15_struct=m15_struct if isinstance(m15_struct, dict) else {},
+            m15_struct=(locals().get("m15_struct") or {}),
             rsi15=rsi15,
             div=div,
             atr15=atr15,
-            liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
-            ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
-            playbook_v2=playbook_v2 if isinstance(playbook_v2, dict) else {},
-            close_confirm_v4=base.get("meta", {}).get("close_confirm_v4"),
-            sweep_buy=sweep_buy if isinstance(sweep_buy, dict) else {},
-            sweep_sell=sweep_sell if isinstance(sweep_sell, dict) else {},
-            spring_buy=spring_buy if isinstance(spring_buy, dict) else {},
-            spring_sell=spring_sell if isinstance(spring_sell, dict) else {},
-            entry_sniper=base.get("meta", {}).get("entry_sniper"),
-            playbook_v4=base.get("meta", {}).get("playbook_v4"),
+            liquidity_map_v1=(locals().get("liquidity_map_v1") or {}),
+            ema_pack=(ema_pack if isinstance(ema_pack, dict) else {}),
+            playbook_v2=(playbook_v2 if isinstance(playbook_v2, dict) else {}),
+            close_confirm_v4=(locals().get("close_confirm_v4") or {"strength": "NO"}),
+            sweep_buy=(sweep_buy if isinstance(sweep_buy, dict) else {}),
+            sweep_sell=(sweep_sell if isinstance(sweep_sell, dict) else {}),
+            spring_buy=(spring_buy if isinstance(spring_buy, dict) else {}),
+            spring_sell=(spring_sell if isinstance(spring_sell, dict) else {}),
+            entry_sniper=(locals().get("entry_sniper") or {}),
+            playbook_v4=(locals().get("playbook_v4") or {}),
         )
         return base
     # ===== PRO adjustments: divergence/candle/volume affect confidence & management =====
@@ -5108,8 +5114,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             notes.append(f"🧭 {s}")
     except Exception:
         pass
-
-    
     sweep_grade_v6 = "NONE"
     if bias_side == "BUY":
         sweep_grade_v6 = spring_buy.get("grade") if spring_buy.get("ok") else sweep_buy.get("grade")
@@ -5134,6 +5138,33 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
     base["last_price"] = float(last_close_15)
     base["current_price"] = float(last_close_15)
+    _attach_vnext_meta(
+        base,
+        symbol=symbol,
+        m15c=m15c,
+        bias_side=bias_guess,
+        h1_trend=h1_trend,
+        h4_trend=h4_trend,
+        market_state_v2=market_state_v2,
+        flow_state=flow_state,
+        range_pos=range_pos,
+        no_trade_zone=no_trade_zone,
+        liquidation_evt=liquidation_evt,
+        m15_struct=(locals().get("m15_struct") or {}),
+        rsi15=rsi15,
+        div=div,
+        atr15=atr15,
+        liquidity_map_v1=(locals().get("liquidity_map_v1") or {}),
+        ema_pack=(ema_pack if isinstance(ema_pack, dict) else {}),
+        playbook_v2=(playbook_v2 if isinstance(playbook_v2, dict) else {}),
+        close_confirm_v4=(locals().get("close_confirm_v4") or {"strength": "NO"}),
+        sweep_buy=(sweep_buy if isinstance(sweep_buy, dict) else {}),
+        sweep_sell=(sweep_sell if isinstance(sweep_sell, dict) else {}),
+        spring_buy=(spring_buy if isinstance(spring_buy, dict) else {}),
+        spring_sell=(spring_sell if isinstance(spring_sell, dict) else {}),
+        entry_sniper=(locals().get("entry_sniper") or {}),
+        playbook_v4=(locals().get("playbook_v4") or {}),
+    )
     return base
     # =========================
     # Formatter (MUST be named format_signal for main.py import)
