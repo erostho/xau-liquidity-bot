@@ -3490,6 +3490,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     entry_minor = sl_minor = tp1_minor = tp2_minor = None
     last_close_15 = None
     last_close_30 = None
+    trade_mode = "WAIT"
     context_lines = base["context_lines"]
     position_lines = base.get("position_lines", [])
     liquidity_lines = base["liquidity_lines"]
