@@ -3528,6 +3528,7 @@ def _manual_guidance_v1(
         lines.append("Chưa có điểm nổ rõ.")
 
     return {"lines": lines[:6]}
+    
 def _attach_vnext_meta(
     base: dict,
     *,
@@ -3557,6 +3558,7 @@ def _attach_vnext_meta(
     playbook_v4=None,
 ):
     try:
+        # ===== VNEXT =====
         context_verdict_v1 = _context_verdict_v1(
             bias_side=bias_side,
             h1_trend=h1_trend,
@@ -3637,6 +3639,142 @@ def _attach_vnext_meta(
         meta["trap_warning_v1"] = trap_warning_v1
         meta["manual_likelihood_v1"] = manual_likelihood_v1
         meta["manual_guidance_v1"] = manual_guidance_v1
+
+        # ===== PRO DESK =====
+        m15_tag = str((m15_struct or {}).get("tag") or "n/a").upper()
+
+        # 1) Market state
+        if (liquidation_evt or {}).get("ok"):
+            market_state_machine_v1 = {
+                "state": "LIQUIDATION",
+                "label": "Biến động thanh khoản mạnh",
+            }
+        elif str(market_state_v2 or "").upper() in ("CHOP", "TRANSITION"):
+            market_state_machine_v1 = {
+                "state": "CHOP",
+                "label": "Nhiễu / chuyển pha",
+            }
+        elif h1_trend == "bullish" and h4_trend == "bullish":
+            if "LL" in m15_tag or "LH" in m15_tag:
+                market_state_machine_v1 = {
+                    "state": "PULLBACK_BUY",
+                    "label": "Hồi trong xu hướng tăng",
+                }
+            else:
+                market_state_machine_v1 = {
+                    "state": "TREND_UP",
+                    "label": "Xu hướng tăng",
+                }
+        elif h1_trend == "bearish" and h4_trend == "bearish":
+            if "HH" in m15_tag or "HL" in m15_tag:
+                market_state_machine_v1 = {
+                    "state": "PULLBACK_SELL",
+                    "label": "Hồi trong xu hướng giảm",
+                }
+            else:
+                market_state_machine_v1 = {
+                    "state": "TREND_DOWN",
+                    "label": "Xu hướng giảm",
+                }
+        else:
+            market_state_machine_v1 = {
+                "state": "TRANSITION",
+                "label": "Chuyển pha",
+            }
+
+        # 2) Bias layers
+        if h1_trend == "bullish" and h4_trend == "bullish":
+            htf_bias = "BUY"
+        elif h1_trend == "bearish" and h4_trend == "bearish":
+            htf_bias = "SELL"
+        else:
+            htf_bias = "MIXED"
+
+        if "LL" in m15_tag or "LH" in m15_tag:
+            mtf_bias = "SELL_PULLBACK"
+        elif "HH" in m15_tag or "HL" in m15_tag:
+            mtf_bias = "BUY_PULLBACK"
+        else:
+            mtf_bias = "WAIT"
+
+        cv_state = str((context_verdict_v1 or {}).get("state") or "")
+        entry_bias = "READY" if "CONTINUATION" in cv_state else "WAIT"
+
+        bias_layers_v1 = {
+            "htf_bias": htf_bias,
+            "mtf_bias": mtf_bias,
+            "entry_bias": entry_bias,
+        }
+
+        # 3) No-trade zone
+        ntz_reasons = []
+        try:
+            rp = float(range_pos) if range_pos is not None else None
+        except Exception:
+            rp = None
+
+        if rp is not None and 0.35 <= rp <= 0.65:
+            ntz_reasons.append("giữa biên độ")
+
+        if str((liquidity_completion_v1 or {}).get("state") or "NO").upper() == "NO":
+            ntz_reasons.append("chưa có thanh khoản")
+
+        if str((close_confirm_v4 or {}).get("strength") or "NO").upper() in ("NO", "N/A"):
+            ntz_reasons.append("chưa có confirm")
+
+        if m15_tag in ("TRANSITION", "N/A", ""):
+            ntz_reasons.append("M15 chưa rõ")
+
+        if (trap_warning_v1 or {}).get("active"):
+            ntz_reasons.append("trap risk")
+
+        no_trade_zone_v3 = {
+            "active": len(ntz_reasons) >= 2,
+            "reasons": ntz_reasons[:5],
+        }
+
+        # 4) Decision
+        sniper_trigger = str((entry_sniper or {}).get("trigger") or "NONE").upper()
+        if no_trade_zone_v3["active"]:
+            decision_engine_v1 = {
+                "decision": "STAND ASIDE",
+                "reason": "No-trade zone",
+            }
+        elif sniper_trigger in ("READY", "TRIGGERED"):
+            decision_engine_v1 = {
+                "decision": "MANUAL STRIKE",
+                "reason": "Có trigger",
+            }
+        else:
+            decision_engine_v1 = {
+                "decision": "WAIT",
+                "reason": "Chưa đủ điều kiện",
+            }
+
+        # 5) Wait for
+        wf_lines = []
+        zl = (playbook_v2 or {}).get("zone_low")
+        zh = (playbook_v2 or {}).get("zone_high")
+        if zl is not None and zh is not None:
+            wf_lines.append(f"Chờ vùng {_fmt(zl)} – {_fmt(zh)}")
+
+        k2 = meta.get("key_levels", {}) or {}
+        if bias_side == "BUY":
+            lv = k2.get("M15_RANGE_HIGH")
+            if lv is not None:
+                wf_lines.append(f"Hoặc break {_fmt(lv)}")
+        elif bias_side == "SELL":
+            lv = k2.get("M15_RANGE_LOW")
+            if lv is not None:
+                wf_lines.append(f"Hoặc break {_fmt(lv)}")
+
+        wait_for_v1 = {"lines": wf_lines[:4]}
+
+        meta["market_state_machine_v1"] = market_state_machine_v1
+        meta["bias_layers_v1"] = bias_layers_v1
+        meta["no_trade_zone_v3"] = no_trade_zone_v3
+        meta["decision_engine_v1"] = decision_engine_v1
+        meta["wait_for_v1"] = wait_for_v1
 
     except Exception as e:
         base.setdefault("meta", {})["vnext_error"] = str(e)
