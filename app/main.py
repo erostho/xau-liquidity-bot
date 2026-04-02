@@ -93,7 +93,7 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_m
     total = len(parts)
     for i, part in enumerate(parts, start=1):
         header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
-        _send_long_telegram(header + part, chat_id=chat_id)
+        _send_telegram(header + part, chat_id=chat_id)
         
     
 def _parse_symbol_from_text(text: str) -> str:
@@ -1847,7 +1847,7 @@ async def telegram_webhook(request: Request):
 
             except Exception as e:
                 logger.exception("analysis failed: %s", e)
-                _send_long_telegram(f"❌ Analysis failed ({sym}): {e}", chat_id=chat_id)
+                _send_telegram(f"❌ Analysis failed ({sym}): {e}", chat_id=chat_id)
 
     return "OK"
 
