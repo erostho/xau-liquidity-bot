@@ -3049,7 +3049,14 @@ def format_scale_plan_v2(plan: dict) -> str:
             lines.append("⏳ SCALE TRIGGER:")
             for s in wf1.get("lines", [])[:3]:
                 lines.append(f"- {s}")
-
+            # ===== SCALE SUGGESTION =====
+        lines.append("📌 SCALE SUGGESTION:")
+        if ntz3.get("active"):
+            lines.append("- NO SCALE")
+            lines.append("- Chỉ quan sát vùng scale, chưa được vào")
+        else:
+            lines.append(f"- {de1.get('decision', 'WAIT')}")
+            lines.append("- Chỉ scale khi chạm vùng + có phản ứng rõ")
     except Exception:
         pass
     return "\n".join(lines).strip()
@@ -3769,13 +3776,35 @@ def _attach_vnext_meta(
                 wf_lines.append(f"Hoặc break {_fmt(lv)}")
 
         wait_for_v1 = {"lines": wf_lines[:4]}
-
         meta["market_state_machine_v1"] = market_state_machine_v1
         meta["bias_layers_v1"] = bias_layers_v1
         meta["no_trade_zone_v3"] = no_trade_zone_v3
         meta["decision_engine_v1"] = decision_engine_v1
         meta["wait_for_v1"] = wait_for_v1
-
+        # ===== CONFLICT ENGINE + SUGGESTION =====
+        conflict_engine_v1 = _conflict_engine_v1(
+            bias_layers_v1=bias_layers_v1,
+            context_verdict_v1=context_verdict_v1,
+            liquidity_completion_v1=liquidity_completion_v1,
+            trap_warning_v1=trap_warning_v1,
+            range_pos=range_pos,
+            fib_confluence_v1=fib_confluence_v1,
+        )
+    
+        suggestion_block_v1 = _suggestion_block_v1(
+            symbol=symbol,
+            bias_side=bias_side,
+            decision_engine_v1=decision_engine_v1,
+            no_trade_zone_v3=no_trade_zone_v3,
+            playbook_v2=playbook_v2,
+            entry_sniper=entry_sniper,
+            manual_likelihood_v1=manual_likelihood_v1,
+            conflict_engine_v1=conflict_engine_v1,
+            m15_struct=(m15_struct or {}),
+        )
+    
+        meta["conflict_engine_v1"] = conflict_engine_v1
+        meta["suggestion_block_v1"] = suggestion_block_v1
     except Exception as e:
         base.setdefault("meta", {})["vnext_error"] = str(e)
 
@@ -3888,7 +3917,166 @@ def _wait_for_engine_v1(bias_side, playbook_v2, key_levels):
             lines.append(f"Hoặc break {lv}")
 
     return {"lines": lines}
-    
+# =========================
+# CONFLICT ENGINE + SUGGESTION BLOCK
+# =========================
+
+def _conflict_engine_v1(
+    bias_layers_v1: dict | None,
+    context_verdict_v1: dict | None,
+    liquidity_completion_v1: dict | None,
+    trap_warning_v1: dict | None,
+    range_pos: float | None,
+    fib_confluence_v1: dict | None,
+) -> dict:
+    reasons = []
+    severity = 0
+
+    bl = bias_layers_v1 or {}
+    cv = context_verdict_v1 or {}
+    liq = liquidity_completion_v1 or {}
+    trap = trap_warning_v1 or {}
+    fib = fib_confluence_v1 or {}
+
+    htf_bias = str(bl.get("htf_bias") or "MIXED").upper()
+    mtf_bias = str(bl.get("mtf_bias") or "WAIT").upper()
+    entry_bias = str(bl.get("entry_bias") or "WAIT").upper()
+    cv_state = str(cv.get("state") or "").upper()
+    liq_state = str(liq.get("state") or "NO").upper()
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    # 1) HTF vs location
+    if htf_bias == "SELL" and rp is not None and rp <= 0.30:
+        reasons.append("HTF SELL nhưng giá đang ở vùng thấp")
+        severity += 1
+
+    if htf_bias == "BUY" and rp is not None and rp >= 0.70:
+        reasons.append("HTF BUY nhưng giá đang ở vùng cao")
+        severity += 1
+
+    # 2) Context vs entry
+    if "CONTINUATION" in cv_state and entry_bias != "READY":
+        reasons.append("Đúng cảnh nhưng entry chưa sẵn sàng")
+        severity += 1
+
+    # 3) Liquidity conflict
+    if liq_state == "NO":
+        reasons.append("thanh khoản chưa hoàn tất")
+        severity += 1
+
+    # 4) Trap conflict
+    if (trap or {}).get("active"):
+        reasons.append("trap risk đang hiện diện")
+        severity += 1
+
+    # 5) Fib conflict
+    if not bool(fib.get("ok")):
+        reasons.append("chưa có fib confluence rõ")
+        severity += 1
+
+    # 6) Bias mismatch
+    if htf_bias == "SELL" and "BUY_PULLBACK" in mtf_bias:
+        reasons.append("HTF SELL nhưng MTF đang hồi tăng")
+        severity += 1
+
+    if htf_bias == "BUY" and "SELL_PULLBACK" in mtf_bias:
+        reasons.append("HTF BUY nhưng MTF đang hồi giảm")
+        severity += 1
+
+    if severity >= 4:
+        verdict = "HIGH CONFLICT"
+    elif severity >= 2:
+        verdict = "MEDIUM CONFLICT"
+    else:
+        verdict = "LOW CONFLICT"
+
+    return {
+        "active": severity >= 2,
+        "severity": severity,
+        "verdict": verdict,
+        "reasons": reasons[:5],
+    }
+
+
+def _suggestion_block_v1(
+    symbol: str,
+    bias_side: str | None,
+    decision_engine_v1: dict | None,
+    no_trade_zone_v3: dict | None,
+    playbook_v2: dict | None,
+    entry_sniper: dict | None,
+    manual_likelihood_v1: dict | None,
+    conflict_engine_v1: dict | None,
+    m15_struct: dict | None,
+) -> dict:
+    out = {
+        "title": "NO TRADE",
+        "lines": [],
+    }
+
+    de = decision_engine_v1 or {}
+    ntz = no_trade_zone_v3 or {}
+    pb = playbook_v2 or {}
+    sniper = entry_sniper or {}
+    ml = manual_likelihood_v1 or {}
+    cf = conflict_engine_v1 or {}
+    m15s = m15_struct or {}
+
+    decision = str(de.get("decision") or "WAIT").upper()
+    conflict_active = bool(cf.get("active"))
+    trap_risk = int(ml.get("trap_risk") or 0)
+    zone_low = pb.get("zone_low")
+    zone_high = pb.get("zone_high")
+    sniper_trigger = str(sniper.get("trigger") or "NONE").upper()
+    bos = m15s.get("bos_level")
+    invalid = m15s.get("invalid_level") or m15s.get("pullback_invalid")
+
+    if ntz.get("active") or conflict_active or decision == "STAND ASIDE":
+        out["title"] = "NO TRADE"
+        out["lines"] = [
+            "Chưa có lợi thế rõ để vào lệnh mới.",
+            "Ưu tiên đứng ngoài và chờ market lộ mặt thêm.",
+        ]
+        if zone_low is not None and zone_high is not None:
+            out["lines"].append(f"Chờ phản ứng tại vùng {_fmt(zone_low)} – {_fmt(zone_high)}")
+        return out
+
+    side = str(bias_side or "NONE").upper()
+    if side not in ("BUY", "SELL"):
+        side = str(ml.get("best_side") or "NONE").upper()
+
+    if decision == "MANUAL STRIKE":
+        out["title"] = f"{side} SETUP"
+    else:
+        out["title"] = f"WAIT {side}"
+
+    if zone_low is not None and zone_high is not None:
+        out["lines"].append(f"Zone ưu tiên: {_fmt(zone_low)} – {_fmt(zone_high)}")
+
+    if sniper_trigger in ("READY", "TRIGGERED"):
+        out["lines"].append(f"Trigger: {sniper_trigger}")
+    else:
+        out["lines"].append("Trigger: chờ M15 reject / displacement / follow-through")
+
+    if bos is not None:
+        out["lines"].append(f"Break xác nhận: {_fmt(bos)}")
+
+    if invalid is not None:
+        out["lines"].append(f"Invalidation: {_fmt(invalid)}")
+
+    if trap_risk >= 55:
+        out["lines"].append("Risk: HIGH")
+    elif trap_risk >= 35:
+        out["lines"].append("Risk: MEDIUM")
+    else:
+        out["lines"].append("Risk: LOW")
+
+    out["lines"] = out["lines"][:5]
+    return out    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -5516,6 +5704,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["no_trade_zone_v3"] = no_trade_zone_v3
     meta["decision_engine_v1"] = decision_engine_v1
     meta["wait_for_v1"] = wait_for_v1
+
+    
     # ===== PRO DESK ADD =====
     market_state_machine_v1 = _market_state_machine_v1(
         h1_trend=h1_trend,
@@ -6977,6 +7167,22 @@ def format_signal(sig: Dict[str, Any]) -> str:
         for s in wf1.get("lines")[:3]:
             add(lines, f"- {s}")
             
+    # ===== CONFLICT + SUGGESTION OUTPUT =====
+    cf1 = meta.get("conflict_engine_v1") or {}
+    sg1 = meta.get("suggestion_block_v1") or {}
+    
+    if cf1.get("active"):
+        add(lines, "⚖️ Conflict:")
+        add(lines, f"- {cf1.get('verdict')}")
+        for s in (cf1.get("reasons") or [])[:3]:
+            add(lines, f"- {s}")
+    
+    if sg1:
+        add(lines, "")
+        add(lines, "📌 SUGGESTION:")
+        add(lines, f"- {sg1.get('title', 'NO TRADE')}")
+        for s in (sg1.get("lines") or [])[:4]:
+            add(lines, f"- {s}")
     out = []
     for line in lines:
         if line == "" and (not out or out[-1] == ""):
