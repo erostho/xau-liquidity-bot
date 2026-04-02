@@ -6827,7 +6827,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         for r in ntz3.get("reasons", [])[:3]:
             add(lines, f"- {r}")
         
-    if de1.et("decision"):
+    if de1.get("decision"):
         add(lines, f"🎯 Decision: {de1.get('decision')}")
         add(lines, f"- {de1.get('reason')}")
         
