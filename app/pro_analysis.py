@@ -3057,6 +3057,16 @@ def format_scale_plan_v2(plan: dict) -> str:
         else:
             lines.append(f"- {de1.get('decision', 'WAIT')}")
             lines.append("- Chỉ scale khi chạm vùng + có phản ứng rõ")
+
+        # ===== SCALE TRIGGER V2 =====
+        tg2 = plan.get("meta", {}).get("trigger_engine_v2", {}) if isinstance(plan.get("meta", {}), dict) else {}
+        if tg2:
+            lines.append("🎯 SCALE TRIGGER V2:")
+            lines.append(f"- State: {tg2.get('state', 'WAIT')}")
+            lines.append(f"- Quality: {tg2.get('quality', 'LOW')}")
+            if tg2.get("reason"):
+                for s in tg2.get("reason", [])[:3]:
+                    lines.append(f"- {s}")
     except Exception:
         pass
     return "\n".join(lines).strip()
@@ -3790,7 +3800,7 @@ def _attach_vnext_meta(
             range_pos=range_pos,
             fib_confluence_v1=fib_confluence_v1,
         )
-    
+        
         suggestion_block_v1 = _suggestion_block_v1(
             symbol=symbol,
             bias_side=bias_side,
@@ -3802,12 +3812,29 @@ def _attach_vnext_meta(
             conflict_engine_v1=conflict_engine_v1,
             m15_struct=(m15_struct or {}),
         )
-    
         meta["conflict_engine_v1"] = conflict_engine_v1
         meta["suggestion_block_v1"] = suggestion_block_v1
+
+        # ===== TRIGGER ENGINE V2 =====
+        trigger_engine_v2 = _trigger_engine_v2(
+            bias_side=bias_side,
+            context_verdict_v1=context_verdict_v1,
+            conflict_engine_v1=conflict_engine_v1,
+            no_trade_zone_v3=no_trade_zone_v3,
+            entry_sniper=entry_sniper,
+            playbook_v2=playbook_v2,
+            fib_confluence_v1=fib_confluence_v1,
+            liquidity_completion_v1=liquidity_completion_v1,
+            close_confirm_v4=close_confirm_v4,
+            m15_struct=(m15_struct or {}),
+            range_pos=range_pos,
+            current_price=base.get("last_price") or base.get("entry") or base.get("current_price"),
+            atr15=atr15,
+        )
+        meta["trigger_engine_v2"] = trigger_engine_v2
+        
     except Exception as e:
         base.setdefault("meta", {})["vnext_error"] = str(e)
-
     return base
 
 # =========================
@@ -4077,6 +4104,175 @@ def _suggestion_block_v1(
 
     out["lines"] = out["lines"][:5]
     return out    
+
+# =========================
+# TRIGGER ENGINE V2
+# =========================
+
+def _trigger_engine_v2(
+    bias_side: str | None,
+    context_verdict_v1: dict | None,
+    conflict_engine_v1: dict | None,
+    no_trade_zone_v3: dict | None,
+    entry_sniper: dict | None,
+    playbook_v2: dict | None,
+    fib_confluence_v1: dict | None,
+    liquidity_completion_v1: dict | None,
+    close_confirm_v4: dict | None,
+    m15_struct: dict | None,
+    range_pos: float | None,
+    current_price: float | None,
+    atr15: float | None,
+) -> dict:
+    out = {
+        "state": "WAIT",
+        "entry_type": "NONE",
+        "quality": "LOW",
+        "reason": [],
+        "trigger_ok": False,
+        "location_ok": False,
+        "confirm_ok": False,
+        "follow_ok": False,
+    }
+
+    cv = context_verdict_v1 or {}
+    cf = conflict_engine_v1 or {}
+    ntz = no_trade_zone_v3 or {}
+    sniper = entry_sniper or {}
+    pb = playbook_v2 or {}
+    fib = fib_confluence_v1 or {}
+    liq = liquidity_completion_v1 or {}
+    ccv4 = close_confirm_v4 or {}
+    m15s = m15_struct or {}
+
+    sniper_dir = str(sniper.get("direction") or "NONE").upper()
+    sniper_trigger = str(sniper.get("trigger") or "NONE").upper()
+    sniper_candle = str(sniper.get("signal_candle") or sniper.get("direction_candle") or "NONE").upper()
+
+    cv_state = str(cv.get("state") or "").upper()
+    liq_state = str(liq.get("state") or "NO").upper()
+    confirm_strength = str(ccv4.get("strength") or "NO").upper()
+    m15_tag = str(m15s.get("tag") or "N/A").upper()
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    px = None
+    try:
+        px = float(current_price) if current_price is not None else None
+    except Exception:
+        px = None
+
+    zl = pb.get("zone_low")
+    zh = pb.get("zone_high")
+    try:
+        zl = float(zl) if zl is not None else None
+        zh = float(zh) if zh is not None else None
+    except Exception:
+        zl, zh = None, None
+
+    pad = 0.0
+    try:
+        pad = max(0.0, float(atr15 or 0.0) * 0.15)
+    except Exception:
+        pad = 0.0
+
+    # 1) trigger raw
+    if sniper_trigger in ("READY", "TRIGGERED"):
+        out["trigger_ok"] = True
+    else:
+        out["reason"].append("chưa có trigger sniper")
+
+    # 2) context
+    context_ok = False
+    if bias_side == "BUY" and cv_state in ("BUY_CONTINUATION", "BUY_BIAS", "NEUTRAL", "POST_LIQUIDATION"):
+        context_ok = True
+    elif bias_side == "SELL" and cv_state in ("SELL_CONTINUATION", "SELL_BIAS", "NEUTRAL", "POST_LIQUIDATION"):
+        context_ok = True
+    elif "CONTINUATION" in cv_state:
+        context_ok = True
+
+    if not context_ok:
+        out["reason"].append("context chưa ủng hộ đủ mạnh")
+
+    # 3) location
+    location_ok = False
+    if zl is not None and zh is not None and px is not None:
+        if (zl - pad) <= px <= (zh + pad):
+            location_ok = True
+
+    if not location_ok and fib.get("ok") and px is not None:
+        fzl = fib.get("zone_low")
+        fzh = fib.get("zone_high")
+        try:
+            fzl = float(fzl) if fzl is not None else None
+            fzh = float(fzh) if fzh is not None else None
+        except Exception:
+            fzl, fzh = None, None
+        if fzl is not None and fzh is not None and (fzl - pad) <= px <= (fzh + pad):
+            location_ok = True
+
+    # fallback by range position
+    if not location_ok and rp is not None:
+        if bias_side == "BUY" and rp <= 0.35:
+            location_ok = True
+        elif bias_side == "SELL" and rp >= 0.65:
+            location_ok = True
+
+    out["location_ok"] = location_ok
+    if not location_ok:
+        out["reason"].append("location chưa đẹp")
+
+    # 4) confirm
+    confirm_ok = confirm_strength in ("WEAK", "STRONG")
+    out["confirm_ok"] = confirm_ok
+    if not confirm_ok:
+        out["reason"].append("chưa có close confirm")
+
+    # 5) liquidity follow
+    follow_ok = False
+    if liq_state in ("YES", "PARTIAL"):
+        follow_ok = True
+    elif sniper_trigger == "TRIGGERED" and confirm_strength == "STRONG":
+        follow_ok = True
+
+    # structure alignment
+    if bias_side == "BUY" and ("HL" in m15_tag or "HH" in m15_tag or m15_tag == "TRANSITION"):
+        follow_ok = follow_ok or True
+    if bias_side == "SELL" and ("LH" in m15_tag or "LL" in m15_tag or m15_tag == "TRANSITION"):
+        follow_ok = follow_ok or True
+
+    out["follow_ok"] = follow_ok
+    if not follow_ok:
+        out["reason"].append("chưa có follow-through đủ rõ")
+
+    # 6) conflict filter
+    if (cf.get("severity") or 0) >= 4:
+        out["reason"].append("conflict cao")
+    if (ntz.get("active") is True):
+        out["reason"].append("đang trong no-trade zone")
+
+    # final state
+    hard_block = bool(ntz.get("active")) or (cf.get("severity") or 0) >= 4
+
+    if out["trigger_ok"] and location_ok and confirm_ok and follow_ok and not hard_block:
+        out["state"] = "TRIGGERED"
+        out["entry_type"] = "SNIPER"
+        out["quality"] = "HIGH"
+    elif out["trigger_ok"] and location_ok and not hard_block:
+        out["state"] = "READY"
+        out["entry_type"] = "SETUP_FORMING"
+        out["quality"] = "MEDIUM"
+    else:
+        out["state"] = "WAIT"
+        out["entry_type"] = "NONE"
+        out["quality"] = "LOW"
+
+    out["reason"] = out["reason"][:5]
+    return out
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -7135,6 +7331,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
     except Exception:
         pass
+
+    
     # ===== PRO DESK OUTPUT =====
     ms1 = meta.get("market_state_machine_v1") or {}
     bl1 = meta.get("bias_layers_v1") or {}
@@ -7166,7 +7364,27 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "⏳ Wait for:")
         for s in wf1.get("lines")[:3]:
             add(lines, f"- {s}")
-            
+    # ===== TRIGGER ENGINE V2 OUTPUT =====
+    tg2 = meta.get("trigger_engine_v2") or {}
+    
+    if tg2:
+        add(lines, "")
+        add(lines, "🎯 TRIGGER ENGINE V2:")
+        add(lines, f"- State: {tg2.get('state', 'WAIT')}")
+        add(lines, f"- Entry type: {tg2.get('entry_type', 'NONE')}")
+        add(lines, f"- Quality: {tg2.get('quality', 'LOW')}")
+    
+        if tg2.get("location_ok") is not None:
+            add(lines, f"- Location OK: {'YES' if tg2.get('location_ok') else 'NO'}")
+        if tg2.get("confirm_ok") is not None:
+            add(lines, f"- Confirm OK: {'YES' if tg2.get('confirm_ok') else 'NO'}")
+        if tg2.get("follow_ok") is not None:
+            add(lines, f"- Follow-through: {'YES' if tg2.get('follow_ok') else 'NO'}")
+    
+        if tg2.get("reason"):
+            add(lines, "- Lý do:")
+            for s in tg2.get("reason", [])[:4]:
+                add(lines, f"  • {s}")
     # ===== CONFLICT + SUGGESTION OUTPUT =====
     cf1 = meta.get("conflict_engine_v1") or {}
     sg1 = meta.get("suggestion_block_v1") or {}
@@ -7183,6 +7401,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- {sg1.get('title', 'NO TRADE')}")
         for s in (sg1.get("lines") or [])[:4]:
             add(lines, f"- {s}")
+    
+    
     out = []
     for line in lines:
         if line == "" and (not out or out[-1] == ""):
