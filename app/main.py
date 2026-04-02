@@ -110,7 +110,7 @@ def _parse_symbol_from_text(text: str) -> str:
 
     return DEFAULT_SYMBOLS[0] if DEFAULT_SYMBOLS else "XAU/USD"
 
-def _is__command(text: str) -> bool:
+def _is_scale_command(text: str) -> bool:
     t = (text or "").strip().upper()
     return t in (
         "BTC SCALE", "XAU SCALE", "XAG SCALE",
