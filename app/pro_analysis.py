@@ -6813,28 +6813,28 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
     add(lines, "")
     add(lines, "🧠 ===== PRO DESK =====")
-        if ms1.get("state"):
-            add(lines, f"🧠 Market state: {ms1.get('state')} | {ms1.get('label')}")
+    if ms1.get("state"):
+        add(lines, f"🧠 Market state: {ms1.get('state')} | {ms1.get('label')}")
         
-        if bl1:
-            add(lines, "🧭 Bias:")
-            add(lines, f"- HTF: {bl1.get('htf_bias')}")
-            add(lines, f"- MTF: {bl1.get('mtf_bias')}")
-            add(lines, f"- Entry: {bl1.get('entry_bias')}")
+    if bl1:
+        add(lines, "🧭 Bias:")
+        add(lines, f"- HTF: {bl1.get('htf_bias')}")
+        add(lines, f"- MTF: {bl1.get('mtf_bias')}")
+        add(lines, f"- Entry: {bl1.get('entry_bias')}")
         
-        if ntz3.get("active"):
-            add(lines, "🚫 NO TRADE ZONE")
-            for r in ntz3.get("reasons", [])[:3]:
-                add(lines, f"- {r}")
+    if ntz3.get("active"):
+        add(lines, "🚫 NO TRADE ZONE")
+        for r in ntz3.get("reasons", [])[:3]:
+            add(lines, f"- {r}")
         
-        if de1.get("decision"):
-            add(lines, f"🎯 Decision: {de1.get('decision')}")
-            add(lines, f"- {de1.get('reason')}")
+    if de1.et("decision"):
+        add(lines, f"🎯 Decision: {de1.get('decision')}")
+        add(lines, f"- {de1.get('reason')}")
         
-        if wf1.get("lines"):
-            add(lines, "⏳ Wait for:")
-            for s in wf1.get("lines")[:3]:
-                add(lines, f"- {s}")
+    if wf1.get("lines"):
+        add(lines, "⏳ Wait for:")
+        for s in wf1.get("lines")[:3]:
+            add(lines, f"- {s}")
             
     out = []
     for line in lines:
