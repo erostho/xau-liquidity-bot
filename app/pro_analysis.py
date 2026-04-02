@@ -3887,6 +3887,30 @@ def _attach_vnext_meta(
         )
         meta["exit_engine_v2"] = exit_engine_v2
         
+        position_quality_v2 = _position_quality_v2(
+            review_side=review_side_for_exit,
+            final_score=base.get("final_score") or base.get("score") or 0,
+            range_pos=range_pos,
+            hl_ok=bool((m15_struct or {}).get("hl")),
+            lh_ok=bool((m15_struct or {}).get("lh")),
+            break_up=bool((m15_struct or {}).get("break_up")),
+            break_dn=bool((m15_struct or {}).get("break_dn")),
+            conflict_engine_v1=conflict_engine_v1,
+            trigger_engine_v2=trigger_engine_v2,
+        )
+    
+        review_conflict_v2 = _review_conflict_v2(
+            review_side=review_side_for_exit,
+            range_pos=range_pos,
+            liquidity_completion_v1=liquidity_completion_v1,
+            trap_warning_v1=trap_warning_v1,
+            hl_ok=bool((m15_struct or {}).get("hl")),
+            lh_ok=bool((m15_struct or {}).get("lh")),
+        )
+    
+        meta["position_quality_v2"] = position_quality_v2
+        meta["review_conflict_v2"] = review_conflict_v2
+        
         # ===== MASTER ENGINE =====
         master_engine_v1 = _master_engine_v1(
             market_state_machine_v1=market_state_machine_v1,
@@ -4376,12 +4400,13 @@ def _exit_engine_v2(
     range_pos: float | None,
 ) -> dict:
     out = {
-        "state": "HOLD",
-        "decision": "Giữ tạm",
+        "state": "HOLD_LIGHT",
+        "decision": "Giữ nhẹ, không add",
         "reason": [],
         "invalidation_hit": False,
         "structure_status": "UNKNOWN",
         "risk_level": "MEDIUM",
+        "add_allowed": False,
     }
 
     side = str(review_side or "").upper()
@@ -4408,7 +4433,6 @@ def _exit_engine_v2(
     except Exception:
         rp = None
 
-    # 1) invalidation
     invalidation_hit = False
     if side == "BUY" and px is not None and inv is not None and px < inv:
         invalidation_hit = True
@@ -4417,7 +4441,6 @@ def _exit_engine_v2(
 
     out["invalidation_hit"] = invalidation_hit
 
-    # 2) structure status
     if side == "BUY":
         if hl_ok and break_up:
             out["structure_status"] = "CONFIRMED_BUY"
@@ -4433,14 +4456,12 @@ def _exit_engine_v2(
         else:
             out["structure_status"] = "NO_LH"
 
-    # 3) conflict / trigger
     conflict_sev = int(cf.get("severity") or 0)
     trigger_state = str(tg2.get("state") or "WAIT").upper()
 
-    # 4) risk level
     risk_points = 0
     if invalidation_hit:
-        risk_points += 3
+        risk_points += 4
     if conflict_sev >= 4:
         risk_points += 2
     elif conflict_sev >= 2:
@@ -4454,6 +4475,11 @@ def _exit_engine_v2(
     if score < 35:
         risk_points += 1
 
+    if side == "BUY" and rp is not None and rp >= 0.75:
+        risk_points += 1
+    if side == "SELL" and rp is not None and rp <= 0.25:
+        risk_points += 1
+
     if risk_points >= 5:
         out["risk_level"] = "HIGH"
     elif risk_points >= 3:
@@ -4461,55 +4487,56 @@ def _exit_engine_v2(
     else:
         out["risk_level"] = "LOW"
 
-    # 5) final state
     if invalidation_hit:
         out["state"] = "EXIT_NOW"
         out["decision"] = "Thoát ngay / cắt mạnh"
         out["reason"].append("đã chạm invalidation")
-    else:
-        if side == "BUY":
-            if hl_ok and break_up:
-                out["state"] = "HOLD"
-                out["decision"] = "Có thể giữ tiếp"
-                out["reason"].append("đã có HL + break_up")
-            elif not hl_ok and conflict_sev >= 2:
-                out["state"] = "REDUCE_RISK"
-                out["decision"] = "Ưu tiên giảm size / giữ rất ngắn"
-                out["reason"].append("BUY chưa có HL")
-                out["reason"].append("conflict còn hiện diện")
-            elif not hl_ok:
-                out["state"] = "CUT_SOON"
-                out["decision"] = "Không add, chờ xác nhận, sẵn sàng thoát"
-                out["reason"].append("BUY chưa có HL")
-            else:
-                out["state"] = "HOLD"
-                out["decision"] = "Giữ tạm, chưa add"
-                out["reason"].append("đã có HL nhưng chưa break_up")
-        elif side == "SELL":
-            if lh_ok and break_dn:
-                out["state"] = "HOLD"
-                out["decision"] = "Có thể giữ tiếp"
-                out["reason"].append("đã có LH + break_dn")
-            elif not lh_ok and conflict_sev >= 2:
-                out["state"] = "REDUCE_RISK"
-                out["decision"] = "Ưu tiên giảm size / giữ rất ngắn"
-                out["reason"].append("SELL chưa có LH")
-                out["reason"].append("conflict còn hiện diện")
-            elif not lh_ok:
-                out["state"] = "CUT_SOON"
-                out["decision"] = "Không add, chờ xác nhận, sẵn sàng thoát"
-                out["reason"].append("SELL chưa có LH")
-            else:
-                out["state"] = "HOLD"
-                out["decision"] = "Giữ tạm, chưa add"
-                out["reason"].append("đã có LH nhưng chưa break_dn")
+        out["add_allowed"] = False
+        return out
 
-    # 6) range context
-    if rp is not None:
-        if side == "BUY" and rp >= 0.70:
-            out["reason"].append("BUY đang ở vùng cao")
-        if side == "SELL" and rp <= 0.30:
-            out["reason"].append("SELL đang ở vùng thấp")
+    if side == "BUY":
+        if hl_ok and break_up and conflict_sev < 2:
+            out["state"] = "HOLD"
+            out["decision"] = "Có thể giữ tiếp"
+            out["reason"].append("BUY đã có HL + break_up")
+            out["add_allowed"] = True
+        elif hl_ok and not break_up:
+            out["state"] = "HOLD_LIGHT"
+            out["decision"] = "Giữ nhẹ, chưa add"
+            out["reason"].append("đã có HL nhưng chưa break_up")
+        elif not hl_ok and conflict_sev >= 2:
+            out["state"] = "REDUCE_RISK"
+            out["decision"] = "Ưu tiên giảm size / giữ rất ngắn"
+            out["reason"].append("BUY chưa có HL")
+            out["reason"].append("conflict còn hiện diện")
+        else:
+            out["state"] = "CUT_SOON"
+            out["decision"] = "Không add, sẵn sàng thoát nếu không cải thiện"
+            out["reason"].append("BUY chưa có HL")
+    elif side == "SELL":
+        if lh_ok and break_dn and conflict_sev < 2:
+            out["state"] = "HOLD"
+            out["decision"] = "Có thể giữ tiếp"
+            out["reason"].append("SELL đã có LH + break_dn")
+            out["add_allowed"] = True
+        elif lh_ok and not break_dn:
+            out["state"] = "HOLD_LIGHT"
+            out["decision"] = "Giữ nhẹ, chưa add"
+            out["reason"].append("đã có LH nhưng chưa break_dn")
+        elif not lh_ok and conflict_sev >= 2:
+            out["state"] = "REDUCE_RISK"
+            out["decision"] = "Ưu tiên giảm size / giữ rất ngắn"
+            out["reason"].append("SELL chưa có LH")
+            out["reason"].append("conflict còn hiện diện")
+        else:
+            out["state"] = "CUT_SOON"
+            out["decision"] = "Không add, sẵn sàng thoát nếu không cải thiện"
+            out["reason"].append("SELL chưa có LH")
+
+    if side == "BUY" and rp is not None and rp >= 0.75:
+        out["reason"].append("BUY đang ở vùng cao")
+    if side == "SELL" and rp is not None and rp <= 0.25:
+        out["reason"].append("SELL đang ở vùng thấp")
 
     if trigger_state == "WAIT":
         out["reason"].append("chưa có trigger hỗ trợ giữ lệnh")
@@ -4655,7 +4682,145 @@ def _resolve_review_side(sig: dict | None, fallback_bias: str | None = None) -> 
 
     # 5) final fallback only
     return _normalize_trade_side(fallback_bias)
-    
+def _position_quality_v2(
+    review_side: str | None,
+    final_score: float | int | None,
+    range_pos: float | None,
+    hl_ok: bool,
+    lh_ok: bool,
+    break_up: bool,
+    break_dn: bool,
+    conflict_engine_v1: dict | None,
+    trigger_engine_v2: dict | None,
+) -> dict:
+    side = str(review_side or "").upper()
+    score = float(final_score or 0)
+    cf = conflict_engine_v1 or {}
+    tg = trigger_engine_v2 or {}
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    conflict_sev = int(cf.get("severity") or 0)
+    trigger_state = str(tg.get("state") or "WAIT").upper()
+
+    pos_score = 0
+
+    # base score
+    if score >= 55:
+        pos_score += 2
+    elif score >= 35:
+        pos_score += 1
+
+    # side-sensitive location
+    if side == "BUY":
+        if rp is not None and rp <= 0.35:
+            pos_score += 2
+        elif rp is not None and rp >= 0.75:
+            pos_score -= 2
+    elif side == "SELL":
+        if rp is not None and rp >= 0.65:
+            pos_score += 2
+        elif rp is not None and rp <= 0.25:
+            pos_score -= 2
+
+    # structure
+    if side == "BUY":
+        if hl_ok:
+            pos_score += 1
+        if break_up:
+            pos_score += 1
+    elif side == "SELL":
+        if lh_ok:
+            pos_score += 1
+        if break_dn:
+            pos_score += 1
+
+    # conflict
+    if conflict_sev >= 4:
+        pos_score -= 2
+    elif conflict_sev >= 2:
+        pos_score -= 1
+
+    # trigger support
+    if trigger_state == "TRIGGERED":
+        pos_score += 1
+    elif trigger_state == "WAIT":
+        pos_score -= 1
+
+    if pos_score >= 4:
+        quality = "STRONG"
+        reason = "vị trí tốt + cấu trúc hỗ trợ + conflict thấp"
+    elif pos_score >= 1:
+        quality = "MID"
+        reason = "có một phần lợi thế nhưng chưa đủ sạch để tăng rủi ro"
+    else:
+        quality = "WEAK"
+        reason = "vị trí/cấu trúc chưa đủ đẹp hoặc conflict còn cao"
+
+    return {
+        "quality": quality,
+        "reason": reason,
+        "score_internal": pos_score,
+    }
+
+def _review_conflict_v2(
+    review_side: str | None,
+    range_pos: float | None,
+    liquidity_completion_v1: dict | None,
+    trap_warning_v1: dict | None,
+    hl_ok: bool,
+    lh_ok: bool,
+) -> dict:
+    side = str(review_side or "").upper()
+    liq = liquidity_completion_v1 or {}
+    trap = trap_warning_v1 or {}
+
+    reasons = []
+    sev = 0
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    if str((liq.get("state") or "NO")).upper() == "NO":
+        reasons.append("thanh khoản chưa hoàn tất")
+        sev += 1
+
+    if (trap or {}).get("active"):
+        reasons.append("trap risk đang hiện diện")
+        sev += 1
+
+    if side == "BUY" and not hl_ok:
+        reasons.append("BUY chưa có HL xác nhận")
+        sev += 1
+    if side == "SELL" and not lh_ok:
+        reasons.append("SELL chưa có LH xác nhận")
+        sev += 1
+
+    if side == "BUY" and rp is not None and rp >= 0.75:
+        reasons.append("BUY đang ở vùng cao")
+        sev += 1
+    if side == "SELL" and rp is not None and rp <= 0.25:
+        reasons.append("SELL đang ở vùng thấp")
+        sev += 1
+
+    if sev >= 4:
+        verdict = "HIGH CONFLICT"
+    elif sev >= 2:
+        verdict = "MEDIUM CONFLICT"
+    else:
+        verdict = "LOW CONFLICT"
+
+    return {
+        "active": sev >= 2,
+        "severity": sev,
+        "verdict": verdict,
+        "reasons": reasons[:5],
+    }
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
