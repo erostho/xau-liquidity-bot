@@ -3936,6 +3936,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     entry_sniper = {}
     playbook_v4 = {}
     close_confirm_v4 = {"strength": "NO"}
+    session_v4 = {}
+    htf_pressure_v4 = {}
+    macro_v4 = {}
     # ---- Safety / normalize candles
     if not m15 or not m30 or not h1:
         base["note_lines"].append("⚠️ Thiếu dữ liệu M15/M30/H1 → không phân tích được.")
@@ -4784,7 +4787,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         symbol=symbol,
         m15c=m15c,
         h1_trend=h1_trend,
-        htf_pressure_v4=htf_pressure_v4,
+        htf_pressure_v4=(htf_pressure_v4 or {}),
         flow_state=flow_state,
         range_pos=range_pos,
         market_state_v2=market_state_v2,
@@ -4798,7 +4801,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     mm_play = _build_mm_real_play_v1(
         liq_map=liquidity_map_v1,
         range_pos=range_pos,
-        htf_pressure_v4=htf_pressure_v4,
+        htf_pressure_v4=(htf_pressure_v4 or {}),
         playbook_v2=playbook_v2,
         ema_pack=ema_pack,
     )
@@ -4816,7 +4819,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         symbol=symbol,
         m15c=m15c,
         h1_trend=h1_trend,
-        htf_pressure_v4=htf_pressure_v4,
+        htf_pressure_v4=(htf_pressure_v4 or {}),
         market_state_v2=market_state_v2,
         flow_state=flow_state,
         range_pos=range_pos,
@@ -5955,7 +5958,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     macro_v4 = meta.get("macro_v4") if isinstance(meta.get("macro_v4"), dict) else {}
     playbook_v4 = meta.get("playbook_v4") if isinstance(meta.get("playbook_v4"), dict) else {}
     ema_pack = meta.get("ema") if isinstance(meta.get("ema"), dict) else {}
-
+    
     ctx_lines = sig.get("context_lines") or []
     liq_lines = sig.get("liquidity_lines") or []
     q_lines = sig.get("quality_lines") or []
