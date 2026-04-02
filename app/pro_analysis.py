@@ -3571,6 +3571,115 @@ def _attach_vnext_meta(
         base.setdefault("meta", {})["vnext_error"] = str(e)
 
     return base
+
+# =========================
+# PRO DESK ENGINE (APPEND ONLY)
+# =========================
+
+def _market_state_machine_v1(h1_trend, h4_trend, m15_struct_tag, market_state_v2, liquidation_evt, range_pos):
+    if (liquidation_evt or {}).get("ok"):
+        return {"state": "LIQUIDATION", "label": "Biến động thanh khoản mạnh"}
+
+    if market_state_v2 in ("CHOP", "TRANSITION"):
+        return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
+
+    tag = str(m15_struct_tag or "").upper()
+
+    if h1_trend == "bullish" and h4_trend == "bullish":
+        if "LL" in tag or "LH" in tag:
+            return {"state": "PULLBACK_BUY", "label": "Hồi trong xu hướng tăng"}
+        return {"state": "TREND_UP", "label": "Xu hướng tăng"}
+
+    if h1_trend == "bearish" and h4_trend == "bearish":
+        if "HH" in tag or "HL" in tag:
+            return {"state": "PULLBACK_SELL", "label": "Hồi trong xu hướng giảm"}
+        return {"state": "TREND_DOWN", "label": "Xu hướng giảm"}
+
+    return {"state": "TRANSITION", "label": "Chuyển pha"}
+
+
+def _bias_layers_v1(h1_trend, h4_trend, m15_struct_tag, context_verdict):
+    if h1_trend == "bullish" and h4_trend == "bullish":
+        htf_bias = "BUY"
+    elif h1_trend == "bearish" and h4_trend == "bearish":
+        htf_bias = "SELL"
+    else:
+        htf_bias = "MIXED"
+
+    tag = str(m15_struct_tag or "").upper()
+    if "LL" in tag or "LH" in tag:
+        mtf_bias = "SELL_PULLBACK"
+    elif "HH" in tag or "HL" in tag:
+        mtf_bias = "BUY_PULLBACK"
+    else:
+        mtf_bias = "WAIT"
+
+    verdict_state = str((context_verdict or {}).get("state") or "")
+    entry_bias = "READY" if "CONTINUATION" in verdict_state else "WAIT"
+
+    return {
+        "htf_bias": htf_bias,
+        "mtf_bias": mtf_bias,
+        "entry_bias": entry_bias,
+    }
+
+
+def _no_trade_zone_v3(range_pos, liquidity_done, close_confirm_v4, m15_struct_tag, trap_warning):
+    reasons = []
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    if rp is not None and 0.35 <= rp <= 0.65:
+        reasons.append("giữa biên độ")
+
+    if str((liquidity_done or {}).get("state") or "NO") == "NO":
+        reasons.append("chưa có thanh khoản")
+
+    if str((close_confirm_v4 or {}).get("strength") or "NO") in ("NO", "N/A"):
+        reasons.append("chưa có confirm")
+
+    if str(m15_struct_tag or "").upper() in ("", "TRANSITION", "N/A"):
+        reasons.append("M15 chưa rõ cấu trúc")
+
+    if (trap_warning or {}).get("active"):
+        reasons.append("trap risk")
+
+    return {"active": len(reasons) >= 2, "reasons": reasons}
+
+
+def _decision_engine_v1(no_trade_zone, context_verdict, entry_sniper, close_confirm_v4, manual_likelihood):
+    if (no_trade_zone or {}).get("active"):
+        return {"decision": "STAND ASIDE", "reason": "No-trade zone"}
+
+    if str((entry_sniper or {}).get("trigger")).upper() in ("READY", "TRIGGERED"):
+        return {"decision": "MANUAL STRIKE", "reason": "Có trigger"}
+
+    return {"decision": "WAIT", "reason": "Chưa đủ điều kiện"}
+
+
+def _wait_for_engine_v1(bias_side, playbook_v2, key_levels):
+    lines = []
+
+    zl = (playbook_v2 or {}).get("zone_low")
+    zh = (playbook_v2 or {}).get("zone_high")
+
+    if zl and zh:
+        lines.append(f"Chờ vùng {zl} – {zh}")
+
+    if bias_side == "BUY":
+        lv = (key_levels or {}).get("M15_RANGE_HIGH")
+        if lv:
+            lines.append(f"Hoặc break {lv}")
+    elif bias_side == "SELL":
+        lv = (key_levels or {}).get("M15_RANGE_LOW")
+        if lv:
+            lines.append(f"Hoặc break {lv}")
+
+    return {"lines": lines}
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -5057,7 +5166,54 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base.setdefault("meta", {})["manual_likelihood_v1"] = manual_likelihood_v1
     base.setdefault("meta", {})["manual_guidance_v1"] = manual_guidance_v1    
     base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1    
+
+    # ===== PRO DESK ADD =====
+    market_state_machine_v1 = _market_state_machine_v1(
+        h1_trend=h1_trend,
+        h4_trend=h4_trend,
+        m15_struct_tag=(m15_struct or {}).get("tag"),
+        market_state_v2=market_state_v2,
+        liquidation_evt=liquidation_evt,
+        range_pos=range_pos,
+    )
     
+    bias_layers_v1 = _bias_layers_v1(
+        h1_trend=h1_trend,
+        h4_trend=h4_trend,
+        m15_struct_tag=(m15_struct or {}).get("tag"),
+        context_verdict=context_verdict_v1,
+    )
+    
+    no_trade_zone_v3 = _no_trade_zone_v3(
+        range_pos=range_pos,
+        liquidity_done=liquidity_completion_v1,
+        close_confirm_v4=close_confirm_v4,
+        m15_struct_tag=(m15_struct or {}).get("tag"),
+        trap_warning=trap_warning_v1,
+    )
+    
+    decision_engine_v1 = _decision_engine_v1(
+        no_trade_zone=no_trade_zone_v3,
+        context_verdict=context_verdict_v1,
+        entry_sniper=entry_sniper,
+        close_confirm_v4=close_confirm_v4,
+        manual_likelihood=manual_likelihood_v1,
+    )
+    
+    wait_for_v1 = _wait_for_engine_v1(
+        bias_side=bias_side,
+        playbook_v2=playbook_v2,
+        key_levels=base.get("meta", {}).get("key_levels", {}),
+    )
+    
+    meta = base.setdefault("meta", {})
+    meta["market_state_machine_v1"] = market_state_machine_v1
+    meta["bias_layers_v1"] = bias_layers_v1
+    meta["no_trade_zone_v3"] = no_trade_zone_v3
+    meta["decision_engine_v1"] = decision_engine_v1
+    meta["wait_for_v1"] = wait_for_v1
+
+
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
@@ -6429,8 +6585,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     elif trade_mode == "HALF":
         add(lines, "- Có thể canh nhưng không nên đuổi giá")
     else:
-        add(lines, "- Chưa nên mở lệnh mới")
-    
+        add(lines, "- Chưa nên mở lệnh mới") 
     try:
         rp = float(range_pos)
         if 0.30 <= rp <= 0.70:
@@ -6441,7 +6596,39 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
     except Exception:
         pass
-
+    # ===== PRO DESK OUTPUT =====
+    ms1 = meta.get("market_state_machine_v1") or {}
+    bl1 = meta.get("bias_layers_v1") or {}
+    ntz3 = meta.get("no_trade_zone_v3") or {}
+    de1 = meta.get("decision_engine_v1") or {}
+    wf1 = meta.get("wait_for_v1") or {}
+    
+    add(lines, "")
+    add(lines, "🧠 ===== PRO DESK =====")
+    
+    if ms1.get("state"):
+        add(lines, f"🧠 Market state: {ms1.get('state')} | {ms1.get('label')}")
+    
+    if bl1:
+        add(lines, "🧭 Bias:")
+        add(lines, f"- HTF: {bl1.get('htf_bias')}")
+        add(lines, f"- MTF: {bl1.get('mtf_bias')}")
+        add(lines, f"- Entry: {bl1.get('entry_bias')}")
+    
+    if ntz3.get("active"):
+        add(lines, "🚫 NO TRADE ZONE")
+        for r in ntz3.get("reasons", [])[:3]:
+            add(lines, f"- {r}")
+    
+    if de1.get("decision"):
+        add(lines, f"🎯 Decision: {de1.get('decision')}")
+        add(lines, f"- {de1.get('reason')}")
+    
+    if wf1.get("lines"):
+        add(lines, "⏳ Wait for:")
+        for s in wf1.get("lines")[:3]:
+            add(lines, f"- {s}")
+            
     out = []
     for line in lines:
         if line == "" and (not out or out[-1] == ""):
