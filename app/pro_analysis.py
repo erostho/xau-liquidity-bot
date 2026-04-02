@@ -2980,7 +2980,25 @@ def format_scale_plan_v2(plan: dict) -> str:
     else:
         lines.append("- Giai đoạn 3 → có thể bắt đầu scale")
         lines.append(f"- Hiện tại {condition} ĐIỀU KIỆN SCALE")
-
+    # ===== PRO DESK SCALE =====
+    ntz3 = meta.get("no_trade_zone_v3") or {}
+    de1 = meta.get("decision_engine_v1") or {}
+    
+    lines.append("")
+    lines.append("🧠 ===== PRO DESK SCALE =====")
+    
+    if ntz3.get("active"):
+        lines.append("🚫 SCALE BLOCKED")
+        for r in ntz3.get("reasons", [])[:3]:
+            lines.append(f"- {r}")
+    
+    lines.append("🎯 SCALE DECISION:")
+    lines.append(f"- {de1.get('decision', 'WAIT')}")
+    
+    lines.append("⏳ SCALE TRIGGER:")
+    lines.append("- Giá phải chạm vùng scale")
+    lines.append("- Có phản ứng rõ (wick / giữ giá)")
+    lines.append("- Entry Sniper phải READY/TRIGGERED")
     return "\n".join(lines).strip()
 
 # =========================
