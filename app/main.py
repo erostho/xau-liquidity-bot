@@ -1181,10 +1181,19 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append(f"- {de1.get('decision', 'WAIT')}")
     
     # Exit logic
-    lines.append("🚪 EXIT PLAN:")
-    lines.append("- Thủng invalidation → giảm / cắt")
-    lines.append("- Có HL + break → giữ tiếp")
-    lines.append("- Chưa có HL → KHÔNG add")
+    ex2 = meta.get("exit_engine_v2") or {}
+
+    lines.append("🚪 EXIT ENGINE V2:")
+    lines.append(f"- State: {ex2.get('state', 'HOLD')}")
+    lines.append(f"- Decision: {ex2.get('decision', 'Giữ tạm')}")
+    lines.append(f"- Risk: {ex2.get('risk_level', 'MEDIUM')}")
+    lines.append(f"- Structure: {ex2.get('structure_status', 'UNKNOWN')}")
+    lines.append(f"- Invalidation hit: {'YES' if ex2.get('invalidation_hit') else 'NO'}")
+
+    if ex2.get("reason"):
+        lines.append("- Lý do:")
+        for s in ex2.get("reason", [])[:4]:
+            lines.append(f"  • {s}")
     # ===== REVIEW CONFLICT + SUGGESTION =====
     try:
         meta = sig.get("meta", {}) or {}
