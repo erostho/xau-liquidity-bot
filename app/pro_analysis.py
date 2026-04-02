@@ -3859,8 +3859,40 @@ def _attach_vnext_meta(
             trigger_engine_v2=trigger_engine_v2,
             range_pos=range_pos,
         )
-    
         meta["exit_engine_v2"] = exit_engine_v2
+        
+        # ===== MASTER ENGINE =====
+        master_engine_v1 = _master_engine_v1(
+            market_state_machine_v1=market_state_machine_v1,
+            bias_layers_v1=bias_layers_v1,
+            no_trade_zone_v3=no_trade_zone_v3,
+            conflict_engine_v1=conflict_engine_v1,
+            decision_engine_v1=decision_engine_v1,
+            trigger_engine_v2=trigger_engine_v2,
+            manual_likelihood_v1=manual_likelihood_v1,
+            context_verdict_v1=context_verdict_v1,
+        )
+        meta["master_engine_v1"] = master_engine_v1
+        
+        # ===== MASTER ENGINE OVERRIDE =====
+        try:
+            me1 = meta.get("master_engine_v1") or {}
+            if me1.get("tradeable_final") is False:
+                base["tradeable"] = False
+    
+            # score cap khi master chặn
+            if str(me1.get("state") or "").upper() == "NO_TRADE":
+                try:
+                    base["final_score"] = min(float(base.get("final_score", 0) or 0), 58.0)
+                except Exception:
+                    pass
+            elif str(me1.get("state") or "").upper() == "WAIT":
+                try:
+                    base["final_score"] = min(float(base.get("final_score", 0) or 0), 68.0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
     except Exception as e:
         base.setdefault("meta", {})["vnext_error"] = str(e)
     return base
@@ -4457,7 +4489,113 @@ def _exit_engine_v2(
         out["reason"].append("chưa có trigger hỗ trợ giữ lệnh")
 
     out["reason"] = out["reason"][:5]
-    return out    
+    return out
+# =========================
+# MASTER ENGINE
+# =========================
+
+def _master_engine_v1(
+    market_state_machine_v1: dict | None,
+    bias_layers_v1: dict | None,
+    no_trade_zone_v3: dict | None,
+    conflict_engine_v1: dict | None,
+    decision_engine_v1: dict | None,
+    trigger_engine_v2: dict | None,
+    manual_likelihood_v1: dict | None,
+    context_verdict_v1: dict | None,
+) -> dict:
+    out = {
+        "state": "WAIT",
+        "tradeable_final": False,
+        "confidence": "LOW",
+        "reason": [],
+    }
+
+    ms = market_state_machine_v1 or {}
+    bl = bias_layers_v1 or {}
+    ntz = no_trade_zone_v3 or {}
+    cf = conflict_engine_v1 or {}
+    de = decision_engine_v1 or {}
+    tg = trigger_engine_v2 or {}
+    ml = manual_likelihood_v1 or {}
+    cv = context_verdict_v1 or {}
+
+    conflict_sev = int(cf.get("severity") or 0)
+    ntz_active = bool(ntz.get("active"))
+    trigger_state = str(tg.get("state") or "WAIT").upper()
+    trigger_quality = str(tg.get("quality") or "LOW").upper()
+    de_state = str(de.get("decision") or "WAIT").upper()
+    cv_state = str(cv.get("state") or "").upper()
+    htf_bias = str(bl.get("htf_bias") or "MIXED").upper()
+    mtf_bias = str(bl.get("mtf_bias") or "WAIT").upper()
+    buy_lk = int(ml.get("buy_likelihood") or 0)
+    sell_lk = int(ml.get("sell_likelihood") or 0)
+    trap = int(ml.get("trap_risk") or 0)
+
+    best_side = "BUY" if buy_lk > sell_lk else ("SELL" if sell_lk > buy_lk else "NONE")
+
+    # 1) hard block
+    if ntz_active:
+        out["state"] = "NO_TRADE"
+        out["tradeable_final"] = False
+        out["confidence"] = "HIGH"
+        out["reason"].append("no-trade zone đang active")
+
+    if conflict_sev >= 4:
+        out["state"] = "NO_TRADE"
+        out["tradeable_final"] = False
+        out["confidence"] = "HIGH"
+        out["reason"].append("conflict quá cao")
+
+    # 2) trigger-led promotion
+    if out["state"] != "NO_TRADE":
+        if trigger_state == "TRIGGERED" and trigger_quality == "HIGH" and trap < 55:
+            out["state"] = "MANUAL_STRIKE"
+            out["tradeable_final"] = True
+            out["confidence"] = "HIGH"
+            out["reason"].append("trigger sniper đã xác nhận")
+
+        elif trigger_state in ("READY", "TRIGGERED") and trigger_quality in ("MEDIUM", "HIGH") and trap < 60:
+            out["state"] = "READY"
+            out["tradeable_final"] = False
+            out["confidence"] = "MEDIUM"
+            out["reason"].append("setup đang hình thành")
+
+    # 3) context-led fallback
+    if out["state"] == "WAIT":
+        if "CONTINUATION" in cv_state and best_side in ("BUY", "SELL"):
+            out["state"] = "WAIT"
+            out["tradeable_final"] = False
+            out["confidence"] = "MEDIUM"
+            out["reason"].append("đúng cảnh nhưng chưa đủ trigger")
+        elif de_state == "STAND ASIDE":
+            out["state"] = "NO_TRADE"
+            out["tradeable_final"] = False
+            out["confidence"] = "MEDIUM"
+            out["reason"].append("decision engine đang chặn")
+        else:
+            out["state"] = "WAIT"
+            out["tradeable_final"] = False
+            out["confidence"] = "LOW"
+            out["reason"].append("chưa có lợi thế rõ")
+
+    # 4) bias sanity check
+    if htf_bias == "BUY" and "SELL_PULLBACK" in mtf_bias:
+        out["reason"].append("HTF BUY nhưng MTF đang hồi giảm")
+    if htf_bias == "SELL" and "BUY_PULLBACK" in mtf_bias:
+        out["reason"].append("HTF SELL nhưng MTF đang hồi tăng")
+
+    # 5) likelihood sanity
+    if buy_lk == sell_lk:
+        out["reason"].append("buy/sell likelihood cân bằng")
+    if trap >= 55:
+        out["reason"].append("trap risk cao")
+
+    out["best_side"] = best_side
+    out["market_state"] = str(ms.get("state") or "UNKNOWN")
+    out["reason"] = out["reason"][:6]
+    return out
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -7587,6 +7725,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- {sg1.get('title', 'NO TRADE')}")
         for s in (sg1.get("lines") or [])[:4]:
             add(lines, f"- {s}")
+
+    # ===== MASTER ENGINE OUTPUT =====
+    me1 = meta.get("master_engine_v1") or {}
+    if me1:
+        add(lines, "")
+        add(lines, "🧠 MASTER ENGINE:")
+        add(lines, f"- State: {me1.get('state', 'WAIT')}")
+        add(lines, f"- Best side: {me1.get('best_side', 'NONE')}")
+        add(lines, f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
+        add(lines, f"- Confidence: {me1.get('confidence', 'LOW')}")
+        if me1.get("reason"):
+            add(lines, "- Lý do:")
+            for s in me1.get("reason", [])[:4]:
+                add(lines, f"  • {s}")
+                
     ex2 = meta.get("exit_engine_v2") or {}
     if ex2:
         add(lines, "🚪 Exit engine:")
