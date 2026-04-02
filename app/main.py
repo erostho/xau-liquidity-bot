@@ -110,7 +110,7 @@ def _parse_symbol_from_text(text: str) -> str:
 
     return DEFAULT_SYMBOLS[0] if DEFAULT_SYMBOLS else "XAU/USD"
 
-def _is_scale_command(text: str) -> bool:
+def _is__command(text: str) -> bool:
     t = (text or "").strip().upper()
     return t in (
         "BTC SCALE", "XAU SCALE", "XAG SCALE",
@@ -1211,9 +1211,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append(f"- {sg1.get('title', 'NO TRADE')}")
             for s in (sg1.get("lines") or [])[:3]:
                 lines.append(f"- {s}")
-
     except Exception:
         pass
+        
     # ===== REVIEW TRIGGER V2 =====
     try:
         meta = sig.get("meta", {}) or {}
@@ -1226,9 +1226,25 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             if tg2.get("reason"):
                 for s in tg2.get("reason", [])[:3]:
                     lines.append(f"- {s}")
-    
+
     except Exception:
         pass
+    # ===== MASTER ENGINE REVIEW =====
+    try:
+        meta = sig.get("meta", {}) or {}
+        me1 = meta.get("master_engine_v1") or {}
+        if me1:
+            lines.append("🧠 MASTER ENGINE:")
+            lines.append(f"- State: {me1.get('state', 'WAIT')}")
+            lines.append(f"- Best side: {me1.get('best_side', 'NONE')}")
+            lines.append(f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
+            lines.append(f"- Confidence: {me1.get('confidence', 'LOW')}")
+            if me1.get("reason"):
+                for s in me1.get("reason", [])[:3]:
+                    lines.append(f"- {s}")
+    except Exception:
+        pass
+
     try:
         if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
             lines.append("")
