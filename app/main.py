@@ -1157,110 +1157,121 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append(f"- TP2: {_f(tp2_s)}")
         lines.append("- +0.8 ATR → BE")
         lines.append("- +1.2 ATR → trailing 3 nến M15")
-
+        
+    meta = sig.get("meta") or {}
+    session_v4 = meta.get("session_v4") or {}
+    htf_pressure_v4 = meta.get("htf_pressure_v4") or {}
+    macro_v4 = meta.get("macro_v4") or {}
+    playbook_v4 = meta.get("playbook_v4") or {}
+    
+    if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
+        add(lines, "")
+        add(lines, "🧩 Toàn Cảnh Thị Trường:")
+    
+        if session_v4.get("session_tag"):
+            add(
+                lines,
+                f"- Session: {session_v4.get('session_tag')} | "
+                f"Follow-through: {session_v4.get('follow_through')} | "
+                f"Fake risk: {session_v4.get('fake_move_risk')}"
+            )
+    
+        if htf_pressure_v4.get("state"):
+            add(
+                lines,
+                f"- HTF Pressure: {htf_pressure_v4.get('state')} | "
+                f"H1 close: {htf_pressure_v4.get('h1_close_bias')} | "
+                f"H4 close: {htf_pressure_v4.get('h4_close_bias')}"
+            )
+    
+            htf_state = str(htf_pressure_v4.get("state") or "")
+            if "BULLISH" in htf_state and rec in ("SELL", "BÁN"):
+                add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+            if "BEARISH" in htf_state and rec in ("BUY", "MUA"):
+                add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+    
+        comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4 or {})
+        if comment:
+            add(lines, f"- {comment}")
+    
+        if macro_v4.get("headline"):
+            add(
+                lines,
+                f"- Macro: {macro_v4.get('headline')} | "
+                f"Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}"
+            )
+    
+        if playbook_v4.get("quality"):
+            trig = ", ".join(playbook_v4.get("trigger_pack") or [])
+            add(
+                lines,
+                f"- Playbook V4: quality={playbook_v4.get('quality')}"
+                + (f" | triggers: {trig}" if trig else "")
+            )
     # ===== PRO DESK REVIEW =====
     meta = sig.get("meta", {})
-    de1 = meta.get("decision_engine_v1") or {}
-    
+    de1 = meta.get("decision_engine_v1") or {}    
+    pq2 = meta.get("position_quality_v2") or {}
+    rc2 = meta.get("review_conflict_v2") or {}
+    ex2 = meta.get("exit_engine_v2") or {}
+    tg2 = meta.get("trigger_engine_v2") or {}
+    me1 = meta.get("master_engine_v1") or {}
+
     lines.append("")
     lines.append("🧠 ===== PRO DESK REVIEW =====")
-    
-    # Position quality
-    score = float(sig.get("final_score", 0))
-    if score >= 55:
-        pq = "STRONG"
-    elif score >= 35:
-        pq = "MID"
-    else:
-        pq = "WEAK"
-    
-    lines.append(f"📦 Position quality: {pq}")
-    
-    # Decision
+
+    lines.append(f"📦 Position quality: {pq2.get('quality', 'WEAK')}")
+    if pq2.get("reason"):
+        lines.append(f"- {pq2.get('reason')}")
+
     lines.append("🎯 POSITION DECISION:")
-    lines.append(f"- {de1.get('decision', 'WAIT')}")
-    
-    # Exit logic
-    ex2 = meta.get("exit_engine_v2") or {}
+    lines.append(f"- {ex2.get('decision', 'Giữ nhẹ, chưa add')}")
+
     lines.append("🚪 EXIT ENGINE V2:")
-    lines.append(f"- State: {ex2.get('state', 'HOLD')}")
-    lines.append(f"- Decision: {ex2.get('decision', 'Giữ tạm')}")
+    lines.append(f"- State: {ex2.get('state', 'HOLD_LIGHT')}")
+    lines.append(f"- Decision: {ex2.get('decision', 'Giữ nhẹ, chưa add')}")
     lines.append(f"- Risk: {ex2.get('risk_level', 'MEDIUM')}")
     lines.append(f"- Structure: {ex2.get('structure_status', 'UNKNOWN')}")
     lines.append(f"- Invalidation hit: {'YES' if ex2.get('invalidation_hit') else 'NO'}")
+    lines.append(f"- Add allowed: {'YES' if ex2.get('add_allowed') else 'NO'}")
     if ex2.get("reason"):
         lines.append("- Lý do:")
         for s in ex2.get("reason", [])[:4]:
             lines.append(f"  • {s}")
-            
+
     # ===== REVIEW CONFLICT + SUGGESTION =====
-    try:
-        meta = sig.get("meta", {}) or {}
-        cf1 = meta.get("conflict_engine_v1") or {}
-        sg1 = meta.get("suggestion_block_v1") or {}
-    
-        if cf1.get("active"):
-            lines.append("⚖️ CONFLICT:")
-            lines.append(f"- {cf1.get('verdict')}")
-            for s in (cf1.get("reasons") or [])[:2]:
+
+    meta = sig.get("meta", {}) or {}
+    cf1 = meta.get("conflict_engine_v1") or {}
+    sg1 = meta.get("suggestion_block_v1") or {}
+    if rc2.get("active"):
+        lines.append("⚖️ CONFLICT:")
+        lines.append(f"- {rc2.get('verdict')}")
+        for s in (rc2.get("reasons") or [])[:3]:
+            lines.append(f"- {s}")
+    if sg1:
+        lines.append("📌 REVIEW SUGGESTION:")
+        lines.append(f"- {sg1.get('title', 'NO TRADE')}")
+        for s in (sg1.get("lines") or [])[:3]:
+            lines.append(f"- {s}")
+
+    lines.append("🎯 REVIEW TRIGGER V2:")
+    lines.append(f"- State: {tg2.get('state', 'WAIT')}")
+    lines.append(f"- Quality: {tg2.get('quality', 'LOW')}")
+    if tg2.get("reason"):
+        for s in tg2.get("reason", [])[:3]:
+            lines.append(f"- {s}")
+
+    if me1:
+        lines.append("🧠 MASTER ENGINE:")
+        lines.append(f"- State: {me1.get('state', 'WAIT')}")
+        lines.append(f"- Best side: {me1.get('best_side', 'NONE')}")
+        lines.append(f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
+        lines.append(f"- Confidence: {me1.get('confidence', 'LOW')}")
+        if me1.get("reason"):
+            for s in me1.get("reason", [])[:3]:
                 lines.append(f"- {s}")
     
-        if sg1:
-            lines.append("📌 REVIEW SUGGESTION:")
-            lines.append(f"- {sg1.get('title', 'NO TRADE')}")
-            for s in (sg1.get("lines") or [])[:3]:
-                lines.append(f"- {s}")
-    except Exception:
-        pass
-        
-    # ===== REVIEW TRIGGER V2 =====
-    try:
-        meta = sig.get("meta", {}) or {}
-        tg2 = meta.get("trigger_engine_v2") or {}
-    
-        if tg2:
-            lines.append("🎯 REVIEW TRIGGER V2:")
-            lines.append(f"- State: {tg2.get('state', 'WAIT')}")
-            lines.append(f"- Quality: {tg2.get('quality', 'LOW')}")
-            if tg2.get("reason"):
-                for s in tg2.get("reason", [])[:3]:
-                    lines.append(f"- {s}")
-
-    except Exception:
-        pass
-    # ===== MASTER ENGINE REVIEW =====
-    try:
-        meta = sig.get("meta", {}) or {}
-        me1 = meta.get("master_engine_v1") or {}
-        if me1:
-            lines.append("🧠 MASTER ENGINE:")
-            lines.append(f"- State: {me1.get('state', 'WAIT')}")
-            lines.append(f"- Best side: {me1.get('best_side', 'NONE')}")
-            lines.append(f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
-            lines.append(f"- Confidence: {me1.get('confidence', 'LOW')}")
-            if me1.get("reason"):
-                for s in me1.get("reason", [])[:3]:
-                    lines.append(f"- {s}")
-    except Exception:
-        pass
-
-    try:
-        if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
-            lines.append("")
-            lines.append("🧪 Tổng Quan Thị Trường:")
-            if session_v4.get("session_tag"):
-                lines.append(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
-            if htf_pressure_v4.get("state"):
-                lines.append(f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-            if close_confirm_v4.get("strength") not in (None, "N/A"):
-                lines.append(f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}")
-            if macro_v4.get("headline"):
-                lines.append(f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
-            if playbook_v4.get("quality"):
-                trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-                lines.append(f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
-    except Exception:
-        pass
     return "\n".join(lines)
 
 #def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
