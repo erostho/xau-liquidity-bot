@@ -3067,6 +3067,18 @@ def format_scale_plan_v2(plan: dict) -> str:
             if tg2.get("reason"):
                 for s in tg2.get("reason", [])[:3]:
                     lines.append(f"- {s}")
+
+        # ===== MASTER ENGINE SCALE =====
+        try:
+            meta = plan.get("meta", {}) or {}
+            me1 = meta.get("master_engine_v1") or {}
+            if me1:
+                lines.append("🧠 MASTER ENGINE:")
+                lines.append(f"- State: {me1.get('state', 'WAIT')}")
+                lines.append(f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
+                lines.append(f"- Confidence: {me1.get('confidence', 'LOW')}")
+        except Exception:
+            pass
     except Exception:
         pass
     return "\n".join(lines).strip()
