@@ -1185,6 +1185,26 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     lines.append("- Thủng invalidation → giảm / cắt")
     lines.append("- Có HL + break → giữ tiếp")
     lines.append("- Chưa có HL → KHÔNG add")
+    # ===== REVIEW CONFLICT + SUGGESTION =====
+    try:
+        meta = sig.get("meta", {}) or {}
+        cf1 = meta.get("conflict_engine_v1") or {}
+        sg1 = meta.get("suggestion_block_v1") or {}
+    
+        if cf1.get("active"):
+            lines.append("⚖️ CONFLICT:")
+            lines.append(f"- {cf1.get('verdict')}")
+            for s in (cf1.get("reasons") or [])[:2]:
+                lines.append(f"- {s}")
+    
+        if sg1:
+            lines.append("📌 REVIEW SUGGESTION:")
+            lines.append(f"- {sg1.get('title', 'NO TRADE')}")
+            for s in (sg1.get("lines") or [])[:3]:
+                lines.append(f"- {s}")
+    
+    except Exception:
+        pass
     if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
         lines.append("")
         lines.append("🧪 Tổng Quan Thị Trường:")
