@@ -1202,7 +1202,21 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append(f"- {sg1.get('title', 'NO TRADE')}")
             for s in (sg1.get("lines") or [])[:3]:
                 lines.append(f"- {s}")
+    # ===== REVIEW TRIGGER V2 =====
+    try:
+        meta = sig.get("meta", {}) or {}
+        tg2 = meta.get("trigger_engine_v2") or {}
     
+        if tg2:
+            lines.append("🎯 REVIEW TRIGGER V2:")
+            lines.append(f"- State: {tg2.get('state', 'WAIT')}")
+            lines.append(f"- Quality: {tg2.get('quality', 'LOW')}")
+            if tg2.get("reason"):
+                for s in tg2.get("reason", [])[:3]:
+                    lines.append(f"- {s}")
+    
+    except Exception:
+        pass
     except Exception:
         pass
     if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
