@@ -7570,6 +7570,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Lý do:")
             for s in tg2.get("reason", [])[:4]:
                 add(lines, f"  • {s}")
+                
     # ===== CONFLICT + SUGGESTION OUTPUT =====
     cf1 = meta.get("conflict_engine_v1") or {}
     sg1 = meta.get("suggestion_block_v1") or {}
@@ -7586,7 +7587,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- {sg1.get('title', 'NO TRADE')}")
         for s in (sg1.get("lines") or [])[:4]:
             add(lines, f"- {s}")
-    
+    ex2 = meta.get("exit_engine_v2") or {}
+    if ex2:
+        add(lines, "🚪 Exit engine:")
+        add(lines, f"- {ex2.get('state', 'HOLD')} | {ex2.get('decision', 'Giữ tạm')}")
     
     out = []
     for line in lines:
