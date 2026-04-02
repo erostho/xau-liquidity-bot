@@ -1202,6 +1202,9 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append(f"- {sg1.get('title', 'NO TRADE')}")
             for s in (sg1.get("lines") or [])[:3]:
                 lines.append(f"- {s}")
+
+    except Exception:
+        pass
     # ===== REVIEW TRIGGER V2 =====
     try:
         meta = sig.get("meta", {}) or {}
@@ -1217,23 +1220,23 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     
     except Exception:
         pass
+    try:
+        if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
+            lines.append("")
+            lines.append("🧪 Tổng Quan Thị Trường:")
+            if session_v4.get("session_tag"):
+                lines.append(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
+            if htf_pressure_v4.get("state"):
+                lines.append(f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
+            if close_confirm_v4.get("strength") not in (None, "N/A"):
+                lines.append(f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}")
+            if macro_v4.get("headline"):
+                lines.append(f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
+            if playbook_v4.get("quality"):
+                trig = ", ".join(playbook_v4.get("trigger_pack") or [])
+                lines.append(f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
     except Exception:
         pass
-    if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
-        lines.append("")
-        lines.append("🧪 Tổng Quan Thị Trường:")
-        if session_v4.get("session_tag"):
-            lines.append(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
-        if htf_pressure_v4.get("state"):
-            lines.append(f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-        if close_confirm_v4.get("strength") not in (None, "N/A"):
-            lines.append(f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}")
-        if macro_v4.get("headline"):
-            lines.append(f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
-        if playbook_v4.get("quality"):
-            trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-            lines.append(f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
-
     return "\n".join(lines)
 
 #def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
