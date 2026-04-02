@@ -5228,7 +5228,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     base,
                     symbol=symbol,
                     m15c=m15c,
-                    bias_side=bias_guess,
+                    bias_side=(bias_side if bias_side in ("BUY", "SELL") else bias_guess),
                     h1_trend=h1_trend,
                     h4_trend=h4_trend,
                     market_state_v2=market_state_v2,
@@ -7743,6 +7743,18 @@ def format_signal(sig: Dict[str, Any]) -> str:
         psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
     elif rp is not None and rp >= 0.90:
         psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
+
+    m15_tag_now = str((struct or {}).get('M15') or '').upper()
+    if rp is not None and rp >= 0.85 and rec in ('BÁN', 'SELL') and ('LH' not in m15_tag_now):
+        psych_warnings.append("⚠️ SELL ở vùng cao nhưng chưa có LH → dễ bán sớm / false top")
+    if rp is not None and rp <= 0.15 and rec in ('MUA', 'BUY') and ('HL' not in m15_tag_now):
+        psych_warnings.append("⚠️ BUY ở vùng thấp nhưng chưa có HL → dễ bắt đáy sớm")
+
+    q_join = ' | '.join(str(x) for x in (q_lines or [])).upper()
+    if rec in ('BÁN', 'SELL') and 'ENGULFING=BULL' in q_join:
+        psych_warnings.append("⚠️ Engulfing BULL đang chống SELL → tránh gồng lệnh bán")
+    if rec in ('MUA', 'BUY') and 'ENGULFING=BEAR' in q_join:
+        psych_warnings.append("⚠️ Engulfing BEAR đang chống BUY → tránh gồng lệnh mua")
     if phase_num is not None and phase_num >= 8:
         psych_warnings.append("⚠️ Late move → vào lệnh dễ dính đảo chiều")
     if liq_evt.get('ok'):
@@ -7770,7 +7782,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     macro_v4 = meta.get("macro_v4") or {}
     playbook_v4 = meta.get("playbook_v4") or {}
     
-    if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
+    if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
         add(lines, "")
         add(lines, "🧩 Toàn Cảnh Thị Trường:")
     
@@ -7795,6 +7807,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
             if "BEARISH" in htf_state and rec in ("BUY", "MUA"):
                 add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
+
+        if close_confirm_v4 and close_confirm_v4.get("strength") not in (None, "N/A"):
+            add(
+                lines,
+                f"- Close confirm: {close_confirm_v4.get('strength')} | Hold: {close_confirm_v4.get('hold', 'N/A')}"
+            )
     
         comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4 or {})
         if comment:
