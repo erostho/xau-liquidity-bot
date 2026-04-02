@@ -3846,15 +3846,29 @@ def _attach_vnext_meta(
         meta["trigger_engine_v2"] = trigger_engine_v2
 
         # ===== EXIT ENGINE V2 =====
-        review_side_for_exit = str(base.get("review_side") or bias_side or "").upper()
-    
+        review_side_for_exit = _resolve_review_side(base, bias_side)
         invalidation_level_v2 = None
         try:
-            invalidation_level_v2 = (
-                (m15_struct or {}).get("pullback_invalid")
-                or (m15_struct or {}).get("invalid_level")
-                or (base.get("invalid") if isinstance(base, dict) else None)
-            )
+            m15s = (m15_struct or {})
+    
+            if review_side_for_exit == "BUY":
+                invalidation_level_v2 = (
+                    m15s.get("pullback_invalid")
+                    or m15s.get("invalid_level")
+                    or base.get("invalid")
+                )
+            elif review_side_for_exit == "SELL":
+                invalidation_level_v2 = (
+                    m15s.get("pullback_invalid")
+                    or m15s.get("invalid_level")
+                    or base.get("invalid")
+                )
+            else:
+                invalidation_level_v2 = (
+                    m15s.get("pullback_invalid")
+                    or m15s.get("invalid_level")
+                    or base.get("invalid")
+                )
         except Exception:
             invalidation_level_v2 = None
     
@@ -4607,6 +4621,40 @@ def _master_engine_v1(
     out["market_state"] = str(ms.get("state") or "UNKNOWN")
     out["reason"] = out["reason"][:6]
     return out
+def _normalize_trade_side(v) -> str:
+    s = str(v or "").strip().upper()
+    if s in ("BUY", "LONG", "MUA"):
+        return "BUY"
+    if s in ("SELL", "SHORT", "BÁN", "BAN"):
+        return "SELL"
+    return ""
+
+def _resolve_review_side(sig: dict | None, fallback_bias: str | None = None) -> str:
+    sig = sig or {}
+
+    # 1) explicit review side
+    side = _normalize_trade_side(sig.get("review_side"))
+    if side:
+        return side
+
+    # 2) common generic side fields
+    side = _normalize_trade_side(sig.get("side"))
+    if side:
+        return side
+
+    # 3) sometimes recommendation is used as side
+    side = _normalize_trade_side(sig.get("recommendation"))
+    if side:
+        return side
+
+    # 4) try nested meta
+    meta = sig.get("meta") or {}
+    side = _normalize_trade_side(meta.get("review_side"))
+    if side:
+        return side
+
+    # 5) final fallback only
+    return _normalize_trade_side(fallback_bias)
     
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
