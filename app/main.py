@@ -93,7 +93,7 @@ def _send_long_telegram(text: str, chat_id: str, chunk_size: int = 3500, parse_m
     total = len(parts)
     for i, part in enumerate(parts, start=1):
         header = f"📩 REVIEW ({i}/{total})\n" if total > 1 else ""
-        _send_telegram(header + part, chat_id=chat_id)
+        _send_long_telegram(header + part, chat_id=chat_id)
         
     
 def _parse_symbol_from_text(text: str) -> str:
@@ -1655,7 +1655,7 @@ def maybe_send_regime_alert(symbol: str, m15, h1, h2=None, chat_id: Optional[str
         f"⛔ Gợi ý: NO TRADE / đợi displacement thật + follow-through / tránh đặt SL ngay sau swing gần."
     )
 
-    _send_telegram(msg, chat_id=chat_id or ADMIN_CHAT_ID)
+    _send_long_telegram(msg, chat_id=chat_id or ADMIN_CHAT_ID)
     st[key] = now
     _save_json_atomic(REGIME_ALERT_STATE_PATH, st)
 
@@ -1754,7 +1754,7 @@ async def telegram_webhook(request: Request):
 
         except Exception as e:
             logger.exception("SCALE V2 failed for %s: %s", symbol, e)
-            _send_telegram(f"❌ SCALE lỗi cho {symbol}: {e}", chat_id=chat_id)
+            _send_long_telegram(f"❌ SCALE lỗi cho {symbol}: {e}", chat_id=chat_id)
             return "ERROR"
     # 0) ƯU TIÊN: Manual trade review (không cần "now")
     parsed = parse_manual_trade(text)
@@ -1776,7 +1776,7 @@ async def telegram_webhook(request: Request):
                 chat_id, send_err
             )
             try:
-                _send_telegram("❌ REVIEW lỗi: không gửi được tin nhắn dài. Xem logs.", chat_id=chat_id)
+                _send_long_telegram("❌ REVIEW lỗi: không gửi được tin nhắn dài. Xem logs.", chat_id=chat_id)
             except Exception:
                 pass
     
@@ -1836,18 +1836,18 @@ async def telegram_webhook(request: Request):
 
                 if force_send:
                     prefix = "🚨 CẢNH BÁO THANH KHOẢN / POST-SWEEP\\n\\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                    _send_long_telegram(prefix + format_signal(sig), chat_id=chat_id)
                 elif stars < MIN_STARS:
                     # Manual 'NOW/SCAN': always send full analysis, but hide trade plan when under the star gate
                     #sig["show_trade_plan"] = False
                     prefix = f"⚠️ (Manual) Kèo dưới {MIN_STARS}⭐ – tham khảo thôi.\n\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=chat_id)
+                    _send_long_telegram(prefix + format_signal(sig), chat_id=chat_id)
                 else:
-                    _send_telegram(format_signal(sig), chat_id=chat_id)
+                    _send_long_telegram(format_signal(sig), chat_id=chat_id)
 
             except Exception as e:
                 logger.exception("analysis failed: %s", e)
-                _send_telegram(f"❌ Analysis failed ({sym}): {e}", chat_id=chat_id)
+                _send_long_telegram(f"❌ Analysis failed ({sym}): {e}", chat_id=chat_id)
 
     return "OK"
 
@@ -1953,7 +1953,7 @@ async def cron_run(token: str = "", request: Request = None):
                     msg = format_signal(sig)
                     if should_send_now and not should_send_main:
                         msg = "🚨 **NOW ALERT**\n----------------\n" + msg
-                    _send_telegram(msg, chat_id=ADMIN_CHAT_ID)
+                    _send_long_telegram(msg, chat_id=ADMIN_CHAT_ID)
                 #if should_send_main or force_send or should_send_now:
                     #_send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
                 else:
@@ -1980,7 +1980,7 @@ async def cron_run(token: str = "", request: Request = None):
                             scale_plan.get("direction", "n/a"),
                         )
                 
-                        _send_telegram(scale_msg, chat_id=ADMIN_CHAT_ID)
+                        _send_long_telegram(scale_msg, chat_id=ADMIN_CHAT_ID)
                 
                     except Exception as e:
                         logger.exception("[CRON][SCALE SEND] %s failed: %s", sym, e)
