@@ -959,65 +959,38 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         summary_text = "Nếu đang có BUY từ vùng thấp hơn thì chỉ giữ nhỏ, không add."
 
     final_state_text = location_ctx.get("state_text") or _vn_state_text(market_state_v2, narrative_v3 if isinstance(narrative_v3, dict) else {}, side)
+
     lines = []
     lines.append(f"🧠 REVIEW LỆNH | {symbol} | {side_vn}")
     lines.append("")
     lines.append(f"📌 Kết luận: {final_verdict_text}")
     lines.append(f"- {summary_text}")
-    
-    # =========================
-    # PHASE / STATE / FLOW
-    # =========================
+
     if phase369:
         lines.append(f"🧭 Giai đoạn: {phase369.get('phase', 'n/a')} | {_vn_phase_label(phase369)}")
-    
     lines.append(f"🌡 Trạng thái: {final_state_text}")
-    
     if isinstance(flow_state, dict) and flow_state.get("state"):
         lines.append(f"💰 Dòng tiền: {_vn_flow_text(flow_state)}")
-    
-    # =========================
-    # PRICE POSITION
-    # =========================
+
     lines.append("")
     lines.append("📍 Vị trí giá:")
-    
     if cur is not None:
         lines.append(f"- Giá hiện tại: {_f(cur)}")
-    
     if isinstance(rinfo, dict):
         lines.append(f"- Biên độ M15: {_f(lo)} – {_f(hi)}")
         if pos is not None:
             lines.append(f"- Vị trí trong biên độ: ~{_pct(pos)}")
-    
-    # =========================
-    # LIQUIDITY
-    # =========================
+
     lines.append("")
     lines.append("💧 Thanh khoản:")
-    
     for s in (liq[:4] if liq else ["Chưa thấy quét/spring rõ"]):
         lines.append(f"- {s}")
-    
     if isinstance(liquidation, dict) and liquidation.get("ok"):
-        lines.append(
-            f"- Vừa có quét mạnh: {liquidation.get('side')} | "
-            f"body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | "
-            f"range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR"
-        )
-    
-    # =========================
-    # STRUCTURE / CONFIRMATION
-    # =========================
+        lines.append(f"- Vừa có quét mạnh: {liquidation.get('side')} | body~{float(liquidation.get('body_atr', 0) or 0):.1f} ATR | range~{float(liquidation.get('range_atr', 0) or 0):.1f} ATR")
+
     lines.append("")
     lines.append("✅ Xác nhận:")
-    lines.append(
-        f"- HL={'✅' if gate.get('hl') else '❌'} | "
-        f"LH={'✅' if gate.get('lh') else '❌'} | "
-        f"BreakUp={'✅' if gate.get('break_up') else '❌'} | "
-        f"BreakDn={'✅' if gate.get('break_dn') else '❌'}"
-    )
-    
+    lines.append(f"- HL={'✅' if gate.get('hl') else '❌'} | LH={'✅' if gate.get('lh') else '❌'} | BreakUp={'✅' if gate.get('break_up') else '❌'} | BreakDn={'✅' if gate.get('break_dn') else '❌'}")
     if side == "SELL":
         if location_ctx.get("zone") == "LOW_ZONE":
             lines.append("- Đã có LH nhưng giá đang ở vùng thấp → SELL có logic cấu trúc, nhưng vị trí không còn đẹp.")
@@ -1027,7 +1000,6 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append("- Đã có LH nhưng chưa phá đáy → SELL đúng hướng nhưng chưa xác nhận mạnh")
         elif gate.get("lh") and gate.get("break_dn"):
             lines.append("- Đã có LH và phá đáy → tín hiệu SELL đang mạnh hơn")
-    
     elif side == "BUY":
         if location_ctx.get("zone") == "HIGH_ZONE":
             lines.append("- Đã có HL nhưng giá đang ở vùng cao → BUY có logic cấu trúc, nhưng vị trí không còn đẹp.")
@@ -1037,60 +1009,35 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append("- Đã có HL nhưng chưa phá đỉnh → BUY đúng hướng nhưng chưa xác nhận mạnh.")
         elif gate.get("hl") and gate.get("break_up"):
             lines.append("- Đã có HL và phá đỉnh → tín hiệu BUY đang mạnh hơn")
-    
     lines.append(f"- {gate.get('txt') or 'Chưa đọc được gate cấu trúc.'}")
-    
-    # =========================
-    # GAP
-    # =========================
+
     lines.append("")
     lines.append("🕳 GAP:")
-    
     if gap_lines:
         for s in gap_lines:
             lines.append(f"- {s}")
     else:
         lines.append("- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
-    
-    # =========================
-    # EMA FILTER
-    # =========================
     if ema_pack:
         lines.append("")
         lines.append("📉 EMA FILTER:")
-    
         if ema_pack.get("ema34") is not None:
             lines.append(f"- EMA34: {_f(ema_pack.get('ema34'))}")
         if ema_pack.get("ema89") is not None:
             lines.append(f"- EMA89: {_f(ema_pack.get('ema89'))}")
         if ema_pack.get("ema200") is not None:
             lines.append(f"- EMA200: {_f(ema_pack.get('ema200'))}")
-    
         lines.append(f"- Trend: {ema_pack.get('trend', 'N/A')}")
         lines.append(f"- Alignment: {ema_pack.get('alignment', 'NO')}")
-    
         if ema_pack.get("zone"):
             lines.append(f"- Vị trí giá vs EMA: {ema_pack.get('zone')}")
-    
-    # =========================
-    # MAIN / ALT SCENARIO
-    # =========================
     lines.append("")
     lines.append("🗺 Kịch bản chính:")
-    
-    main_plan_text = _review_main_plan(
-        side,
-        scenario_v3 if isinstance(scenario_v3, dict) else {},
-        playbook if isinstance(playbook, dict) else {},
-        grade,
-        verdict_text,
-        no_trade_zone if isinstance(no_trade_zone, dict) else {},
-    )
+    main_plan_text = _review_main_plan(side, scenario_v3 if isinstance(scenario_v3, dict) else {}, playbook if isinstance(playbook, dict) else {}, grade, verdict_text, no_trade_zone if isinstance(no_trade_zone, dict) else {})
     lines.append(f"- {main_plan_text}")
-    
+
     lines.append("")
     lines.append("🪄 Kịch bản phụ:")
-    
     if isinstance(scenario_v3, dict) and scenario_v3.get("alt_case"):
         alt = scenario_v3.get("alt_case")
         alt = alt.replace("Alt case:", "").strip()
@@ -1100,20 +1047,13 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append(f"- {alt}")
     else:
         lines.append("- Chưa có kịch bản phụ rõ")
-    
-    # =========================
-    # INVALIDATION
-    # =========================
+
     lines.append("")
     lines.append("🧯 Điểm sai kịch bản:")
     lines.append(f"- {_review_invalidation(side, sl, gate)}")
-    
-    # =========================
-    # REVIEW SCORE
-    # =========================
+
     lines.append("")
     lines.append(f"📊 Chất lượng hiện tại: {grade}")
-    
     final_score, tradeable_label, score_reasons, tradeable_reasons, setup_label = _final_score_review(
         side,
         gate,
@@ -1123,78 +1063,62 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         no_trade_zone if isinstance(no_trade_zone, dict) else {},
         htf_pressure_v4 if isinstance(htf_pressure_v4, dict) else {},
     )
-    
     lines.append(f"🔥 Final Score: {final_score}/100")
     lines.append(f"→ Tradeable thêm: {tradeable_label}")
-    
     if tradeable_label == "NO":
         lines.append("- Vị thế hiện tại chưa đủ đẹp để mở thêm rủi ro mới")
     else:
         lines.append("- Vị thế hiện tại còn đủ điều kiện để giữ theo kế hoạch")
-    
     if score_reasons:
         lines.append(f"- Điểm cộng/trừ chính: {', '.join(score_reasons)}")
-    
     if tradeable_reasons:
         lines.append(f"- Lý do chưa trade mạnh: {', '.join(tradeable_reasons)}")
-    
     lines.append(f"- Độ mạnh setup hiện tại: {setup_label}")
-    
     if score_reasons:
         lines.append(f"- Lý do: {', '.join(score_reasons[:3])}")
-    
-    # =========================
-    # HTF WARNING
-    # =========================
+
     if side == "SELL" and isinstance(htf_pressure_v4, dict):
         htf_state = str(htf_pressure_v4.get("state") or "")
         if "BULLISH" in htf_state:
             lines.append("- ⚠️ SELL chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
-    
     if side == "BUY" and isinstance(htf_pressure_v4, dict):
         htf_state = str(htf_pressure_v4.get("state") or "")
         if "BEARISH" in htf_state:
             lines.append("- ⚠️ BUY chưa được khung lớn ủng hộ hoàn toàn → không nên gồng")
-    
-    # =========================
-    # PSYCH WARNINGS
-    # =========================
+
     psych_warnings = []
-    
     try:
         rp = float(pos)
         if rp <= 0.10 and str(side).upper() == "SELL":
             psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
         elif rp >= 0.90 and str(side).upper() == "BUY":
             psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
+        if rp >= 0.85 and str(side).upper() == "SELL" and not gate.get("lh"):
+            psych_warnings.append("⚠️ SELL vùng cao nhưng chưa có LH → dễ bán sớm")
+        if rp <= 0.15 and str(side).upper() == "BUY" and not gate.get("hl"):
+            psych_warnings.append("⚠️ BUY vùng thấp nhưng chưa có HL → dễ bắt đáy sớm")
     except Exception:
         pass
-    
     if isinstance(liquidation, dict) and liquidation.get("ok"):
         psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
-    
-    if (
-        str(side).upper() == "BUY"
-        and isinstance(htf_pressure_v4, dict)
-        and "BEARISH" in str(htf_pressure_v4.get("state") or "").upper()
-    ):
+    if str(side).upper() == "BUY" and isinstance(htf_pressure_v4, dict) and "BEARISH" in str(htf_pressure_v4.get("state") or "").upper():
         psych_warnings.append("⚠️ Đây là lệnh ngược xu hướng chính → chỉ giữ ngắn hạn")
-    
+    if str(side).upper() == "SELL" and isinstance(htf_pressure_v4, dict) and "BULLISH" in str(htf_pressure_v4.get("state") or "").upper():
+        psych_warnings.append("⚠️ Đây là lệnh ngược xu hướng chính → chỉ giữ ngắn hạn")
+    if "Engulfing=BULL" in " | ".join(actions) and str(side).upper() == "SELL":
+        psych_warnings.append("⚠️ Engulfing bull đang chống SELL → tránh gồng")
+    if "Engulfing=BEAR" in " | ".join(actions) and str(side).upper() == "BUY":
+        psych_warnings.append("⚠️ Engulfing bear đang chống BUY → tránh gồng")
     if psych_warnings:
         lines.append("")
         lines.append("🧠 Cảnh báo tâm lý:")
         for s in psych_warnings[:4]:
             lines.append(f"- {s}")
-    
-    # =========================
-    # ACTIONS
-    # =========================
     lines.append("")
     lines.append("⚙️ Hành động:")
-    
     for s in (location_ctx.get("action_lines") or []):
         lines.append(f"- {s}")
-    
+
     if location_ctx.get("zone") == "LOW_ZONE" and str(side).upper() == "SELL":
         lines.append("- Ưu tiên giảm rủi ro; nếu đã có SELL từ vùng cao hơn thì chỉ giữ nhỏ, không mở thêm.")
     elif location_ctx.get("zone") == "HIGH_ZONE" and str(side).upper() == "BUY":
@@ -1205,49 +1129,36 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append("- Có thể giữ ngắn hạn nếu cấu trúc chưa hỏng, nhưng không nên add")
     else:
         lines.append("- Ưu tiên giảm rủi ro và quan sát thêm")
-    
+
     filtered_actions = []
     for s in actions:
         txt = str(s)
-    
         if location_ctx.get("zone") == "LOW_ZONE" and str(side).upper() == "SELL":
             if "SELL đúng hướng" in txt or "khung lớn ủng hộ SELL" in txt:
                 continue
-    
         if location_ctx.get("zone") == "HIGH_ZONE" and str(side).upper() == "BUY":
             if "BUY đúng hướng" in txt or "khung lớn ủng hộ BUY" in txt:
                 continue
-    
         filtered_actions.append(txt)
-    
+
     seen = set()
     for s in filtered_actions:
         ss = str(s).strip()
         if ss and ss not in seen:
             seen.add(ss)
             lines.append(f"- {ss}")
-    
-    # =========================
-    # 5-10-15 MANAGEMENT
-    # =========================
     lines.append("")
     lines.append("🪜 Quản trị 5-10-15:")
-    
     stage_label_map = {
         "Validation": "Pha kiểm tra",
         "Expansion": "Pha mở rộng",
         "Harvest": "Pha thu lợi nhuận",
     }
-    stage_label_vn = stage_label_map.get(str(mgmt.get("label", "n/a")), str(mgmt.get("label", "n/a")))
-    
+    stage_label_vn = stage_label_map.get(str(mgmt.get('label', 'n/a')), str(mgmt.get('label', 'n/a')))
     lines.append(f"- Stage: {mgmt.get('stage', 'n/a')} | {stage_label_vn}")
-    
-    for s in (mgmt.get("lines", []) or [])[:4]:
+    for s in (mgmt.get('lines', []) or [])[:4]:
         lines.append(f"- {s}")
-    
-    # =========================
-    # ATR PLAN
-    # =========================
+
     if a > 0:
         lines.append("")
         lines.append("📌 ATR Plan:")
@@ -1256,116 +1167,196 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append(f"- TP2: {_f(tp2_s)}")
         lines.append("- +0.8 ATR → BE")
         lines.append("- +1.2 ATR → trailing 3 nến M15")
+
     
-    # =========================
-    # MARKET OVERVIEW (SAFE)
-    # =========================
-    meta = sig.get("meta") or {}
-    session_v4 = meta.get("session_v4") or {}
-    htf_pressure_v4 = meta.get("htf_pressure_v4") or {}
-    macro_v4 = meta.get("macro_v4") or {}
-    playbook_v4 = meta.get("playbook_v4") or {}
-    
-    if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
-        add(lines, "")
-        add(lines, "🧩 Toàn Cảnh Thị Trường:")
-    
+    if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
+        lines.append("")
+        lines.append("🧩 Toàn Cảnh Thị Trường:")
         if session_v4.get("session_tag"):
-            add(
-                lines,
-                f"- Session: {session_v4.get('session_tag')} | "
-                f"Follow-through: {session_v4.get('follow_through')} | "
-                f"Fake risk: {session_v4.get('fake_move_risk')}"
-            )
-    
+            lines.append(f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
         if htf_pressure_v4.get("state"):
-            add(
-                lines,
-                f"- HTF Pressure: {htf_pressure_v4.get('state')} | "
-                f"H1 close: {htf_pressure_v4.get('h1_close_bias')} | "
-                f"H4 close: {htf_pressure_v4.get('h4_close_bias')}"
-            )
-    
-            htf_state = str(htf_pressure_v4.get("state") or "").upper()
-    
-            if "BULLISH" in htf_state and str(side).upper() == "SELL":
-                add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-    
-            if "BEARISH" in htf_state and str(side).upper() == "BUY":
-                add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-    
-        comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4 or {})
-        if comment:
-            add(lines, f"- {comment}")
-    
+            lines.append(f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
+        if close_confirm_v4.get("strength") not in (None, "N/A"):
+            lines.append(f"- Close Confirm: {close_confirm_v4.get('strength')} | Break valid: {'YES' if close_confirm_v4.get('break_valid') else 'NO'} | Hold: {close_confirm_v4.get('hold')}")
         if macro_v4.get("headline"):
-            add(
-                lines,
-                f"- Macro: {macro_v4.get('headline')} | "
-                f"Bias: {macro_v4.get('bias')} | "
-                f"{macro_v4.get('note')}"
-            )
-    
+            lines.append(f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
         if playbook_v4.get("quality"):
             trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-            add(
-                lines,
-                f"- Playbook V4: quality={playbook_v4.get('quality')}"
-                + (f" | triggers: {trig}" if trig else "")
-            )
+            lines.append(f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
+
     # ===== PRO DESK REVIEW =====
-    meta = sig.get("meta", {})
-    de1 = meta.get("decision_engine_v1") or {}    
-    pq2 = meta.get("position_quality_v2") or {}
-    rc2 = meta.get("review_conflict_v2") or {}
-    ex2 = meta.get("exit_engine_v2") or {}
+    tw1 = meta.get("trap_warning_v1") or {}
     tg2 = meta.get("trigger_engine_v2") or {}
     me1 = meta.get("master_engine_v1") or {}
 
+    try:
+        rp = float(pos) if pos is not None else None
+    except Exception:
+        rp = None
+
+    # position quality v2 (local, always aligned with gate)
+    pos_internal = 0
+    if final_score >= 55:
+        pos_internal += 2
+    elif final_score >= 35:
+        pos_internal += 1
+
+    if str(side).upper() == "SELL":
+        if rp is not None and rp >= 0.65:
+            pos_internal += 2
+        elif rp is not None and rp <= 0.25:
+            pos_internal -= 2
+        if gate.get("lh"):
+            pos_internal += 1
+        if gate.get("break_dn"):
+            pos_internal += 1
+    else:
+        if rp is not None and rp <= 0.35:
+            pos_internal += 2
+        elif rp is not None and rp >= 0.75:
+            pos_internal -= 2
+        if gate.get("hl"):
+            pos_internal += 1
+        if gate.get("break_up"):
+            pos_internal += 1
+
+    conflict_reasons = []
+    if isinstance(liquidation, dict) and liquidation.get("ok"):
+        conflict_reasons.append("vừa có liquidation")
+    if isinstance(no_trade_zone, dict) and no_trade_zone.get("active"):
+        conflict_reasons.extend([str(x) for x in (no_trade_zone.get("reasons") or []) if x][:2])
+    if (tw1 or {}).get("active"):
+        conflict_reasons.extend([str(x) for x in (tw1.get("warnings") or []) if x][:2])
+
+    if str(side).upper() == "SELL" and not gate.get("lh"):
+        conflict_reasons.append("SELL chưa có LH xác nhận")
+    if str(side).upper() == "BUY" and not gate.get("hl"):
+        conflict_reasons.append("BUY chưa có HL xác nhận")
+    if str(side).upper() == "SELL" and rp is not None and rp <= 0.25:
+        conflict_reasons.append("SELL đang ở vùng thấp")
+    if str(side).upper() == "BUY" and rp is not None and rp >= 0.75:
+        conflict_reasons.append("BUY đang ở vùng cao")
+
+    # dedupe
+    _conf = []
+    for x in conflict_reasons:
+        if x not in _conf:
+            _conf.append(x)
+    conflict_reasons = _conf[:4]
+    conflict_sev = len(conflict_reasons)
+
+    pos_internal -= 2 if conflict_sev >= 4 else (1 if conflict_sev >= 2 else 0)
+    trigger_state = str((tg2 or {}).get("state") or "WAIT").upper()
+    if trigger_state == "TRIGGERED":
+        pos_internal += 1
+    elif trigger_state == "WAIT":
+        pos_internal -= 1
+
+    if pos_internal >= 4:
+        pq_quality = "STRONG"
+        pq_reason = "vị trí tốt + cấu trúc hỗ trợ + conflict thấp"
+    elif pos_internal >= 1:
+        pq_quality = "MID"
+        pq_reason = "có một phần lợi thế nhưng chưa đủ sạch để tăng rủi ro"
+    else:
+        pq_quality = "WEAK"
+        pq_reason = "vị trí/cấu trúc chưa đủ đẹp hoặc conflict còn cao"
+
+    # exit engine local
+    if str(side).upper() == "SELL":
+        structure_status = "CONFIRMED_SELL" if gate.get("lh") and gate.get("break_dn") else ("LH_ONLY" if gate.get("lh") else "NO_LH")
+    else:
+        structure_status = "CONFIRMED_BUY" if gate.get("hl") and gate.get("break_up") else ("HL_ONLY" if gate.get("hl") else "NO_HL")
+
+    invalidation_hit = False
+    try:
+        if sl is not None and cur is not None:
+            invalidation_hit = (float(cur) > float(sl)) if str(side).upper() == "SELL" else (float(cur) < float(sl))
+    except Exception:
+        invalidation_hit = False
+
+    if invalidation_hit:
+        ex_state = "EXIT_NOW"
+        ex_decision = "Thoát ngay / cắt mạnh"
+    elif str(side).upper() == "SELL":
+        if gate.get("lh") and gate.get("break_dn") and conflict_sev < 2:
+            ex_state = "HOLD"
+            ex_decision = "Có thể giữ tiếp"
+        elif gate.get("lh"):
+            ex_state = "HOLD_LIGHT"
+            ex_decision = "Giữ nhẹ, chưa add"
+        elif conflict_sev >= 2:
+            ex_state = "REDUCE_RISK"
+            ex_decision = "Ưu tiên giảm size / giữ rất ngắn"
+        else:
+            ex_state = "CUT_SOON"
+            ex_decision = "Không add, sẵn sàng thoát nếu không cải thiện"
+    else:
+        if gate.get("hl") and gate.get("break_up") and conflict_sev < 2:
+            ex_state = "HOLD"
+            ex_decision = "Có thể giữ tiếp"
+        elif gate.get("hl"):
+            ex_state = "HOLD_LIGHT"
+            ex_decision = "Giữ nhẹ, chưa add"
+        elif conflict_sev >= 2:
+            ex_state = "REDUCE_RISK"
+            ex_decision = "Ưu tiên giảm size / giữ rất ngắn"
+        else:
+            ex_state = "CUT_SOON"
+            ex_decision = "Không add, sẵn sàng thoát nếu không cải thiện"
+
+    risk_level = "HIGH" if invalidation_hit or conflict_sev >= 4 else ("MEDIUM" if conflict_sev >= 2 else "LOW")
+    ex_reasons = []
+    if str(side).upper() == "SELL" and not gate.get("lh"):
+        ex_reasons.append("SELL chưa có LH")
+    if str(side).upper() == "BUY" and not gate.get("hl"):
+        ex_reasons.append("BUY chưa có HL")
+    if conflict_sev >= 2:
+        ex_reasons.append("conflict còn hiện diện")
+    if trigger_state == "WAIT":
+        ex_reasons.append("chưa có trigger hỗ trợ giữ lệnh")
+
     lines.append("")
     lines.append("🧠 ===== PRO DESK REVIEW =====")
-
-    lines.append(f"📦 Position quality: {pq2.get('quality', 'WEAK')}")
-    if pq2.get("reason"):
-        lines.append(f"- {pq2.get('reason')}")
-
+    lines.append(f"📦 Position quality: {pq_quality}")
+    lines.append(f"- {pq_reason}")
     lines.append("🎯 POSITION DECISION:")
-    lines.append(f"- {ex2.get('decision', 'Giữ nhẹ, chưa add')}")
-
+    lines.append(f"- {ex_decision}")
     lines.append("🚪 EXIT ENGINE V2:")
-    lines.append(f"- State: {ex2.get('state', 'HOLD_LIGHT')}")
-    lines.append(f"- Decision: {ex2.get('decision', 'Giữ nhẹ, chưa add')}")
-    lines.append(f"- Risk: {ex2.get('risk_level', 'MEDIUM')}")
-    lines.append(f"- Structure: {ex2.get('structure_status', 'UNKNOWN')}")
-    lines.append(f"- Invalidation hit: {'YES' if ex2.get('invalidation_hit') else 'NO'}")
-    lines.append(f"- Add allowed: {'YES' if ex2.get('add_allowed') else 'NO'}")
-    if ex2.get("reason"):
+    lines.append(f"- State: {ex_state}")
+    lines.append(f"- Decision: {ex_decision}")
+    lines.append(f"- Risk: {risk_level}")
+    lines.append(f"- Structure: {structure_status}")
+    lines.append(f"- Invalidation hit: {'YES' if invalidation_hit else 'NO'}")
+    lines.append(f"- Add allowed: {'YES' if ex_state == 'HOLD' else 'NO'}")
+    if ex_reasons:
         lines.append("- Lý do:")
-        for s in ex2.get("reason", [])[:4]:
+        for s in ex_reasons[:4]:
             lines.append(f"  • {s}")
 
-    # ===== REVIEW CONFLICT + SUGGESTION =====
-
-    meta = sig.get("meta", {}) or {}
-    cf1 = meta.get("conflict_engine_v1") or {}
-    sg1 = meta.get("suggestion_block_v1") or {}
-    if rc2.get("active"):
+    if conflict_reasons:
+        verdict = "HIGH CONFLICT" if conflict_sev >= 4 else ("MEDIUM CONFLICT" if conflict_sev >= 2 else "LOW CONFLICT")
         lines.append("⚖️ CONFLICT:")
-        lines.append(f"- {rc2.get('verdict')}")
-        for s in (rc2.get("reasons") or [])[:3]:
+        lines.append(f"- {verdict}")
+        for s in conflict_reasons[:3]:
             lines.append(f"- {s}")
-    if sg1:
-        lines.append("📌 REVIEW SUGGESTION:")
-        lines.append(f"- {sg1.get('title', 'NO TRADE')}")
-        for s in (sg1.get("lines") or [])[:3]:
-            lines.append(f"- {s}")
+
+    lines.append("📌 REVIEW SUGGESTION:")
+    if tradeable_label == "YES" and ex_state in ("HOLD", "HOLD_LIGHT"):
+        lines.append("- HOLD / NO ADD")
+        lines.append("- Giữ theo plan nhưng chưa nên mở thêm rủi ro mới.")
+    else:
+        lines.append("- NO TRADE")
+        lines.append("- Chưa có lợi thế rõ để vào lệnh mới.")
+        lines.append("- Ưu tiên đứng ngoài và chờ market lộ mặt thêm.")
+    if isinstance(playbook, dict) and playbook.get("zone_low") is not None and playbook.get("zone_high") is not None:
+        lines.append(f"- Chờ phản ứng tại vùng {_f(playbook.get('zone_low'))} – {_f(playbook.get('zone_high'))}")
 
     lines.append("🎯 REVIEW TRIGGER V2:")
-    lines.append(f"- State: {tg2.get('state', 'WAIT')}")
-    lines.append(f"- Quality: {tg2.get('quality', 'LOW')}")
-    if tg2.get("reason"):
-        for s in tg2.get("reason", [])[:3]:
-            lines.append(f"- {s}")
+    lines.append(f"- State: {trigger_state}")
+    lines.append(f"- Quality: {str((tg2 or {}).get('quality') or 'LOW')}")
+    for s in ((tg2 or {}).get("reason") or [])[:3]:
+        lines.append(f"- {s}")
 
     if me1:
         lines.append("🧠 MASTER ENGINE:")
@@ -1373,11 +1364,17 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append(f"- Best side: {me1.get('best_side', 'NONE')}")
         lines.append(f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
         lines.append(f"- Confidence: {me1.get('confidence', 'LOW')}")
-        if me1.get("reason"):
-            for s in me1.get("reason", [])[:3]:
-                lines.append(f"- {s}")
-    
-    return "\n".join(lines)
+        for s in (me1.get("reason") or [])[:3]:
+            lines.append(f"- {s}")
+
+    # dedupe blank lines
+    out = []
+    for line in lines:
+        if line == "" and (not out or out[-1] == ""):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
 
 #def _fetch_triplet(symbol: str, limit: int = 260) -> Dict[str, List[Any]]:
     # M15, M30, H1
@@ -1952,16 +1949,15 @@ async def cron_run(token: str = "", request: Request = None):
                 #and rec != "CHỜ"
                 should_send_now = setup_score >= 65 and entry_score >= 50
                 #and tradeable_now == "YES"
-                if should_send_main:
-                    _send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
-                elif force_send:
-                    prefix = "🚨 LIQUIDITY / POST-SWEEP\n\n"
-                    _send_telegram(prefix + format_signal(sig), chat_id=ADMIN_CHAT_ID)
-                elif should_send_now:
-                    msg = "🚨 **NOW ALERT**\n━━━━━━━━━━━━━━\n" + format_signal(sig)
+                if should_send_main or force_send or should_send_now:
+                    msg = format_signal(sig)
+                    if should_send_now and not should_send_main:
+                        msg = "🚨 **NOW ALERT**\n----------------\n" + msg
                     _send_telegram(msg, chat_id=ADMIN_CHAT_ID)
+                #if should_send_main or force_send or should_send_now:
+                    #_send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
                 else:
-                    logger.info("[CRON] %s: no send", sym)
+                    logger.info("[CRON] %s: no telegram send | setup=%s entry=%s", sym, setup_score, entry_score)
 
                 # ===== SEND SCALE ALERT SEPARATELY =====
                 if should_send_scale and scale_plan:
