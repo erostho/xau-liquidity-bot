@@ -7551,30 +7551,56 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "🧪 Chi tiết bổ sung:")
         for s in q_lines[:5]:
             add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
-            
+    meta = sig.get("meta") or {}
+    session_v4 = meta.get("session_v4") or {}
+    htf_pressure_v4 = meta.get("htf_pressure_v4") or {}
+    macro_v4 = meta.get("macro_v4") or {}
+    playbook_v4 = meta.get("playbook_v4") or {}
+    
     if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
         add(lines, "")
         add(lines, "🧩 Toàn Cảnh Thị Trường:")
+    
         if session_v4.get("session_tag"):
-            add(lines, f"- Session: {session_v4.get('session_tag')} | Follow-through: {session_v4.get('follow_through')} | Fake risk: {session_v4.get('fake_move_risk')}")
-        # FIX: define trước
+            add(
+                lines,
+                f"- Session: {session_v4.get('session_tag')} | "
+                f"Follow-through: {session_v4.get('follow_through')} | "
+                f"Fake risk: {session_v4.get('fake_move_risk')}"
+            )
+    
         if htf_pressure_v4.get("state"):
-            add(lines, f"- HTF Pressure: {htf_pressure_v4.get('state')} | H1 close: {htf_pressure_v4.get('h1_close_bias')} | H4 close: {htf_pressure_v4.get('h4_close_bias')}")
-            htf_pressure_v4 = sig.get("htf_pressure_v4") or {}
+            add(
+                lines,
+                f"- HTF Pressure: {htf_pressure_v4.get('state')} | "
+                f"H1 close: {htf_pressure_v4.get('h1_close_bias')} | "
+                f"H4 close: {htf_pressure_v4.get('h4_close_bias')}"
+            )
+    
             htf_state = str(htf_pressure_v4.get("state") or "")
-            if "BULLISH" in htf_state and rec ("SELL", "BÁN"):
+            if "BULLISH" in htf_state and rec in ("SELL", "BÁN"):
                 add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-            if "BEARISH" in htf_state and rec ("BUY", "MUA"):
+            if "BEARISH" in htf_state and rec in ("BUY", "MUA"):
                 add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-        # session vs HTF
-        comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4)
+    
+        comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4 or {})
         if comment:
             add(lines, f"- {comment}")
+    
         if macro_v4.get("headline"):
-            add(lines, f"- Macro: {macro_v4.get('headline')} | Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}")
+            add(
+                lines,
+                f"- Macro: {macro_v4.get('headline')} | "
+                f"Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}"
+            )
+    
         if playbook_v4.get("quality"):
             trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-            add(lines, f"- Playbook V4: quality={playbook_v4.get('quality')}" + (f" | triggers: {trig}" if trig else ""))
+            add(
+                lines,
+                f"- Playbook V4: quality={playbook_v4.get('quality')}"
+                + (f" | triggers: {trig}" if trig else "")
+            )
     
     add(lines, "")
     add(lines, "🧯 Trigger quan trọng:")
