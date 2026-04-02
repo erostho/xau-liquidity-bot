@@ -1158,6 +1158,33 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append("- +0.8 ATR → BE")
         lines.append("- +1.2 ATR → trailing 3 nến M15")
 
+    # ===== PRO DESK REVIEW =====
+    meta = sig.get("meta", {})
+    de1 = meta.get("decision_engine_v1") or {}
+    
+    lines.append("")
+    lines.append("🧠 ===== PRO DESK REVIEW =====")
+    
+    # Position quality
+    score = float(sig.get("final_score", 0))
+    if score >= 55:
+        pq = "STRONG"
+    elif score >= 35:
+        pq = "MID"
+    else:
+        pq = "WEAK"
+    
+    lines.append(f"📦 Position quality: {pq}")
+    
+    # Decision
+    lines.append("🎯 POSITION DECISION:")
+    lines.append(f"- {de1.get('decision', 'WAIT')}")
+    
+    # Exit logic
+    lines.append("🚪 EXIT PLAN:")
+    lines.append("- Thủng invalidation → giảm / cắt")
+    lines.append("- Có HL + break → giữ tiếp")
+    lines.append("- Chưa có HL → KHÔNG add")
     if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
         lines.append("")
         lines.append("🧪 Tổng Quan Thị Trường:")
