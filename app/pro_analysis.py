@@ -8002,10 +8002,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
             for s in me1.get("reason", [])[:4]:
                 add(lines, f"  • {s}")
                 
-    ex2 = meta.get("exit_engine_v2") or {}
-    if ex2:
-        add(lines, "🚪 Exit engine:")
-        add(lines, f"- {ex2.get('state', 'HOLD')} | {ex2.get('decision', 'Giữ tạm')}")
+    #ex2 = meta.get("exit_engine_v2") or {}
+    #if ex2:
+        #add(lines, "🚪 Exit engine:")
+        #add(lines, f"- {ex2.get('state', 'HOLD')} | {ex2.get('decision', 'Giữ tạm')}")
     
     out = []
     for line in lines:
