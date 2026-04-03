@@ -4356,19 +4356,28 @@ def _trigger_engine_v2(
     if not confirm_ok:
         out["reason"].append("chưa có close confirm")
 
-    # 5) liquidity follow
+    # 5) follow-through
     follow_ok = False
-    if liq_state in ("YES", "PARTIAL"):
-        follow_ok = True
-    elif sniper_trigger == "TRIGGERED" and confirm_strength == "STRONG":
-        follow_ok = True
+    market_state = str((context_verdict_v1 or {}).get("market_state") or "").upper()
+    sniper_trigger = str(sniper.get("trigger") or "NONE").upper()
+    if bias_side == "BUY":
+        if break_up and confirm_ok:
+            follow_ok = True
+        elif liq_state in ("YES", "PARTIAL") and confirm_ok:
+            follow_ok = True
+        elif sniper_trigger == "TRIGGERED" and confirm_ok:
+            follow_ok = True
+    elif bias_side == "SELL":
+        if break_dn and confirm_ok:
+            follow_ok = True
+        elif liq_state in ("YES", "PARTIAL") and confirm_ok:
+            follow_ok = True
+        elif sniper_trigger == "TRIGGERED" and confirm_ok:
+            follow_ok = True
 
-    # structure alignment
-    if bias_side == "BUY" and ("HL" in m15_tag or "HH" in m15_tag or m15_tag == "TRANSITION"):
-        follow_ok = follow_ok or True
-    if bias_side == "SELL" and ("LH" in m15_tag or "LL" in m15_tag or m15_tag == "TRANSITION"):
-        follow_ok = follow_ok or True
-
+    # guardrail: nếu market đang chop/transition + chưa confirm mạnh thì không cho follow-through
+    if not confirm_ok:
+        follow_ok = False
     out["follow_ok"] = follow_ok
     if not follow_ok:
         out["reason"].append("chưa có follow-through đủ rõ")
@@ -5042,6 +5051,7 @@ def _pump_dump_engine_v3(
 
     out["reason"] = out["reason"][:5]
     return out
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -6663,13 +6673,32 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             wf_lines.append(f"Hoặc break {_fmt(lv)}")
 
     wait_for_v1 = {"lines": wf_lines[:4]}
-
     meta["market_state_machine_v1"] = market_state_machine_v1
     meta["bias_layers_v1"] = bias_layers_v1
     meta["no_trade_zone_v3"] = no_trade_zone_v3
     meta["decision_engine_v1"] = decision_engine_v1
     meta["wait_for_v1"] = wait_for_v1
 
+    # ===== ENTRY BIAS SANITY FIX =====
+    try:
+        tg2 = trigger_engine_v2 or {}
+        ntz3 = no_trade_zone_v3 or {}
+    
+        tg_state = str(tg2.get("state") or "WAIT").upper()
+        location_ok = bool(tg2.get("location_ok"))
+        confirm_ok = bool(tg2.get("confirm_ok"))
+        ntz_active = bool(ntz3.get("active"))
+    
+        if ntz_active:
+            bias_layers_v1["entry_bias"] = "WAIT"
+        elif tg_state == "TRIGGERED" and location_ok and confirm_ok:
+            bias_layers_v1["entry_bias"] = "READY"
+        elif tg_state == "READY" and location_ok:
+            bias_layers_v1["entry_bias"] = "WAIT"
+        else:
+            bias_layers_v1["entry_bias"] = "WAIT"
+    except Exception:
+        pass
     
     # ===== PRO DESK ADD =====
     market_state_machine_v1 = _market_state_machine_v1(
@@ -7732,7 +7761,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     grade = str(meta.get("grade_v6") or grade_from_mode(trade_mode, stars))
     ez_v6 = meta.get("entry_zone_v6") if isinstance(meta.get("entry_zone_v6"), dict) else {}
     sweep_grade_v6 = str(meta.get("sweep_grade_v6") or "NONE")
-
     verdict_quick = "Chưa đẹp để vào ngay"
     reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
 
