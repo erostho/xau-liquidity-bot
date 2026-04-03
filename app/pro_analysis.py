@@ -3668,8 +3668,7 @@ def _attach_vnext_meta(
         meta["trap_warning_v1"] = trap_warning_v1
         meta["manual_likelihood_v1"] = manual_likelihood_v1
         meta["manual_guidance_v1"] = manual_guidance_v1
-        meta["conflict_engine_v1"] = conflict_engine_v1
-        meta["pump_dump_v3"] = pump_dump_v3
+
         # ===== PRO DESK =====
         m15_tag = str((m15_struct or {}).get("tag") or "n/a").upper()
 
@@ -3805,14 +3804,13 @@ def _attach_vnext_meta(
         meta["decision_engine_v1"] = decision_engine_v1
         meta["wait_for_v1"] = wait_for_v1
         # ===== CONFLICT ENGINE + SUGGESTION =====
-        conflict_engine_v1 = _smart_conflict_engine_v2(
+        conflict_engine_v1 = _conflict_engine_v1(
             bias_layers_v1=bias_layers_v1,
-            no_trade_zone_v3=no_trade_zone_v3,
-            range_pos=range_pos,
+            context_verdict_v1=context_verdict_v1,
             liquidity_completion_v1=liquidity_completion_v1,
             trap_warning_v1=trap_warning_v1,
+            range_pos=range_pos,
             fib_confluence_v1=fib_confluence_v1,
-            htf_pressure_v4=htf_pressure_v4,
         )
         
         suggestion_block_v1 = _suggestion_block_v1(
@@ -4899,217 +4897,6 @@ def _final_score_review(
     tradeable = "YES" if score >= 60 else "NO"
 
     return score, tradeable, reasons, []
-def _manual_likelihood_v2_override(
-    manual_likelihood_v1: dict | None,
-    bias_layers_v1: dict | None,
-    htf_pressure_v4: dict | None,
-    ema_pack: dict | None,
-    fib_confluence_v1: dict | None,
-) -> dict:
-    ml = dict(manual_likelihood_v1 or {})
-    bl = bias_layers_v1 or {}
-    htf = htf_pressure_v4 or {}
-    ema = ema_pack or {}
-    fib = fib_confluence_v1 or {}
-
-    buy_lk = int(ml.get("buy_likelihood") or 0)
-    sell_lk = int(ml.get("sell_likelihood") or 0)
-    trap_risk = int(ml.get("trap_risk") or 0)
-
-    htf_bias = str(bl.get("htf_bias") or "MIXED").upper()
-    htf_state = str(htf.get("state") or "").upper()
-    ema_trend = str(ema.get("trend") or "").upper()
-
-    # boost SELL side
-    if htf_bias == "SELL":
-        sell_lk += 10
-    if "BEARISH" in htf_state or "SELL" in htf_state:
-        sell_lk += 8
-    if ema_trend == "BEARISH":
-        sell_lk += 7
-
-    # boost BUY side
-    if htf_bias == "BUY":
-        buy_lk += 10
-    if "BULLISH" in htf_state or "BUY" in htf_state:
-        buy_lk += 8
-    if ema_trend == "BULLISH":
-        buy_lk += 7
-
-    # fib hơi hỗ trợ timing
-    if fib.get("ok"):
-        if htf_bias == "SELL":
-            sell_lk += 4
-        elif htf_bias == "BUY":
-            buy_lk += 4
-
-    buy_lk = max(0, min(100, buy_lk))
-    sell_lk = max(0, min(100, sell_lk))
-    trap_risk = max(0, min(100, trap_risk))
-
-    ml["buy_likelihood"] = buy_lk
-    ml["sell_likelihood"] = sell_lk
-    ml["trap_risk"] = trap_risk
-    return ml
-
-def _pump_dump_engine_v3_refine(
-    pd3: dict | None,
-    range_pos: float | None,
-    liquidity_map: dict | None,
-    htf_pressure_v4: dict | None,
-    bias_layers_v1: dict | None,
-    close_confirm_v4: dict | None,
-) -> dict:
-    out = dict(pd3 or {})
-    liq = liquidity_map or {}
-    htf = htf_pressure_v4 or {}
-    bl = bias_layers_v1 or {}
-    cc4 = close_confirm_v4 or {}
-
-    try:
-        rp = float(range_pos) if range_pos is not None else None
-    except Exception:
-        rp = None
-
-    htf_state = str(htf.get("state") or "").upper()
-    htf_bias = str(bl.get("htf_bias") or "").upper()
-    cc_strength = str(cc4.get("strength") or "NO").upper()
-
-    liq_above = str(liq.get("above_level") or liq.get("top_liquidity") or "").upper()
-    liq_below = str(liq.get("below_level") or liq.get("bottom_liquidity") or "").upper()
-
-    bias = str(out.get("bias") or "NEUTRAL").upper()
-    stage = str(out.get("stage") or "STAGE_0").upper()
-
-    # nếu đang vùng cao + sell bias + HTF bearish + liquidity phía trên rõ
-    if rp is not None and rp >= 0.65 and htf_bias == "SELL" and ("BEARISH" in htf_state or "SELL" in htf_state):
-        if liq_above in ("HIGH", "MEDIUM"):
-            out["bias"] = "DUMP"
-
-            if cc_strength in ("WEAK", "STRONG"):
-                out["stage"] = "STAGE_2"
-                out["stage_label"] = "SETUP"
-                out["probability"] = "MEDIUM"
-                out["timing"] = "CHỜ SWEEP / FAIL GIỮ"
-            else:
-                out["stage"] = "STAGE_1"
-                out["stage_label"] = "PRE_BREAK"
-                out["probability"] = "MEDIUM"
-                out["timing"] = "CHỜ SWEEP TRƯỚC"
-
-    # nếu đang vùng thấp + buy bias + HTF bullish + liquidity phía dưới rõ
-    if rp is not None and rp <= 0.35 and htf_bias == "BUY" and ("BULLISH" in htf_state or "BUY" in htf_state):
-        if liq_below in ("HIGH", "MEDIUM"):
-            out["bias"] = "PUMP"
-
-            if cc_strength in ("WEAK", "STRONG"):
-                out["stage"] = "STAGE_2"
-                out["stage_label"] = "SETUP"
-                out["probability"] = "MEDIUM"
-                out["timing"] = "CHỜ SWEEP / GIỮ GIÁ"
-            else:
-                out["stage"] = "STAGE_1"
-                out["stage_label"] = "PRE_BREAK"
-                out["probability"] = "MEDIUM"
-                out["timing"] = "CHỜ SWEEP TRƯỚC"
-
-    # guardrail
-    if stage != "STAGE_3" and str(out.get("probability") or "").upper() == "HIGH":
-        out["probability"] = "MEDIUM"
-
-    return out
-    
-def _smart_conflict_engine_v2(
-    bias_layers_v1: dict | None,
-    no_trade_zone_v3: dict | None,
-    range_pos: float | None,
-    liquidity_completion_v1: dict | None,
-    trap_warning_v1: dict | None,
-    fib_confluence_v1: dict | None,
-    htf_pressure_v4: dict | None,
-) -> dict:
-    bl = bias_layers_v1 or {}
-    ntz = no_trade_zone_v3 or {}
-    liq = liquidity_completion_v1 or {}
-    trap = trap_warning_v1 or {}
-    fib = fib_confluence_v1 or {}
-    htf = htf_pressure_v4 or {}
-
-    try:
-        rp = float(range_pos) if range_pos is not None else None
-    except Exception:
-        rp = None
-
-    htf_bias = str(bl.get("htf_bias") or "MIXED").upper()
-    mtf_bias = str(bl.get("mtf_bias") or "WAIT").upper()
-    htf_state = str(htf.get("state") or "").upper()
-
-    reasons = []
-    structural_conflict = 0
-    timing_conflict = 0
-
-    # 1) structural conflict thật sự
-    if htf_bias == "BUY" and ("SELL" in mtf_bias):
-        structural_conflict += 1
-        reasons.append("HTF BUY nhưng MTF đang hồi giảm")
-
-    if htf_bias == "SELL" and ("BUY" in mtf_bias):
-        structural_conflict += 1
-        reasons.append("HTF SELL nhưng MTF đang hồi tăng")
-
-    if "BULLISH" in htf_state and htf_bias == "SELL":
-        structural_conflict += 1
-        reasons.append("HTF pressure đang bullish nhưng bias SELL")
-
-    if "BEARISH" in htf_state and htf_bias == "BUY":
-        structural_conflict += 1
-        reasons.append("HTF pressure đang bearish nhưng bias BUY")
-
-    # 2) timing/location conflict
-    if ntz.get("active"):
-        timing_conflict += 1
-
-    if rp is not None and 0.40 <= rp <= 0.60:
-        timing_conflict += 1
-        reasons.append("đang ở giữa biên → dễ nhiễu")
-
-    if str((liq.get("state") or "NO")).upper() == "NO":
-        timing_conflict += 1
-        reasons.append("thanh khoản chưa hoàn tất")
-
-    if bool(trap.get("active")):
-        timing_conflict += 1
-        reasons.append("trap risk đang hiện diện")
-
-    if not bool(fib.get("ok")):
-        timing_conflict += 1
-        reasons.append("chưa có fib confluence rõ")
-
-    # verdict thông minh hơn
-    if structural_conflict >= 2:
-        verdict = "HIGH STRUCTURAL CONFLICT"
-        severity = 4
-    elif structural_conflict == 1 and timing_conflict >= 2:
-        verdict = "MEDIUM CONFLICT"
-        severity = 3
-    elif structural_conflict == 0 and timing_conflict >= 2:
-        verdict = "TIMING CONFLICT"
-        severity = 2
-    elif structural_conflict == 1:
-        verdict = "LOW STRUCTURAL CONFLICT"
-        severity = 2
-    else:
-        verdict = "LOW CONFLICT"
-        severity = 1
-
-    return {
-        "active": severity >= 2,
-        "severity": severity,
-        "verdict": verdict,
-        "reasons": reasons[:5],
-        "structural_conflict": structural_conflict,
-        "timing_conflict": timing_conflict,
-    }
     
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
@@ -6051,15 +5838,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         liquidation_evt=liquidation_evt,
         liquidity_map_v1=liquidity_map_v1,
     )
-    pump_dump_v3 = _pump_dump_engine_v3_refine(
-        pd3=pump_dump_v3,
-        range_pos=range_pos,
-        liquidity_map=liquidity_map if 'liquidity_map' in locals() and isinstance(liquidity_map, dict) else {},
-        htf_pressure_v4=htf_pressure_v4,
-        bias_layers_v1=bias_layers_v1,
-        close_confirm_v4=close_confirm_v4,
-    )
     base.setdefault("meta", {})["pump_dump_v1"] = pump_dump_v1
+    
     base.setdefault("meta", {})["structure"] = {
         "H4": h4_struct.get("tag"),
         "H1": h1_struct.get("tag"),
@@ -6588,13 +6368,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         entry_sniper=entry_sniper,
         playbook_v4=playbook_v4,
     )
-    manual_likelihood_v1 = _manual_likelihood_v2_override(
-        manual_likelihood_v1=manual_likelihood_v1,
-        bias_layers_v1=bias_layers_v1,
-        htf_pressure_v4=htf_pressure_v4,
-        ema_pack=ema_pack if isinstance(ema_pack, dict) else {},
-        fib_confluence_v1=fib_confluence_v1,
-    )
+
     manual_guidance_v1 = _manual_guidance_v1(
         bias_side=bias_side,
         context_verdict=context_verdict_v1,
@@ -8236,10 +8010,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if bl1:
         add(lines, "🧭 Bias:")
         add(lines, f"- HTF: {bl1.get('htf_bias')}")
-        mtf_bias_txt = str(bl1.get("mtf_bias") or "WAIT").upper()
-        if mtf_bias_txt in ("BUY_PULLBACK", "SELL_PULLBACK"):
-            mtf_bias_txt = "PULLBACK"
-        add(lines, f"- MTF: {mtf_bias_txt}")
+        add(lines, f"- MTF: {bl1.get('mtf_bias')}")
         #add(lines, f"- Entry: {bl1.get('entry_bias')}")
         entry_bias_txt = str(bl1.get("entry_bias") or "WAIT").upper()
         if entry_bias_txt not in ("READY", "WAIT"):
