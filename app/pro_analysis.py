@@ -4821,6 +4821,23 @@ def _review_conflict_v2(
         "verdict": verdict,
         "reasons": reasons[:5],
     }
+
+def _score_to_grade_v2(score) -> str:
+    try:
+        s = float(score or 0)
+    except Exception:
+        s = 0.0
+
+    if s >= 85:
+        return "A"
+    if s >= 70:
+        return "B"
+    if s >= 50:
+        return "C"
+    if s >= 30:
+        return "D"
+    return "E"
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -7940,8 +7957,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "🧭 Bias:")
         add(lines, f"- HTF: {bl1.get('htf_bias')}")
         add(lines, f"- MTF: {bl1.get('mtf_bias')}")
-        add(lines, f"- Entry: {bl1.get('entry_bias')}")
-        
+        #add(lines, f"- Entry: {bl1.get('entry_bias')}")
+        entry_bias_txt = str(bl1.get("entry_bias") or "WAIT").upper()
+        if entry_bias_txt not in ("READY", "WAIT"):
+            entry_bias_txt = "WAIT"
+        add(lines, f"- Entry: {entry_bias_txt}")
     if ntz3.get("active"):
         add(lines, "🚫 NO TRADE ZONE")
         for r in ntz3.get("reasons", [])[:3]:
