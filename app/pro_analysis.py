@@ -7943,16 +7943,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append(f"- Thời điểm: {pd3.get('timing', 'CHƯA RÕ')}")
     if pd3.get("reason"):
         lines.append(f"- Lý do: {' | '.join(pd3.get('reason', [])[:3])}")
-    final_score, tradeable_label, score_reasons, tradeable_reasons, setup_label = _final_score_review(
-        side,
-        gate,
-        pos,
-        actions,
-        playbook if isinstance(playbook, dict) else {},
-        no_trade_zone if isinstance(no_trade_zone, dict) else {},
-        htf_pressure_v4 if isinstance(htf_pressure_v4, dict) else {},
+
+    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
+        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
     )
-    
     grade = _score_to_grade_v2(final_score)      
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")   
