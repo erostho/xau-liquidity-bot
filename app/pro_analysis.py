@@ -3924,6 +3924,21 @@ def _attach_vnext_meta(
         )
         meta["master_engine_v1"] = master_engine_v1
         
+            # ===== PUMP/DUMP ENGINE V3 =====
+        pump_dump_v3 = _pump_dump_engine_v3(
+            bias_side=bias_side,
+            range_pos=range_pos,
+            market_state_machine_v1=market_state_machine_v1,
+            liquidity_completion_v1=liquidity_completion_v1,
+            trap_warning_v1=trap_warning_v1,
+            close_confirm_v4=close_confirm_v4,
+            m15_struct=(m15_struct or {}),
+            htf_pressure_v4=htf_pressure_v4,
+            playbook_v4=playbook_v4,
+            entry_sniper=entry_sniper,
+        )
+        meta["pump_dump_v3"] = pump_dump_v3
+        
         # ===== MASTER ENGINE OVERRIDE =====
         try:
             me1 = meta.get("master_engine_v1") or {}
@@ -4821,6 +4836,212 @@ def _review_conflict_v2(
         "verdict": verdict,
         "reasons": reasons[:5],
     }
+
+# =========================
+# PUMP / DUMP ENGINE V3
+# =========================
+
+def _pump_dump_engine_v3(
+    bias_side: str | None,
+    range_pos: float | None,
+    market_state_machine_v1: dict | None,
+    liquidity_completion_v1: dict | None,
+    trap_warning_v1: dict | None,
+    close_confirm_v4: dict | None,
+    m15_struct: dict | None,
+    htf_pressure_v4: dict | None,
+    playbook_v4: dict | None,
+    entry_sniper: dict | None,
+) -> dict:
+    out = {
+        "stage": "STAGE_0",
+        "stage_label": "NONE",
+        "bias": "NEUTRAL",
+        "probability": "LOW",
+        "timing": "CHƯA RÕ",
+        "compression": "LOW",
+        "reason": [],
+    }
+
+    ms1 = market_state_machine_v1 or {}
+    liq1 = liquidity_completion_v1 or {}
+    tw1 = trap_warning_v1 or {}
+    cc4 = close_confirm_v4 or {}
+    m15s = m15_struct or {}
+    htf4 = htf_pressure_v4 or {}
+    pb4 = playbook_v4 or {}
+    sniper = entry_sniper or {}
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    bias_side = str(bias_side or "").upper()
+    market_state = str(ms1.get("state") or "").upper()
+    liq_state = str(liq1.get("state") or "NO").upper()
+    cc_strength = str(cc4.get("strength") or "NO").upper()
+    htf_state = str(htf4.get("state") or "").upper()
+    playbook_q = str(pb4.get("quality") or "").upper()
+    sniper_trigger = str(sniper.get("trigger") or "NONE").upper()
+
+    hl_ok = bool(m15s.get("hl"))
+    lh_ok = bool(m15s.get("lh"))
+    break_up = bool(m15s.get("break_up"))
+    break_dn = bool(m15s.get("break_dn"))
+
+    # -------------------------
+    # 1) Compression estimate
+    # -------------------------
+    compression_score = 0
+
+    if "CHOP" in market_state or "TRANSITION" in market_state:
+        compression_score += 1
+
+    if playbook_q in ("MEDIUM", "HIGH"):
+        compression_score += 1
+
+    if sniper_trigger in ("READY", "TRIGGERED"):
+        compression_score += 1
+
+    if compression_score >= 3:
+        out["compression"] = "HIGH"
+    elif compression_score == 2:
+        out["compression"] = "MEDIUM"
+    else:
+        out["compression"] = "LOW"
+
+    # -------------------------
+    # 2) Directional potential
+    # -------------------------
+    potential_dump = False
+    potential_pump = False
+
+    if rp is not None:
+        if rp >= 0.70:
+            potential_dump = True
+        if rp <= 0.30:
+            potential_pump = True
+
+    if bias_side == "SELL":
+        potential_dump = potential_dump or True
+    if bias_side == "BUY":
+        potential_pump = potential_pump or True
+
+    if "BEARISH" in htf_state or "SELL" in htf_state:
+        potential_dump = potential_dump or True
+    if "BULLISH" in htf_state or "BUY" in htf_state:
+        potential_pump = potential_pump or True
+
+    # choose bias
+    if potential_dump and not potential_pump:
+        out["bias"] = "DUMP"
+    elif potential_pump and not potential_dump:
+        out["bias"] = "PUMP"
+    elif potential_dump and potential_pump:
+        # ưu tiên theo bias_side
+        if bias_side == "SELL":
+            out["bias"] = "DUMP"
+        elif bias_side == "BUY":
+            out["bias"] = "PUMP"
+        else:
+            out["bias"] = "NEUTRAL"
+    else:
+        out["bias"] = "NEUTRAL"
+
+    # -------------------------
+    # 3) Stage 1 = Potential
+    # -------------------------
+    stage1 = False
+    if out["bias"] == "DUMP":
+        if rp is not None and rp >= 0.65:
+            stage1 = True
+            out["reason"].append("đang ở vùng cao")
+        if bias_side == "SELL":
+            out["reason"].append("bias nghiêng SELL")
+        if "BEARISH" in htf_state or "SELL" in htf_state:
+            out["reason"].append("HTF đang ủng hộ giảm")
+    elif out["bias"] == "PUMP":
+        if rp is not None and rp <= 0.35:
+            stage1 = True
+            out["reason"].append("đang ở vùng thấp")
+        if bias_side == "BUY":
+            out["reason"].append("bias nghiêng BUY")
+        if "BULLISH" in htf_state or "BUY" in htf_state:
+            out["reason"].append("HTF đang ủng hộ tăng")
+
+    # fallback: nếu chưa đủ stage1 nhưng bias có + compression cao
+    if not stage1 and out["bias"] != "NEUTRAL" and out["compression"] in ("MEDIUM", "HIGH"):
+        stage1 = True
+
+    # -------------------------
+    # 4) Stage 2 = Setup
+    # -------------------------
+    stage2 = False
+    trap_active = bool(tw1.get("active"))
+    liq_done = liq_state in ("YES", "PARTIAL")
+
+    if out["bias"] == "DUMP":
+        has_reject = trap_active or lh_ok
+        if stage1 and (has_reject or liq_done):
+            stage2 = True
+            if has_reject:
+                out["reason"].append("đã có tín hiệu từ chối / trap")
+            if liq_done:
+                out["reason"].append("thanh khoản đang hoàn tất")
+    elif out["bias"] == "PUMP":
+        has_reject = trap_active or hl_ok
+        if stage1 and (has_reject or liq_done):
+            stage2 = True
+            if has_reject:
+                out["reason"].append("đã có tín hiệu giữ giá / trap")
+            if liq_done:
+                out["reason"].append("thanh khoản đang hoàn tất")
+
+    # -------------------------
+    # 5) Stage 3 = Trigger
+    # -------------------------
+    stage3 = False
+
+    if out["bias"] == "DUMP":
+        if stage2 and break_dn and cc_strength in ("WEAK", "STRONG"):
+            stage3 = True
+            out["reason"].append("đã break xuống + close confirm")
+    elif out["bias"] == "PUMP":
+        if stage2 and break_up and cc_strength in ("WEAK", "STRONG"):
+            stage3 = True
+            out["reason"].append("đã break lên + close confirm")
+
+    # -------------------------
+    # 6) Final stage / probability / timing
+    # -------------------------
+    if stage3:
+        out["stage"] = "STAGE_3"
+        out["stage_label"] = "TRIGGER"
+        out["probability"] = "HIGH"
+        out["timing"] = "TRIGGERED"
+    elif stage2:
+        out["stage"] = "STAGE_2"
+        out["stage_label"] = "SETUP"
+        out["probability"] = "MEDIUM"
+        out["timing"] = "CHỜ XÁC NHẬN"
+    elif stage1:
+        out["stage"] = "STAGE_1"
+        out["stage_label"] = "POTENTIAL"
+        out["probability"] = "LOW"
+        out["timing"] = "MỚI HÌNH THÀNH"
+    else:
+        out["stage"] = "STAGE_0"
+        out["stage_label"] = "NONE"
+        out["probability"] = "LOW"
+        out["timing"] = "CHƯA RÕ"
+
+    # guardrail: không cho HIGH nếu chưa stage 3
+    if out["stage"] != "STAGE_3" and out["probability"] == "HIGH":
+        out["probability"] = "MEDIUM"
+
+    out["reason"] = out["reason"][:5]
+    return out
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -7835,27 +8056,30 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- Alignment: {ema_pack.get('alignment', 'NO')}")
         if ema_pack.get("zone"):
             add(lines, f"- Vị trí giá vs EMA: {ema_pack.get('zone')}")
-    pump_dump = ((sig.get("meta") or {}).get("pump_dump_v1") or {})
-    compression = str(pump_dump.get("compression") or "LOW")
-    bias_bung = str(pump_dump.get("bias") or "NEUTRAL")
-    probability = str(pump_dump.get("probability") or "LOW")
-    timing = str(pump_dump.get("timing") or "CHƯA RÕ")
-    reasons = pump_dump.get("reasons") or []
+            
+    #pump_dump = ((sig.get("meta") or {}).get("pump_dump_v1") or {})
+    #compression = str(pump_dump.get("compression") or "LOW")
+    #bias_bung = str(pump_dump.get("bias") or "NEUTRAL")
+    #probability = str(pump_dump.get("probability") or "LOW")
+    #timing = str(pump_dump.get("timing") or "CHƯA RÕ")
+    #reasons = pump_dump.get("reasons") or []
     sniper = ((sig.get("meta") or {}).get("entry_sniper") or {})
     lines.append("")
     lines.append("🎯 ENTRY SNIPER:")
     lines.append(f"- Cây chỉ hướng: {sniper.get('direction', 'NONE')} ({sniper.get('strength', '-')})")
     lines.append(f"- Điểm nổ: {sniper.get('trigger', 'NONE')}")
     lines.append(f"- Trạng thái: {sniper.get('state', 'KHÔNG CÓ SETUP')}")
+    
+    pd3 = (sig.get("meta") or {}).get("pump_dump_v3") or {}
     lines.append("")
     lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
-    lines.append(f"- Compression: {compression}")
-    lines.append(f"- Bias bung: {bias_bung}")
-    lines.append(f"- Xác suất: {probability}")
-    lines.append(f"- Thời điểm: {timing}")
-    if reasons:
-        lines.append(f"- Lý do: {' + '.join(reasons[:3])}")
-    add(lines, "")
+    lines.append(f"- Stage: {pd3.get('stage_label', 'NONE')}")
+    lines.append(f"- Bias bung: {pd3.get('bias', 'NEUTRAL')}")
+    lines.append(f"- Compression: {pd3.get('compression', 'LOW')}")
+    lines.append(f"- Xác suất: {pd3.get('probability', 'LOW')}")
+    lines.append(f"- Thời điểm: {pd3.get('timing', 'CHƯA RÕ')}")
+    if pd3.get("reason"):
+        lines.append(f"- Lý do: {' | '.join(pd3.get('reason', [])[:3])}")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
     
     final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
@@ -7918,7 +8142,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, "🧠 ===== PRO DESK =====")
     if ms1.get("state"):
         add(lines, f"🧠 Market state: {ms1.get('state')} | {ms1.get('label')}")
-        
     if bl1:
         add(lines, "🧭 Bias:")
         add(lines, f"- HTF: {bl1.get('htf_bias')}")
@@ -7938,9 +8161,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "⏳ Wait for:")
         for s in wf1.get("lines")[:3]:
             add(lines, f"- {s}")
+            
     # ===== TRIGGER ENGINE V2 OUTPUT =====
     tg2 = meta.get("trigger_engine_v2") or {}
-    
     if tg2:
         add(lines, "")
         add(lines, "🎯 TRIGGER ENGINE V2:")
@@ -7976,7 +8199,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- {sg1.get('title', 'NO TRADE')}")
         for s in (sg1.get("lines") or [])[:4]:
             add(lines, f"- {s}")
-
+            
+    if pd3.get("stage_label") == "POTENTIAL":
+        add(lines, "- Chỉ mới ở vùng có khả năng bung, chưa phải tín hiệu vào")
+    elif pd3.get("stage_label") == "SETUP":
+        add(lines, "- Đã có setup bung, chờ confirm để tránh vào sớm")
+    elif pd3.get("stage_label") == "TRIGGER":
+        add(lines, "- Đã có trigger bung rõ, có thể cân nhắc manual strike")
+    
     # ===== MASTER ENGINE OUTPUT =====
     me1 = meta.get("master_engine_v1") or {}
     if me1:
