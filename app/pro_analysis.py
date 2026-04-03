@@ -3844,7 +3844,22 @@ def _attach_vnext_meta(
             atr15=atr15,
         )
         meta["trigger_engine_v2"] = trigger_engine_v2
-
+        
+        # ===== PUMP/DUMP ENGINE V3 =====
+        pump_dump_v3 = _pump_dump_engine_v3(
+            bias_side=bias_side,
+            range_pos=range_pos,
+            market_state_machine_v1=market_state_machine_v1,
+            liquidity_completion_v1=liquidity_completion_v1,
+            trap_warning_v1=trap_warning_v1,
+            close_confirm_v4=close_confirm_v4,
+            m15_struct=(m15_struct or {}),
+            htf_pressure_v4=htf_pressure_v4,
+            playbook_v4=playbook_v4,
+            entry_sniper=entry_sniper,
+        )
+        meta["pump_dump_v3"] = pump_dump_v3
+        
         # ===== EXIT ENGINE V2 =====
         review_side_for_exit = _resolve_review_side(base, bias_side)
         invalidation_level_v2 = None
@@ -3922,23 +3937,7 @@ def _attach_vnext_meta(
             manual_likelihood_v1=manual_likelihood_v1,
             context_verdict_v1=context_verdict_v1,
         )
-        meta["master_engine_v1"] = master_engine_v1
-        
-            # ===== PUMP/DUMP ENGINE V3 =====
-        pump_dump_v3 = _pump_dump_engine_v3(
-            bias_side=bias_side,
-            range_pos=range_pos,
-            market_state_machine_v1=market_state_machine_v1,
-            liquidity_completion_v1=liquidity_completion_v1,
-            trap_warning_v1=trap_warning_v1,
-            close_confirm_v4=close_confirm_v4,
-            m15_struct=(m15_struct or {}),
-            htf_pressure_v4=htf_pressure_v4,
-            playbook_v4=playbook_v4,
-            entry_sniper=entry_sniper,
-        )
-        meta["pump_dump_v3"] = pump_dump_v3
-        
+        meta["master_engine_v1"] = master_engine_v1        
         # ===== MASTER ENGINE OVERRIDE =====
         try:
             me1 = meta.get("master_engine_v1") or {}
