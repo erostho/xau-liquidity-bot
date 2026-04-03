@@ -4837,6 +4837,66 @@ def _score_to_grade_v2(score) -> str:
     if s >= 30:
         return "D"
     return "E"
+def _final_score_review(
+    side,
+    gate,
+    pos,
+    actions,
+    playbook,
+    no_trade_zone,
+    htf_pressure_v4,
+):
+    score = 50
+    reasons = []
+
+    # ------------------
+    # STRUCTURE
+    # ------------------
+    if gate.get("strong"):
+        score += 10
+        reasons.append("structure tốt")
+    else:
+        score -= 10
+        reasons.append("structure yếu")
+
+    # ------------------
+    # POSITION
+    # ------------------
+    if pos.get("zone") == "HIGH":
+        if side == "SELL":
+            score += 5
+        else:
+            score -= 10
+    elif pos.get("zone") == "LOW":
+        if side == "BUY":
+            score += 5
+        else:
+            score -= 10
+
+    # ------------------
+    # NO TRADE ZONE
+    # ------------------
+    if no_trade_zone.get("active"):
+        score -= 20
+        reasons.append("no-trade zone")
+
+    # ------------------
+    # HTF CONFLICT
+    # ------------------
+    htf_state = str(htf_pressure_v4.get("state") or "").upper()
+    if side == "SELL" and "BULLISH" in htf_state:
+        score -= 10
+        reasons.append("ngược HTF")
+    if side == "BUY" and "BEARISH" in htf_state:
+        score -= 10
+        reasons.append("ngược HTF")
+
+    # clamp
+    score = max(0, min(100, score))
+
+    tradeable = "YES" if score >= 60 else "NO"
+
+    return score, tradeable, reasons, []
     
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
