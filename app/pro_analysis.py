@@ -8227,8 +8227,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- {sg1.get('title', 'NO TRADE')}")
         for s in (sg1.get("lines") or [])[:4]:
             add(lines, f"- {s}")
-            
-    
+
     # ===== MASTER ENGINE OUTPUT =====
     me1 = meta.get("master_engine_v1") or {}
     if me1:
