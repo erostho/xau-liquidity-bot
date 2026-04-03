@@ -7847,17 +7847,28 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append(f"- Cây chỉ hướng: {sniper.get('direction', 'NONE')} ({sniper.get('strength', '-')})")
     lines.append(f"- Điểm nổ: {sniper.get('trigger', 'NONE')}")
     lines.append(f"- Trạng thái: {sniper.get('state', 'KHÔNG CÓ SETUP')}")
+    #lines.append("")
+    #lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
+    #lines.append(f"- Compression: {compression}")
+    #lines.append(f"- Bias bung: {bias_bung}")
+    #lines.append(f"- Xác suất: {probability}")
+    #lines.append(f"- Thời điểm: {timing}")
+    #if reasons:
+        #lines.append(f"- Lý do: {' + '.join(reasons[:3])}")
+    pd3 = (sig.get("meta") or {}).get("pump_dump_v3") or {}
+
     lines.append("")
-    lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
-    lines.append(f"- Compression: {compression}")
-    lines.append(f"- Bias bung: {bias_bung}")
-    lines.append(f"- Xác suất: {probability}")
-    lines.append(f"- Thời điểm: {timing}")
-    if reasons:
-        lines.append(f"- Lý do: {' + '.join(reasons[:3])}")
+    lines.append("🚀 DỰ ĐOÁN PUMP/DUMP V3:")
+    lines.append(f"- Stage: {pd3.get('stage_label', 'NONE')}")
+    lines.append(f"- Bias bung: {pd3.get('bias', 'NEUTRAL')}")
+    lines.append(f"- Compression: {pd3.get('compression', 'LOW')}")
+    lines.append(f"- Xác suất: {pd3.get('probability', 'LOW')}")
+    lines.append(f"- Thời điểm: {pd3.get('timing', 'CHƯA RÕ')}")
+    if pd3.get("reason"):
+        lines.append(f"- Lý do: {' | '.join(pd3.get('reason', [])[:3])}")
+        
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")
-    
     final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
         sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
     )
