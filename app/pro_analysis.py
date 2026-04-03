@@ -8228,12 +8228,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
         for s in (sg1.get("lines") or [])[:4]:
             add(lines, f"- {s}")
             
-    if pd3.get("stage_label") == "POTENTIAL":
-        add(lines, "- Chỉ mới ở vùng có khả năng bung, chưa phải tín hiệu vào")
-    elif pd3.get("stage_label") == "SETUP":
-        add(lines, "- Đã có setup bung, chờ confirm để tránh vào sớm")
-    elif pd3.get("stage_label") == "TRIGGER":
-        add(lines, "- Đã có trigger bung rõ, có thể cân nhắc manual strike")
     
     # ===== MASTER ENGINE OUTPUT =====
     me1 = meta.get("master_engine_v1") or {}
