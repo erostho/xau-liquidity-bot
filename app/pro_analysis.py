@@ -5306,7 +5306,16 @@ def _final_score_review(
 # =========================
 # SIGNAL CONSISTENCY ENGINE
 # =========================
-
+def signal_consistency_v1(*args, **kwargs):
+    """
+    Fallback để tránh crash nếu file gốc có gọi
+    """
+    return {
+        "final_side": "NONE",
+        "current_move": "CHOP",
+        "action_mode": "NO_TRADE",
+        "narrative": "fallback"
+    }
 def _signal_consistency_engine_v1(
     bias_layers_v1: dict | None,
     market_state_machine_v1: dict | None,
