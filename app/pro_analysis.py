@@ -3924,6 +3924,18 @@ def _attach_vnext_meta(
         )
         meta["master_engine_v1"] = master_engine_v1
         
+        # ===== SIGNAL CONSISTENCY ENGINE =====
+        signal_consistency_v1 = _signal_consistency_engine_v1(
+            bias_layers_v1=bias_layers_v1,
+            market_state_machine_v1=market_state_machine_v1,
+            master_engine_v1=master_engine_v1,
+            trigger_engine_v2=trigger_engine_v2,
+            no_trade_zone_v3=no_trade_zone_v3,
+            context_verdict_v1=context_verdict_v1,
+            range_pos=range_pos,
+        )
+        meta["signal_consistency_v1"] = signal_consistency_v1
+        
         # ===== MASTER ENGINE OVERRIDE =====
         try:
             me1 = meta.get("master_engine_v1") or {}
@@ -4897,7 +4909,134 @@ def _final_score_review(
     tradeable = "YES" if score >= 60 else "NO"
 
     return score, tradeable, reasons, []
-    
+# =========================
+# SIGNAL CONSISTENCY ENGINE
+# =========================
+
+def _signal_consistency_engine_v1(
+    bias_layers_v1: dict | None,
+    market_state_machine_v1: dict | None,
+    master_engine_v1: dict | None,
+    trigger_engine_v2: dict | None,
+    no_trade_zone_v3: dict | None,
+    context_verdict_v1: dict | None,
+    range_pos: float | None,
+) -> dict:
+    bl = bias_layers_v1 or {}
+    ms = market_state_machine_v1 or {}
+    me = master_engine_v1 or {}
+    tg = trigger_engine_v2 or {}
+    ntz = no_trade_zone_v3 or {}
+    cv = context_verdict_v1 or {}
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    htf_bias = str(bl.get("htf_bias") or "MIXED").upper()
+    mtf_bias = str(bl.get("mtf_bias") or "WAIT").upper()
+    master_state = str(me.get("state") or "WAIT").upper()
+    trigger_state = str(tg.get("state") or "WAIT").upper()
+    market_state = str(ms.get("state") or "").upper()
+    cv_state = str(cv.get("state") or "").upper()
+
+    final_side = "NONE"
+    current_move = "CHOP"
+    action_mode = "NO_TRADE"
+    allow_buy_text = True
+    allow_sell_text = True
+    reasons = []
+
+    # -------------------------
+    # 1) final side = theo HTF trước
+    # -------------------------
+    if htf_bias in ("BUY", "SELL"):
+        final_side = htf_bias
+    else:
+        final_side = str(me.get("best_side") or "NONE").upper()
+
+    # -------------------------
+    # 2) current move
+    # -------------------------
+    if "CHOP" in market_state:
+        current_move = "CHOP"
+    elif "TRANSITION" in market_state:
+        current_move = "TRANSITION"
+    elif final_side == "SELL" and ("BUY_PULLBACK" in mtf_bias or "PULLBACK" in mtf_bias):
+        current_move = "PULLBACK"
+    elif final_side == "BUY" and ("SELL_PULLBACK" in mtf_bias or "PULLBACK" in mtf_bias):
+        current_move = "PULLBACK"
+    else:
+        current_move = "TREND"
+
+    # fallback theo context/range nếu market state chưa rõ
+    if current_move == "CHOP" and rp is not None and 0.40 <= rp <= 0.60:
+        reasons.append("đang ở giữa biên")
+
+    # -------------------------
+    # 3) action mode
+    # -------------------------
+    if bool(ntz.get("active")) or master_state == "NO_TRADE":
+        action_mode = "NO_TRADE"
+        reasons.append("no-trade zone đang active")
+    else:
+        if final_side == "SELL":
+            if trigger_state == "TRIGGERED":
+                action_mode = "MANUAL_STRIKE"
+            else:
+                action_mode = "WAIT_SELL"
+        elif final_side == "BUY":
+            if trigger_state == "TRIGGERED":
+                action_mode = "MANUAL_STRIKE"
+            else:
+                action_mode = "WAIT_BUY"
+        else:
+            action_mode = "NO_TRADE"
+
+    # -------------------------
+    # 4) text allowance
+    # -------------------------
+    if final_side == "SELL":
+        allow_buy_text = False
+        allow_sell_text = True
+    elif final_side == "BUY":
+        allow_buy_text = True
+        allow_sell_text = False
+    else:
+        allow_buy_text = False
+        allow_sell_text = False
+
+    # nhưng nếu action_mode = NO_TRADE thì không được in câu vào lệnh trực tiếp
+    if action_mode == "NO_TRADE":
+        allow_buy_text = False
+        allow_sell_text = False
+
+    # -------------------------
+    # 5) narrative
+    # -------------------------
+    if final_side == "SELL" and current_move == "PULLBACK":
+        narrative = "Đây là nhịp hồi trong bối cảnh giảm → chỉ chờ SELL khi có xác nhận"
+    elif final_side == "BUY" and current_move == "PULLBACK":
+        narrative = "Đây là nhịp điều chỉnh trong bối cảnh tăng → chỉ chờ BUY khi có xác nhận"
+    elif final_side == "SELL" and current_move == "TREND":
+        narrative = "Xu hướng chính vẫn nghiêng giảm → ưu tiên SELL theo xác nhận"
+    elif final_side == "BUY" and current_move == "TREND":
+        narrative = "Xu hướng chính vẫn nghiêng tăng → ưu tiên BUY theo xác nhận"
+    elif current_move == "CHOP":
+        narrative = "Thị trường đang nhiễu / đi giữa biên → ưu tiên đứng ngoài"
+    else:
+        narrative = "Chưa có hướng đủ rõ → ưu tiên đứng ngoài"
+
+    return {
+        "final_side": final_side,
+        "current_move": current_move,
+        "action_mode": action_mode,
+        "allow_buy_text": allow_buy_text,
+        "allow_sell_text": allow_sell_text,
+        "narrative": narrative,
+        "reasons": reasons[:4],
+    }    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -7659,7 +7798,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"🧭 Hướng ưu tiên: {rec}")
     if phase:
         add(lines, f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase_text(phase)}")
-    add(lines, f"🌡 Trạng thái: {state_text(meta.get('market_state_v2'), narrative, struct, htf_pressure_v4)}")
+    sce1 = meta.get("signal_consistency_v1") or {}
+    state_line = sce1.get("narrative") or state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
+    add(lines, f"🌡 Trạng thái: {state_line}")
+    #add(lines, f"🌡 Trạng thái: {state_text(meta.get('market_state_v2'), narrative, struct, htf_pressure_v4)}")
     if flow:
         add(lines, f"💰 Dòng tiền: {flow_text(flow)}")
 
@@ -7783,9 +7925,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
     buy_near, sell_near, buy_strong, sell_strong = trigger_lines_v2(rec, k, playbook)
     plan_pack = _now_plan_and_triggers_v7(trend_ctx, k, playbook, last_px)
+    sce1 = meta.get("signal_consistency_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    action_mode = str(sce1.get("action_mode") or "NO_TRADE").upper()
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
-    add(lines, f"- {plan_pack['main_plan']}")
+    
+    if action_mode == "NO_TRADE":
+        add(lines, "- Ưu tiên đứng ngoài quan sát, chưa có lợi thế rõ để mở lệnh mới")
+    
+    elif final_side == "SELL":
+        add(lines, "- Đây là nhịp hồi trong bối cảnh giảm → KHÔNG BUY")
+        add(lines, "- Chỉ chờ SELL khi xuất hiện sweep / fail giữ / breakdown xác nhận")
+    
+    elif final_side == "BUY":
+        add(lines, "- Đây là nhịp điều chỉnh trong bối cảnh tăng → KHÔNG SELL")
+        add(lines, "- Chỉ chờ BUY khi xuất hiện sweep / giữ giá / breakout xác nhận")
+    
+    else:
+        add(lines, "- Chưa có hướng đủ rõ → đứng ngoài")
+    #add(lines, f"- {plan_pack['main_plan']}")
     
     add(lines, "")
     add(lines, "🪄 Kịch bản phụ:")
@@ -7894,10 +8053,25 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
     add(lines, "")
     add(lines, "🧯 Trigger quan trọng:")
-    add(lines, f"- {buy_near}")
-    add(lines, f"- {sell_near}")
-    add(lines, f"- {buy_strong}")
-    add(lines, f"- {sell_strong}")
+    
+    if final_side == "SELL":
+        if near_zone_low is not None and near_zone_high is not None:
+            add(lines, f"- SELL gần: nếu bị từ chối dưới vùng {_f(near_zone_low)} – {_f(near_zone_high)}")
+        if break_level is not None:
+            add(lines, f"- SELL mạnh: M15 đóng dưới {_f(break_level)} với follow-through")
+        if invalid_level is not None:
+            add(lines, f"- BUY vô hiệu hóa SELL: M15 đóng trên {_f(invalid_level)} và giữ được")
+    
+    elif final_side == "BUY":
+        if near_zone_low is not None and near_zone_high is not None:
+            add(lines, f"- BUY gần: nếu giữ được vùng {_f(near_zone_low)} – {_f(near_zone_high)}")
+        if break_level is not None:
+            add(lines, f"- BUY mạnh: M15 đóng trên {_f(break_level)} với follow-through")
+        if invalid_level is not None:
+            add(lines, f"- SELL vô hiệu hóa BUY: M15 đóng dưới {_f(invalid_level)} và giữ được")
+    
+    else:
+        add(lines, "- Chưa có trigger đáng tin → đứng ngoài")
 
     if ema_pack:
         add(lines, "")
@@ -8012,10 +8186,17 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- HTF: {bl1.get('htf_bias')}")
         add(lines, f"- MTF: {bl1.get('mtf_bias')}")
         #add(lines, f"- Entry: {bl1.get('entry_bias')}")
-        entry_bias_txt = str(bl1.get("entry_bias") or "WAIT").upper()
-        if entry_bias_txt not in ("READY", "WAIT"):
-            entry_bias_txt = "WAIT"
-        add(lines, f"- Entry: {entry_bias_txt}")
+        sce1 = meta.get("signal_consistency_v1") or {}
+        mtf_bias_txt = str(bl1.get("mtf_bias") or "WAIT").upper()
+        
+        if sce1.get("final_side") == "SELL" and "BUY_PULLBACK" in mtf_bias_txt:
+            mtf_bias_txt = "PULLBACK_UP"
+        elif sce1.get("final_side") == "BUY" and "SELL_PULLBACK" in mtf_bias_txt:
+            mtf_bias_txt = "PULLBACK_DOWN"
+        elif mtf_bias_txt in ("BUY_PULLBACK", "SELL_PULLBACK"):
+            mtf_bias_txt = "PULLBACK"
+        
+        add(lines, f"- MTF: {mtf_bias_txt}")
     if ntz3.get("active"):
         add(lines, "🚫 NO TRADE ZONE")
         for r in ntz3.get("reasons", [])[:3]:
@@ -8081,7 +8262,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Lý do:")
             for s in me1.get("reason", [])[:4]:
                 add(lines, f"  • {s}")
-                
+    sce1 = meta.get("signal_consistency_v1") or {}
+    if sce1:
+        add(lines, "")
+        add(lines, "🧠 SIGNAL CONSISTENCY:")
+        add(lines, f"- Final side: {sce1.get('final_side', 'NONE')}")
+        add(lines, f"- Current move: {sce1.get('current_move', 'CHOP')}")
+        add(lines, f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
+        add(lines, f"- Narrative: {sce1.get('narrative', '')}")            
     #ex2 = meta.get("exit_engine_v2") or {}
     #if ex2:
         #add(lines, "🚪 Exit engine:")
