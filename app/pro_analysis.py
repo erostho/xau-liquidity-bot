@@ -7003,9 +7003,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         liquidity_completion_v1=liquidity_completion_v1,
         close_confirm_v4=close_confirm_v4,
         m15_struct=(m15_struct or {}),
-        current_price=last_px if 'last_px' in locals() else None,
-        range_lo=range_lo if 'range_lo' in locals() else None,
-        range_hi=range_hi if 'range_hi' in locals() else None,
+        current_price=(
+            last_px if 'last_px' in locals()
+            else (cur if 'cur' in locals() else None)
+        ),
+        range_lo=(
+            range_lo if 'range_lo' in locals()
+            else (lo if 'lo' in locals() else None)
+        ),
+        range_hi=(
+            range_hi if 'range_hi' in locals()
+            else (hi if 'hi' in locals() else None)
+        ),
     )
     meta["liquidity_reaction_v1"] = liquidity_reaction_v1
 
@@ -8747,25 +8756,46 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lr1 = meta.get("liquidity_reaction_v1") or {}
     sce1 = meta.get("signal_consistency_v1") or {}
     final_side = str(sce1.get("final_side") or "NONE").upper()
-    range_lo_v = lr1.get("range_lo")
-    range_hi_v = lr1.get("range_hi")
+    # fallback range từ nhiều nguồn
+    range_lo_v = (
+        lr1.get("range_lo")
+        or meta.get("range_lo")
+        or sig.get("range_lo")
+        or (rinfo.get("lo") if isinstance(rinfo, dict) else None)
+        or lo if 'lo' in locals() else None
+    )
+    
+    range_hi_v = (
+        lr1.get("range_hi")
+        or meta.get("range_hi")
+        or sig.get("range_hi")
+        or (rinfo.get("hi") if isinstance(rinfo, dict) else None)
+        or hi if 'hi' in locals() else None
+    )
+    
     add(lines, "⏳ Wait for:")
     
-    # Ưu tiên in các reaction-based wait lines trước
     wait_lines = lr1.get("wait_lines") or []
+    
+    seen_wait = set()
+    
     if wait_lines:
-        seen_wait = set()
-        for s in wait_lines[:3]:
+        for s in wait_lines[:4]:
             ss = str(s).strip()
             if ss and ss not in seen_wait:
                 seen_wait.add(ss)
                 add(lines, f"- {ss}")
-    else:
-        # fallback 2 chiều
+    
+    # fallback nếu wait_lines rỗng hoặc chưa đủ dữ liệu
+    if not seen_wait:
         if range_hi_v is not None:
-            add(lines, f"- Break lên {_fmt_num(range_hi_v)} → xem có giữ được không")
+            add(lines, f"- Break lên {_fmt(range_hi_v)} → xem có giữ được không")
         if range_lo_v is not None:
-            add(lines, f"- Break xuống {_fmt_num(range_lo_v)} → xem có follow-through không")
+            add(lines, f"- Break xuống {_fmt(range_lo_v)} → xem có follow-through không")
+    
+    # fallback cuối cùng, tránh block rỗng
+    if len(seen_wait) == 0 and range_hi_v is None and range_lo_v is None:
+        add(lines, "- Chờ quét 1 đầu rồi quan sát phản ứng giữ / fail giữ")
     # ===== TRIGGER ENGINE V3 OUTPUT =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
     lr1 = (sig.get("meta") or {}).get("liquidity_reaction_v1") or {}
