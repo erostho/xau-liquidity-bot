@@ -2232,6 +2232,9 @@ def _build_liquidity_map_v1(
         "below_zone": None,
         "state_text": "Chưa thấy sweep/spring rõ",
         "sweep_bias": "NEUTRAL",
+        "story": "Chưa có câu chuyện liquidity rõ",
+        "equal_highs": False,
+        "equal_lows": False,
         "reasons": [],
     }
 
@@ -2283,6 +2286,7 @@ def _build_liquidity_map_v1(
     if eh_score > 0:
         above_score += eh_score
         out["above_zone"] = eh_zone
+        out["equal_highs"] = True
         reasons.append("equal highs phía trên")
     else:
         out["above_zone"] = (recent_hi - tol, recent_hi)
@@ -2290,6 +2294,7 @@ def _build_liquidity_map_v1(
     if el_score > 0:
         below_score += el_score
         out["below_zone"] = el_zone
+        out["equal_lows"] = True
         reasons.append("equal lows phía dưới")
     else:
         out["below_zone"] = (recent_lo, recent_lo + tol)
@@ -2417,6 +2422,21 @@ def _build_liquidity_map_v1(
     # liquidation vừa xảy ra → hạ độ chắc chắn
     if liq_evt.get("ok") and out["sweep_bias"] in ("UP", "DOWN", "UP → DOWN", "DOWN → UP"):
         out["sweep_bias"] = out["sweep_bias"] + " (cẩn thận quét 2 đầu)"
+
+
+    # ===== 10) liquidity story =====
+    if out["equal_highs"] and out["equal_lows"]:
+        out["story"] = "2 đầu đều có liquidity: equal highs phía trên, equal lows phía dưới"
+    elif out["equal_highs"]:
+        out["story"] = "Phía trên có equal highs / buy-side liquidity rõ hơn"
+    elif out["equal_lows"]:
+        out["story"] = "Phía dưới có equal lows / sell-side liquidity rõ hơn"
+    elif above_score > below_score:
+        out["story"] = "Pool phía trên gần và dày hơn → dễ quét lên trước"
+    elif below_score > above_score:
+        out["story"] = "Pool phía dưới gần và dày hơn → dễ quét xuống trước"
+    else:
+        out["story"] = "Liquidity hai đầu khá cân bằng, dễ quét 2 đầu"
 
     dedup = []
     for r in reasons:
@@ -3673,43 +3693,14 @@ def _attach_vnext_meta(
         m15_tag = str((m15_struct or {}).get("tag") or "n/a").upper()
 
         # 1) Market state
-        if (liquidation_evt or {}).get("ok"):
-            market_state_machine_v1 = {
-                "state": "LIQUIDATION",
-                "label": "Biến động thanh khoản mạnh",
-            }
-        elif str(market_state_v2 or "").upper() in ("CHOP", "TRANSITION"):
-            market_state_machine_v1 = {
-                "state": "CHOP",
-                "label": "Nhiễu / chuyển pha",
-            }
-        elif h1_trend == "bullish" and h4_trend == "bullish":
-            if "LL" in m15_tag or "LH" in m15_tag:
-                market_state_machine_v1 = {
-                    "state": "PULLBACK_BUY",
-                    "label": "Hồi trong xu hướng tăng",
-                }
-            else:
-                market_state_machine_v1 = {
-                    "state": "TREND_UP",
-                    "label": "Xu hướng tăng",
-                }
-        elif h1_trend == "bearish" and h4_trend == "bearish":
-            if "HH" in m15_tag or "HL" in m15_tag:
-                market_state_machine_v1 = {
-                    "state": "PULLBACK_SELL",
-                    "label": "Hồi trong xu hướng giảm",
-                }
-            else:
-                market_state_machine_v1 = {
-                    "state": "TREND_DOWN",
-                    "label": "Xu hướng giảm",
-                }
-        else:
-            market_state_machine_v1 = {
-                "state": "TRANSITION",
-                "label": "Chuyển pha",
-            }
+        market_state_machine_v1 = _market_state_machine_v1(
+            h1_trend=h1_trend,
+            h4_trend=h4_trend,
+            m15_struct_tag=m15_tag,
+            market_state_v2=market_state_v2,
+            liquidation_evt=liquidation_evt,
+            range_pos=range_pos,
+        )
 
         # 2) Bias layers
         if h1_trend == "bullish" and h4_trend == "bullish":
@@ -4024,6 +4015,7 @@ def _attach_vnext_meta(
 # PRO DESK ENGINE (APPEND ONLY)
 # =========================
 
+
 def _market_state_machine_v1(h1_trend, h4_trend, m15_struct_tag, market_state_v2, liquidation_evt, range_pos):
     if (liquidation_evt or {}).get("ok"):
         return {"state": "LIQUIDATION", "label": "Biến động thanh khoản mạnh"}
@@ -4037,8 +4029,47 @@ def _market_state_machine_v1(h1_trend, h4_trend, m15_struct_tag, market_state_v2
     except Exception:
         rp = None
 
-    if market_state_v2 in ("CHOP", "TRANSITION"):
+    # regime nhiễu / chuyển pha
+    if str(market_state_v2 or "").upper() in ("CHOP", "TRANSITION"):
+        if h4t == "bearish":
+            return {"state": "CHOP_BEARISH", "label": "Nhiễu nhưng nghiêng giảm"}
+        if h4t == "bullish":
+            return {"state": "CHOP_BULLISH", "label": "Nhiễu nhưng nghiêng tăng"}
         return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
+
+    if (h1t not in ("bullish", "bearish") and h4t not in ("bullish", "bearish")):
+        return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
+
+    # giữa biên + M15 chưa rõ => không gọi trend quá sớm
+    if tag in ("", "TRANSITION", "N/A"):
+        if h4t == "bearish" and h1t == "bearish":
+            return {"state": "PULLBACK_SELL", "label": "Hồi trong xu hướng giảm"}
+        if h4t == "bullish" and h1t == "bullish":
+            return {"state": "PULLBACK_BUY", "label": "Hồi trong xu hướng tăng"}
+        if h4t == "bearish":
+            return {"state": "CHOP_BEARISH", "label": "Nhiễu nhưng nghiêng giảm"}
+        if h4t == "bullish":
+            return {"state": "CHOP_BULLISH", "label": "Nhiễu nhưng nghiêng tăng"}
+        if rp is not None and 0.35 <= rp <= 0.65:
+            return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
+
+    if h1t == "bullish" and h4t == "bullish":
+        if "LL" in tag or "LH" in tag or (rp is not None and rp >= 0.65):
+            return {"state": "PULLBACK_BUY", "label": "Hồi trong xu hướng tăng"}
+        return {"state": "TREND_UP", "label": "Xu hướng tăng"}
+
+    if h1t == "bearish" and h4t == "bearish":
+        if "HH" in tag or "HL" in tag or (rp is not None and rp <= 0.35):
+            return {"state": "PULLBACK_SELL", "label": "Hồi trong xu hướng giảm"}
+        return {"state": "TREND_DOWN", "label": "Xu hướng giảm"}
+
+    if h4t == "bearish":
+        return {"state": "CHOP_BEARISH", "label": "Nhiễu nhưng nghiêng giảm"}
+    if h4t == "bullish":
+        return {"state": "CHOP_BULLISH", "label": "Nhiễu nhưng nghiêng tăng"}
+
+    return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
+
 
     if (h1t not in ("bullish", "bearish") and h4t not in ("bullish", "bearish")):
         return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
@@ -5267,11 +5298,13 @@ def _trigger_engine_v3(
     reasons = []
     trigger_line = ""
     invalidation_line = ""
+    close_confirm_line = ""
 
     if final_side == "SELL":
         entry_side = "SELL"
         trigger_line = "SELL khi sweep high thất bại hoặc break xuống có follow-through"
         invalidation_line = "Vô hiệu SELL nếu M15 break lên và giữ được"
+        close_confirm_line = "Close confirm: quét vùng trên rồi đóng lại dưới, hoặc M15 đóng dưới break low và nến sau không reclaim"
 
         if ntz_active:
             state = "WAIT"
@@ -5292,6 +5325,7 @@ def _trigger_engine_v3(
         entry_side = "BUY"
         trigger_line = "BUY khi giữ đáy tốt hoặc break lên có follow-through"
         invalidation_line = "Vô hiệu BUY nếu M15 break xuống và giữ dưới"
+        close_confirm_line = "Close confirm: quét vùng dưới rồi đóng lại trên, hoặc M15 đóng trên break high và nến sau không rơi lại"
 
         if ntz_active:
             state = "WAIT"
@@ -5326,6 +5360,7 @@ def _trigger_engine_v3(
         "entry_side": entry_side,
         "trigger_line": trigger_line,
         "invalidation_line": invalidation_line,
+        "close_confirm_line": close_confirm_line,
         "reason": reasons[:4],
         "entry_zone_low": entry_zone_low,
         "entry_zone_high": entry_zone_high,
@@ -8433,6 +8468,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")            
     lines.append(f"- Trạng thái: {state_text}")
     lines.append(f"- Khả năng quét: {sweep_bias}")
+    liq_story = str(liq_map.get("story") or "").strip()
+    if liq_story:
+        lines.append(f"- Câu chuyện: {liq_story}")
     liq_reasons = liq_map.get("reasons") or []
     if liq_reasons:
         lines.append(f"- Lý do nghiêng quét: {', '.join(liq_reasons[:3])}")
@@ -8919,6 +8957,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append(f"- Quality: {tg3.get('quality', 'LOW')}")
     if tg3.get("trigger_line"):
         lines.append(f"- Trigger: {tg3.get('trigger_line')}")
+    if tg3.get("close_confirm_line"):
+        lines.append(f"- {tg3.get('close_confirm_line')}")
     if tg3.get("invalidation_line"):
         lines.append(f"- Invalidation: {tg3.get('invalidation_line')}")
     
