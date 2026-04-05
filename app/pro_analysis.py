@@ -8559,7 +8559,51 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 f"- Playbook V4: quality={playbook_v4.get('quality')}"
                 + (f" | triggers: {trig}" if trig else "")
             )
+    # ===== SAFE DEFINE TRIGGER LEVELS =====
+    sce1 = meta.get("signal_consistency_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
     
+    # fallback từ biên độ M15 đang có trong formatter
+    range_lo_v = None
+    range_hi_v = None
+    
+    if "range_lo" in locals():
+        range_lo_v = range_lo
+    elif "lo" in locals():
+        range_lo_v = lo
+    elif isinstance(rinfo, dict):
+        range_lo_v = rinfo.get("lo")
+    
+    if "range_hi" in locals():
+        range_hi_v = range_hi
+    elif "hi" in locals():
+        range_hi_v = hi
+    elif isinstance(rinfo, dict):
+        range_hi_v = rinfo.get("hi")
+    
+    near_zone_low = None
+    near_zone_high = None
+    break_level = None
+    invalid_level = None
+    
+    # ưu tiên lấy từ liquidity reaction nếu có
+    lr1 = meta.get("liquidity_reaction_v1") or {}
+    if isinstance(lr1, dict):
+        near_zone_low = lr1.get("bot_zone_low")
+        near_zone_high = lr1.get("bot_zone_high")
+    
+    # fallback cuối cùng dùng luôn biên độ M15
+    if near_zone_low is None:
+        near_zone_low = range_lo_v
+    if near_zone_high is None:
+        near_zone_high = range_hi_v
+    
+    if final_side == "SELL":
+        break_level = range_lo_v
+        invalid_level = range_hi_v
+    elif final_side == "BUY":
+        break_level = range_hi_v
+        invalid_level = range_lo_v
     add(lines, "")
     add(lines, "🧯 Trigger quan trọng:")
     
