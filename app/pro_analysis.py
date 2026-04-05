@@ -8110,11 +8110,20 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"💵 Giá hiện tại: {price_now}")
     add(lines, f"📌 Kết luận nhanh: {verdict_full}")
     add(lines, f"🧭 Hướng ưu tiên: {rec}")
+    phase369 = meta.get("phase369_v1") or {}
+    
     sce1 = meta.get("signal_consistency_v1") or {}
     final_side = str(sce1.get("final_side") or "NONE").upper()
-    phase_label_render = phase_label
+    
+    phase_num = phase369.get("phase", "n/a")
+    
+    # lấy label gốc từ hàm của bạn
+    phase_label_render = _vn_phase_label(phase369)
+    
+    # override nếu chưa có side rõ
     if final_side == "NONE":
         phase_label_render = "Đang quan sát phản ứng"
+    
     add(lines, f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
     
     sce1 = meta.get("signal_consistency_v1") or {}
