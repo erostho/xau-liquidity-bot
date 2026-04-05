@@ -3935,6 +3935,42 @@ def _attach_vnext_meta(
             range_pos=range_pos,
         )
         meta["signal_consistency_v1"] = signal_consistency_v1
+        # ===== REVEAL ENGINE V1 =====
+        reveal_engine_v1 = _reveal_engine_v1(
+            bias_layers_v1=bias_layers_v1,
+            market_state_machine_v1=market_state_machine_v1,
+            close_confirm_v4=close_confirm_v4,
+            m15_struct=(m15_struct or {}),
+            liquidity_completion_v1=liquidity_completion_v1,
+            trigger_engine_v2=trigger_engine_v2,
+            range_pos=range_pos,
+            vol_ratio=vol_ratio if 'vol_ratio' in locals() else None,
+        )
+        meta["reveal_engine_v1"] = reveal_engine_v1
+        # ===== TRIGGER ENGINE V3 =====
+        trigger_engine_v3 = _trigger_engine_v3(
+            signal_consistency_v1=signal_consistency_v1,
+            trigger_engine_v2=trigger_engine_v2,
+            reveal_engine_v1=reveal_engine_v1,
+            no_trade_zone_v3=no_trade_zone_v3,
+            close_confirm_v4=close_confirm_v4,
+            m15_struct=(m15_struct or {}),
+            range_pos=range_pos,
+            entry_zone_low=entry_zone_low if 'entry_zone_low' in locals() else None,
+            entry_zone_high=entry_zone_high if 'entry_zone_high' in locals() else None,
+            break_level=break_level if 'break_level' in locals() else None,
+            invalidation_level=invalidation_level if 'invalidation_level' in locals() else None,
+        )
+        meta["trigger_engine_v3"] = trigger_engine_v3
+        # ===== FINAL DECISION ENGINE =====
+        final_decision_engine_v1 = _final_decision_engine_v1(
+            signal_consistency_v1=signal_consistency_v1,
+            reveal_engine_v1=reveal_engine_v1,
+            trigger_engine_v3=trigger_engine_v3,
+            master_engine_v1=master_engine_v1,
+            no_trade_zone_v3=no_trade_zone_v3,
+        )
+        meta["final_decision_engine_v1"] = final_decision_engine_v1
         
         # ===== MASTER ENGINE OVERRIDE =====
         try:
@@ -5036,7 +5072,285 @@ def _signal_consistency_engine_v1(
         "allow_sell_text": allow_sell_text,
         "narrative": narrative,
         "reasons": reasons[:4],
-    }    
+    }
+
+# =========================
+# REVEAL ENGINE V1
+# =========================
+def _reveal_engine_v1(
+    bias_layers_v1: dict | None,
+    market_state_machine_v1: dict | None,
+    close_confirm_v4: dict | None,
+    m15_struct: dict | None,
+    liquidity_completion_v1: dict | None,
+    trigger_engine_v2: dict | None,
+    range_pos: float | None,
+    vol_ratio: float | None = None,
+) -> dict:
+    bl = bias_layers_v1 or {}
+    ms = market_state_machine_v1 or {}
+    cc4 = close_confirm_v4 or {}
+    m15s = m15_struct or {}
+    liq1 = liquidity_completion_v1 or {}
+    tg2 = trigger_engine_v2 or {}
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    try:
+        vr = float(vol_ratio) if vol_ratio is not None else None
+    except Exception:
+        vr = None
+
+    htf_bias = str(bl.get("htf_bias") or "MIXED").upper()
+    market_state = str(ms.get("state") or "").upper()
+    cc_strength = str(cc4.get("strength") or "NO").upper()
+    liq_state = str(liq1.get("state") or "NO").upper()
+    tg_state = str(tg2.get("state") or "WAIT").upper()
+
+    break_up = bool(m15s.get("break_up"))
+    break_dn = bool(m15s.get("break_dn"))
+
+    reveal = False
+    direction = "NONE"
+    quality = "LOW"
+    reasons = []
+
+    # market chưa lộ mặt nếu đang CHOP mạnh
+    if "CHOP" in market_state:
+        reasons.append("market còn nhiễu")
+    if rp is not None and 0.40 <= rp <= 0.60:
+        reasons.append("đang ở giữa biên")
+
+    # reveal SELL
+    if htf_bias == "SELL":
+        if break_dn and cc_strength in ("WEAK", "STRONG"):
+            reveal = True
+            direction = "SELL"
+            reasons.append("đã break xuống + close confirm")
+        elif tg_state == "TRIGGERED" and break_dn:
+            reveal = True
+            direction = "SELL"
+            reasons.append("trigger SELL đã kích hoạt")
+        elif liq_state in ("YES", "PARTIAL") and break_dn:
+            reveal = True
+            direction = "SELL"
+            reasons.append("sweep xong và đang follow-through xuống")
+
+    # reveal BUY
+    if htf_bias == "BUY":
+        if break_up and cc_strength in ("WEAK", "STRONG"):
+            reveal = True
+            direction = "BUY"
+            reasons.append("đã break lên + close confirm")
+        elif tg_state == "TRIGGERED" and break_up:
+            reveal = True
+            direction = "BUY"
+            reasons.append("trigger BUY đã kích hoạt")
+        elif liq_state in ("YES", "PARTIAL") and break_up:
+            reveal = True
+            direction = "BUY"
+            reasons.append("sweep xong và đang follow-through lên")
+
+    # quality
+    if reveal:
+        q = 0
+        if cc_strength == "STRONG":
+            q += 2
+        elif cc_strength == "WEAK":
+            q += 1
+
+        if liq_state in ("YES", "PARTIAL"):
+            q += 1
+
+        if vr is not None and vr >= 1.20:
+            q += 1
+
+        if q >= 3:
+            quality = "HIGH"
+        elif q >= 2:
+            quality = "MEDIUM"
+        else:
+            quality = "LOW"
+
+    return {
+        "reveal": reveal,
+        "direction": direction,
+        "quality": quality,
+        "reasons": reasons[:4],
+    }
+
+# =========================
+# TRIGGER ENGINE V3
+# =========================
+def _trigger_engine_v3(
+    signal_consistency_v1: dict | None,
+    trigger_engine_v2: dict | None,
+    reveal_engine_v1: dict | None,
+    no_trade_zone_v3: dict | None,
+    close_confirm_v4: dict | None,
+    m15_struct: dict | None,
+    range_pos: float | None,
+    entry_zone_low: float | None = None,
+    entry_zone_high: float | None = None,
+    break_level: float | None = None,
+    invalidation_level: float | None = None,
+) -> dict:
+    sce1 = signal_consistency_v1 or {}
+    tg2 = trigger_engine_v2 or {}
+    rv1 = reveal_engine_v1 or {}
+    ntz = no_trade_zone_v3 or {}
+    cc4 = close_confirm_v4 or {}
+    m15s = m15_struct or {}
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    action_mode = str(sce1.get("action_mode") or "NO_TRADE").upper()
+    ntz_active = bool(ntz.get("active"))
+    confirm_ok = bool(tg2.get("confirm_ok"))
+    location_ok = bool(tg2.get("location_ok"))
+    follow_ok = bool(tg2.get("follow_ok"))
+    reveal = bool(rv1.get("reveal"))
+    reveal_dir = str(rv1.get("direction") or "NONE").upper()
+    cc_strength = str(cc4.get("strength") or "NO").upper()
+
+    break_up = bool(m15s.get("break_up"))
+    break_dn = bool(m15s.get("break_dn"))
+
+    state = "WAIT"
+    quality = "LOW"
+    entry_side = "NONE"
+    reasons = []
+    trigger_line = ""
+    invalidation_line = ""
+
+    if final_side == "SELL":
+        entry_side = "SELL"
+        trigger_line = "SELL khi sweep high thất bại hoặc break xuống có follow-through"
+        invalidation_line = "Vô hiệu SELL nếu M15 break lên và giữ được"
+
+        if ntz_active:
+            state = "WAIT"
+            reasons.append("đang trong no-trade zone")
+        elif reveal and reveal_dir == "SELL":
+            state = "TRIGGERED"
+            quality = rv1.get("quality", "MEDIUM")
+            reasons.append("market đã lộ mặt theo hướng SELL")
+        elif location_ok and (confirm_ok or cc_strength in ("WEAK", "STRONG")) and (break_dn or follow_ok):
+            state = "READY"
+            quality = "MEDIUM"
+            reasons.append("SELL đang có location + confirm đủ dùng")
+        else:
+            state = "WAIT"
+            reasons.append("SELL chưa có timing đủ rõ")
+
+    elif final_side == "BUY":
+        entry_side = "BUY"
+        trigger_line = "BUY khi giữ đáy tốt hoặc break lên có follow-through"
+        invalidation_line = "Vô hiệu BUY nếu M15 break xuống và giữ dưới"
+
+        if ntz_active:
+            state = "WAIT"
+            reasons.append("đang trong no-trade zone")
+        elif reveal and reveal_dir == "BUY":
+            state = "TRIGGERED"
+            quality = rv1.get("quality", "MEDIUM")
+            reasons.append("market đã lộ mặt theo hướng BUY")
+        elif location_ok and (confirm_ok or cc_strength in ("WEAK", "STRONG")) and (break_up or follow_ok):
+            state = "READY"
+            quality = "MEDIUM"
+            reasons.append("BUY đang có location + confirm đủ dùng")
+        else:
+            state = "WAIT"
+            reasons.append("BUY chưa có timing đủ rõ")
+    else:
+        reasons.append("chưa có hướng đủ rõ")
+
+    # quality refinement
+    if state == "TRIGGERED":
+        if quality not in ("HIGH", "MEDIUM"):
+            quality = "HIGH" if cc_strength == "STRONG" else "MEDIUM"
+    elif state == "READY":
+        if rp is not None and (rp <= 0.30 or rp >= 0.70):
+            quality = "MEDIUM"
+        else:
+            quality = "LOW"
+
+    return {
+        "state": state,
+        "quality": quality,
+        "entry_side": entry_side,
+        "trigger_line": trigger_line,
+        "invalidation_line": invalidation_line,
+        "reason": reasons[:4],
+        "entry_zone_low": entry_zone_low,
+        "entry_zone_high": entry_zone_high,
+        "break_level": break_level,
+        "invalidation_level": invalidation_level,
+    }
+
+# =========================
+# FINAL DECISION ENGINE
+# =========================
+def _final_decision_engine_v1(
+    signal_consistency_v1: dict | None,
+    reveal_engine_v1: dict | None,
+    trigger_engine_v3: dict | None,
+    master_engine_v1: dict | None,
+    no_trade_zone_v3: dict | None,
+) -> dict:
+    sce1 = signal_consistency_v1 or {}
+    rv1 = reveal_engine_v1 or {}
+    tg3 = trigger_engine_v3 or {}
+    me1 = master_engine_v1 or {}
+    ntz = no_trade_zone_v3 or {}
+
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    action_mode = str(sce1.get("action_mode") or "NO_TRADE").upper()
+    master_state = str(me1.get("state") or "WAIT").upper()
+    trigger_state = str(tg3.get("state") or "WAIT").upper()
+    reveal = bool(rv1.get("reveal"))
+    reveal_dir = str(rv1.get("direction") or "NONE").upper()
+    ntz_active = bool(ntz.get("active"))
+
+    decision = "NO_TRADE"
+    label = "STAND ASIDE"
+    reasons = []
+
+    if ntz_active or master_state == "NO_TRADE":
+        decision = "NO_TRADE"
+        label = "STAND ASIDE"
+        reasons.append("edge chưa đủ rõ")
+    else:
+        if reveal and reveal_dir == final_side and final_side in ("BUY", "SELL"):
+            decision = f"EXECUTE_{final_side}"
+            label = f"MANUAL STRIKE {final_side}"
+            reasons.append("market đã lộ mặt đúng hướng")
+        elif trigger_state == "READY" and final_side in ("BUY", "SELL"):
+            decision = f"WAIT_TRIGGER_{final_side}"
+            label = f"WAIT TRIGGER {final_side}"
+            reasons.append("ý tưởng đúng nhưng timing chưa tới")
+        elif action_mode in ("WAIT_BUY", "WAIT_SELL"):
+            decision = action_mode
+            label = action_mode.replace("_", " ")
+            reasons.append("đúng hướng nhưng chưa có tín hiệu vào")
+        else:
+            decision = "NO_TRADE"
+            label = "STAND ASIDE"
+            reasons.append("chưa có lợi thế rõ")
+
+    return {
+        "decision": decision,
+        "label": label,
+        "reasons": reasons[:3],
+    }
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -8117,7 +8431,17 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append(f"- Thời điểm: {pd3.get('timing', 'CHƯA RÕ')}")
     if pd3.get("reason"):
         lines.append(f"- Lý do: {' | '.join(pd3.get('reason', [])[:3])}")
-
+        
+    rv1 = (sig.get("meta") or {}).get("reveal_engine_v1") or {}
+    if rv1:
+        lines.append("")
+        lines.append("🧠 REVEAL ENGINE:")
+        lines.append(f"- State: {'REVEALED' if rv1.get('reveal') else 'NOT REVEALED'}")
+        lines.append(f"- Direction: {rv1.get('direction', 'NONE')}")
+        lines.append(f"- Quality: {rv1.get('quality', 'LOW')}")
+        if rv1.get("reasons"):
+            lines.append(f"- Lý do: {' | '.join(rv1.get('reasons', [])[:3])}")
+            
     final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
         sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
     )
@@ -8149,24 +8473,18 @@ def format_signal(sig: Dict[str, Any]) -> str:
     elif grade == "C":
         add(lines, "- Ý tưởng có thể đúng nhưng rủi ro còn cao")
         
-    add(lines, "")
-    add(lines, "⚙️ Hành động:")
-    if trade_mode == "FULL":
-        add(lines, "- Có thể mở lệnh nếu giá vào đúng vùng và có xác nhận rõ")
-    elif trade_mode == "HALF":
-        add(lines, "- Có thể canh nhưng không nên đuổi giá")
+    fd1 = (sig.get("meta") or {}).get("final_decision_engine_v1") or {}
+    sce1 = (sig.get("meta") or {}).get("signal_consistency_v1") or {}
+    lines.append("")
+    lines.append("⚙️ Hành động:")
+    if fd1.get("decision", "").startswith("EXECUTE_"):
+        lines.append("- Market đã lộ mặt → có thể cân nhắc manual strike")
+    elif fd1.get("decision", "").startswith("WAIT_TRIGGER_"):
+        lines.append("- Đúng hướng nhưng timing chưa tới → chờ trigger")
     else:
-        add(lines, "- Chưa nên mở lệnh mới") 
-    try:
-        rp = float(range_pos)
-        if 0.30 <= rp <= 0.70:
-            add(lines, "- Tránh trade ở giữa biên độ")
-        elif rp > 0.80:
-            add(lines, "- Không BUY đuổi ở vùng cao, chờ phản ứng rồi mới quyết định theo xu hướng")
-        elif rp < 0.20:
-            add(lines, "- Không SELL đuổi ở vùng thấp, chờ phản ứng hồi rồi mới quyết định theo xu hướng")
-    except Exception:
-        pass
+        lines.append("- Chưa nên mở lệnh mới")
+        if sce1.get("current_move") == "CHOP":
+            lines.append("- Tránh trade trong vùng nhiễu / giữa biên độ")
 
     
     # ===== PRO DESK OUTPUT =====
@@ -8184,18 +8502,15 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if bl1:
         add(lines, "🧭 Bias:")
         add(lines, f"- HTF: {bl1.get('htf_bias')}")
-        add(lines, f"- MTF: {bl1.get('mtf_bias')}")
         #add(lines, f"- Entry: {bl1.get('entry_bias')}")
         sce1 = meta.get("signal_consistency_v1") or {}
         mtf_bias_txt = str(bl1.get("mtf_bias") or "WAIT").upper()
-        
         if sce1.get("final_side") == "SELL" and "BUY_PULLBACK" in mtf_bias_txt:
             mtf_bias_txt = "PULLBACK_UP"
         elif sce1.get("final_side") == "BUY" and "SELL_PULLBACK" in mtf_bias_txt:
             mtf_bias_txt = "PULLBACK_DOWN"
         elif mtf_bias_txt in ("BUY_PULLBACK", "SELL_PULLBACK"):
             mtf_bias_txt = "PULLBACK"
-        
         add(lines, f"- MTF: {mtf_bias_txt}")
     if ntz3.get("active"):
         add(lines, "🚫 NO TRADE ZONE")
@@ -8210,27 +8525,22 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, "⏳ Wait for:")
         for s in wf1.get("lines")[:3]:
             add(lines, f"- {s}")
-    # ===== TRIGGER ENGINE V2 OUTPUT =====
-    tg2 = meta.get("trigger_engine_v2") or {}
+    # ===== TRIGGER ENGINE V3 OUTPUT =====
+    tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
+    lines.append("")
+    lines.append("🎯 TRIGGER ENGINE V3:")
+    lines.append(f"- State: {tg3.get('state', 'WAIT')}")
+    lines.append(f"- Side: {tg3.get('entry_side', 'NONE')}")
+    lines.append(f"- Quality: {tg3.get('quality', 'LOW')}")
     
-    if tg2:
-        add(lines, "")
-        add(lines, "🎯 TRIGGER ENGINE V2:")
-        add(lines, f"- State: {tg2.get('state', 'WAIT')}")
-        add(lines, f"- Entry type: {tg2.get('entry_type', 'NONE')}")
-        add(lines, f"- Quality: {tg2.get('quality', 'LOW')}")
+    if tg3.get("trigger_line"):
+        lines.append(f"- Trigger: {tg3.get('trigger_line')}")
+    if tg3.get("invalidation_line"):
+        lines.append(f"- Invalidation: {tg3.get('invalidation_line')}")
     
-        if tg2.get("location_ok") is not None:
-            add(lines, f"- Location OK: {'YES' if tg2.get('location_ok') else 'NO'}")
-        if tg2.get("confirm_ok") is not None:
-            add(lines, f"- Confirm OK: {'YES' if tg2.get('confirm_ok') else 'NO'}")
-        if tg2.get("follow_ok") is not None:
-            add(lines, f"- Follow-through: {'YES' if tg2.get('follow_ok') else 'NO'}")
-    
-        if tg2.get("reason"):
-            add(lines, "- Lý do:")
-            for s in tg2.get("reason", [])[:4]:
-                add(lines, f"  • {s}")
+    if tg3.get("reason"):
+        for s in tg3.get("reason", [])[:3]:
+            lines.append(f"- {s}")
                 
     # ===== CONFLICT + SUGGESTION OUTPUT =====
     cf1 = meta.get("conflict_engine_v1") or {}
@@ -8262,6 +8572,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Lý do:")
             for s in me1.get("reason", [])[:4]:
                 add(lines, f"  • {s}")
+
+    fd1 = (sig.get("meta") or {}).get("final_decision_engine_v1") or {}
+    if fd1:
+        lines.append("")
+        lines.append("🎯 FINAL DECISION:")
+        lines.append(f"- {fd1.get('label', 'STAND ASIDE')}")
+        if fd1.get("reasons"):
+            for s in fd1.get("reasons", [])[:2]:
+                lines.append(f"- {s}")
+                
     sce1 = meta.get("signal_consistency_v1") or {}
     if sce1:
         add(lines, "")
