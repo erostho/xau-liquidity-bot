@@ -8117,10 +8117,20 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
     phase_num = phase369.get("phase", "n/a")
     
-    # lấy label gốc từ hàm của bạn
-    phase_label_render = _vn_phase_label(phase369)
+    phase_map = {
+        1: "Chuẩn bị",
+        2: "Nén",
+        3: "Giai đoạn sớm",
+        4: "Chuyển pha",
+        5: "Kiểm tra",
+        6: "Có thể chuẩn bị",
+        7: "Sắp chạy",
+        8: "Đang chạy",
+        9: "Đoạn muộn"
+    }
     
-    # override nếu chưa có side rõ
+    phase_label_render = phase_map.get(phase_num, "Không rõ")
+    
     if final_side == "NONE":
         phase_label_render = "Đang quan sát phản ứng"
     
