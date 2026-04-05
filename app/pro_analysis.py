@@ -8110,8 +8110,13 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"💵 Giá hiện tại: {price_now}")
     add(lines, f"📌 Kết luận nhanh: {verdict_full}")
     add(lines, f"🧭 Hướng ưu tiên: {rec}")
-    if phase:
-        add(lines, f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase_text(phase)}")
+    sce1 = meta.get("signal_consistency_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    phase_label_render = phase_label
+    if final_side == "NONE":
+        phase_label_render = "Đang quan sát phản ứng"
+    add(lines, f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
+    
     sce1 = meta.get("signal_consistency_v1") or {}
     state_line = sce1.get("narrative") or state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
     add(lines, f"🌡 Trạng thái: {state_line}")
@@ -8445,7 +8450,30 @@ def format_signal(sig: Dict[str, Any]) -> str:
     final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
         sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
     )
-    grade = _score_to_grade_v2(final_score)      
+    grade = _score_to_grade_v2(final_score)
+    # ===== FINAL DECISION OVERRIDE =====
+    fd1 = meta.get("final_decision_engine_v1") or {}
+    me1 = meta.get("master_engine_v1") or {}
+    sce1 = meta.get("signal_consistency_v1") or {}
+    
+    fd_decision = str(fd1.get("decision") or "").upper()
+    master_state = str(me1.get("state") or "").upper()
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    
+    # Nếu decision cuối là NO_TRADE / STAND ASIDE / Final side NONE
+    # thì score không được cao và tradeable phải về NO
+    if (
+        fd_decision == "NO_TRADE"
+        or master_state == "NO_TRADE"
+        or final_side == "NONE"
+    ):
+        try:
+            final_score = min(float(final_score or 0), 35.0)
+        except Exception:
+            final_score = 35.0
+    
+        tradeable_label = "NO"
+        grade = _score_to_grade_v2(final_score)
     add(lines, "")
     add(lines, f"📊 Chất lượng cơ hội: {grade}")   
     add(lines, f"🔥 Final Score: {final_score}/100")
@@ -8477,14 +8505,28 @@ def format_signal(sig: Dict[str, Any]) -> str:
     sce1 = (sig.get("meta") or {}).get("signal_consistency_v1") or {}
     lines.append("")
     lines.append("⚙️ Hành động:")
-    if fd1.get("decision", "").startswith("EXECUTE_"):
-        lines.append("- Market đã lộ mặt → có thể cân nhắc manual strike")
-    elif fd1.get("decision", "").startswith("WAIT_TRIGGER_"):
-        lines.append("- Đúng hướng nhưng timing chưa tới → chờ trigger")
-    else:
+    sce1 = meta.get("signal_consistency_v1") or {}
+    fd1 = meta.get("final_decision_engine_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    current_move = str(sce1.get("current_move") or "CHOP").upper()
+    fd_decision = str(fd1.get("decision") or "").upper()
+    
+    if final_side == "NONE":
         lines.append("- Chưa nên mở lệnh mới")
-        if sce1.get("current_move") == "CHOP":
-            lines.append("- Tránh trade trong vùng nhiễu / giữa biên độ")
+        if current_move == "CHOP":
+            lines.append("- Market còn nhiễu → ưu tiên đứng ngoài")
+        else:
+            lines.append("- Chưa có hướng đủ rõ → tiếp tục quan sát phản ứng giá")
+    
+    else:
+        if fd_decision.startswith("EXECUTE_"):
+            lines.append("- Market đã lộ mặt → có thể cân nhắc manual strike")
+        elif fd_decision.startswith("WAIT_TRIGGER_"):
+            lines.append("- Đúng hướng nhưng timing chưa tới → chờ trigger")
+        else:
+            lines.append("- Chưa nên mở lệnh mới")
+            if current_move == "CHOP":
+                lines.append("- Tránh trade trong vùng nhiễu / giữa biên độ")
 
     
     # ===== PRO DESK OUTPUT =====
