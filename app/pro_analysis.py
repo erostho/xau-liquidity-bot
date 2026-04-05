@@ -8112,29 +8112,15 @@ def format_signal(sig: Dict[str, Any]) -> str:
     add(lines, f"🧭 Hướng ưu tiên: {rec}")
     phase369 = meta.get("phase369_v1") or {}
     
-    sce1 = meta.get("signal_consistency_v1") or {}
-    final_side = str(sce1.get("final_side") or "NONE").upper()
-    
-    phase_num = phase369.get("phase", "n/a")
-    
-    phase_map = {
-        1: "Chuẩn bị",
-        2: "Nén",
-        3: "Giai đoạn sớm",
-        4: "Chuyển pha",
-        5: "Kiểm tra",
-        6: "Có thể chuẩn bị",
-        7: "Sắp chạy",
-        8: "Đang chạy",
-        9: "Đoạn muộn"
-    }
-    
-    phase_label_render = phase_map.get(phase_num, "Không rõ")
-    
-    if final_side == "NONE":
-        phase_label_render = "Đang quan sát phản ứng"
-    
-    add(lines, f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
+    if phase:
+        sce1 = meta.get("signal_consistency_v1") or {}
+        final_side = str(sce1.get("final_side") or "NONE").upper()
+        phase_num = phase.get("phase", "n/a")
+        phase_label_render = phase_text(phase)
+        # override khi chưa có hướng rõ
+        if final_side == "NONE":
+            phase_label_render = "Đang quan sát phản ứng"
+        add(lines, f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
     
     sce1 = meta.get("signal_consistency_v1") or {}
     state_line = sce1.get("narrative") or state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
