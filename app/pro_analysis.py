@@ -8444,23 +8444,47 @@ def format_signal(sig: Dict[str, Any]) -> str:
     buy_near, sell_near, buy_strong, sell_strong = trigger_lines_v2(rec, k, playbook)
     plan_pack = _now_plan_and_triggers_v7(trend_ctx, k, playbook, last_px)
     sce1 = meta.get("signal_consistency_v1") or {}
-    lr1 = meta.get("liquidity_reaction_v1") or {}
     final_side = str(sce1.get("final_side") or "NONE").upper()
-    action_mode = str(sce1.get("action_mode") or "NO_TRADE").upper()
+    range_lo_v = None
+    range_hi_v = None
+    if "range_lo" in locals():
+        range_lo_v = range_lo
+    elif "lo" in locals():
+        range_lo_v = lo
+    elif isinstance(rinfo, dict):
+        range_lo_v = rinfo.get("lo")
+    
+    if "range_hi" in locals():
+        range_hi_v = range_hi
+    elif "hi" in locals():
+        range_hi_v = hi
+    elif isinstance(rinfo, dict):
+        range_hi_v = rinfo.get("hi")
+    
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
-    if action_mode == "NO_TRADE":
-        add(lines, "- Ưu tiên đứng ngoài; chờ market quét 1 đầu rồi quan sát phản ứng giữ/không giữ")
-    elif final_side == "SELL":
-        add(lines, "- Chỉ SELL khi có 1 trong 2 điều kiện:")
-        add(lines, "  • sweep high rồi fail giữ")
-        add(lines, "  • hoặc break xuống và giữ dưới")
+    
+    if final_side == "SELL":
+        if range_hi_v is not None and range_lo_v is not None:
+            add(lines, f"- Chỉ SELL khi có 1 trong 2 điều kiện:")
+            add(lines, f"  • Sweep high {_fmt(range_hi_v)} rồi fail giữ")
+            add(lines, f"  • Hoặc break low {_fmt(range_lo_v)} và giữ dưới")
+        else:
+            add(lines, "- Chỉ SELL khi có sweep high fail giữ hoặc break low rõ")
+    
     elif final_side == "BUY":
-        add(lines, "- Chỉ BUY khi có 1 trong 2 điều kiện:")
-        add(lines, "  • sweep low rồi giữ được")
-        add(lines, "  • hoặc break lên và giữ trên")
+        if range_hi_v is not None and range_lo_v is not None:
+            add(lines, f"- Chỉ BUY khi có 1 trong 2 điều kiện:")
+            add(lines, f"  • Sweep low {_fmt(range_lo_v)} rồi giữ được")
+            add(lines, f"  • Hoặc break high {_fmt(range_hi_v)} và giữ trên")
+        else:
+            add(lines, "- Chỉ BUY khi có sweep low giữ được hoặc break high rõ")
+    
     else:
-        add(lines, "- Chưa có hướng đủ rõ → đứng ngoài")
+        if range_hi_v is not None and range_lo_v is not None:
+            add(lines, f"- Ưu tiên đứng ngoài; chờ sweep high {_fmt(range_hi_v)} hoặc break low {_fmt(range_lo_v)} rồi mới đánh giá tiếp")
+        else:
+            add(lines, "- Ưu tiên đứng ngoài; chờ market quét 1 đầu rồi quan sát phản ứng")
     
     add(lines, "")
     add(lines, "🪄 Kịch bản phụ:")
@@ -8567,10 +8591,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 + (f" | triggers: {trig}" if trig else "")
             )
     # ===== SAFE DEFINE TRIGGER LEVELS =====
+    add(lines, "")
+    add(lines, "🧯 Trigger quan trọng:")
     sce1 = meta.get("signal_consistency_v1") or {}
     final_side = str(sce1.get("final_side") or "NONE").upper()
     
-    # fallback từ biên độ M15 đang có trong formatter
+    # fallback range an toàn
     range_lo_v = None
     range_hi_v = None
     
@@ -8588,50 +8614,29 @@ def format_signal(sig: Dict[str, Any]) -> str:
     elif isinstance(rinfo, dict):
         range_hi_v = rinfo.get("hi")
     
-    near_zone_low = None
-    near_zone_high = None
-    break_level = None
-    invalid_level = None
-    
-    # ưu tiên lấy từ liquidity reaction nếu có
-    lr1 = meta.get("liquidity_reaction_v1") or {}
-    if isinstance(lr1, dict):
-        near_zone_low = lr1.get("bot_zone_low")
-        near_zone_high = lr1.get("bot_zone_high")
-    
-    # fallback cuối cùng dùng luôn biên độ M15
-    if near_zone_low is None:
-        near_zone_low = range_lo_v
-    if near_zone_high is None:
-        near_zone_high = range_hi_v
-    
     if final_side == "SELL":
-        break_level = range_lo_v
-        invalid_level = range_hi_v
-    elif final_side == "BUY":
-        break_level = range_hi_v
-        invalid_level = range_lo_v
-    add(lines, "")
-    add(lines, "🧯 Trigger quan trọng:")
-    
-    if final_side == "SELL":
-        if near_zone_low is not None and near_zone_high is not None:
-            add(lines, f"- SELL gần: nếu bị từ chối dưới vùng {_f(near_zone_low)} – {_f(near_zone_high)}")
-        if break_level is not None:
-            add(lines, f"- SELL mạnh: M15 đóng dưới {_f(break_level)} với follow-through")
-        if invalid_level is not None:
-            add(lines, f"- BUY vô hiệu hóa SELL: M15 đóng trên {_f(invalid_level)} và giữ được")
+        if range_hi_v is not None:
+            add(lines, f"- SELL gần: sweep high tại {_fmt(range_hi_v)} rồi fail giữ")
+        if range_lo_v is not None:
+            add(lines, f"- SELL mạnh: M15 đóng dưới {_fmt(range_lo_v)} với follow-through")
+        if range_hi_v is not None:
+            add(lines, f"- BUY vô hiệu hóa SELL: M15 đóng trên {_fmt(range_hi_v)} và giữ được")
     
     elif final_side == "BUY":
-        if near_zone_low is not None and near_zone_high is not None:
-            add(lines, f"- BUY gần: nếu giữ được vùng {_f(near_zone_low)} – {_f(near_zone_high)}")
-        if break_level is not None:
-            add(lines, f"- BUY mạnh: M15 đóng trên {_f(break_level)} với follow-through")
-        if invalid_level is not None:
-            add(lines, f"- SELL vô hiệu hóa BUY: M15 đóng dưới {_f(invalid_level)} và giữ được")
+        if range_lo_v is not None:
+            add(lines, f"- BUY gần: sweep low tại {_fmt(range_lo_v)} rồi giữ được")
+        if range_hi_v is not None:
+            add(lines, f"- BUY mạnh: M15 đóng trên {_fmt(range_hi_v)} với follow-through")
+        if range_lo_v is not None:
+            add(lines, f"- SELL vô hiệu hóa BUY: M15 đóng dưới {_fmt(range_lo_v)} và giữ được")
     
     else:
-        add(lines, "- Chưa có trigger đáng tin → đứng ngoài")
+        if range_hi_v is not None:
+            add(lines, f"- Sweep high tại {_fmt(range_hi_v)} rồi fail giữ → xét SELL")
+        if range_lo_v is not None:
+            add(lines, f"- Break low tại {_fmt(range_lo_v)} với follow-through → xét SELL")
+        if range_hi_v is None and range_lo_v is None:
+            add(lines, "- Chưa có trigger đáng tin → đứng ngoài")
 
     if ema_pack:
         add(lines, "")
@@ -8807,46 +8812,38 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lr1 = meta.get("liquidity_reaction_v1") or {}
     sce1 = meta.get("signal_consistency_v1") or {}
     final_side = str(sce1.get("final_side") or "NONE").upper()
-    # fallback range từ nhiều nguồn
-    range_lo_v = (
-        lr1.get("range_lo")
-        or meta.get("range_lo")
-        or sig.get("range_lo")
-        or (rinfo.get("lo") if isinstance(rinfo, dict) else None)
-        or lo if 'lo' in locals() else None
-    )
-    
-    range_hi_v = (
-        lr1.get("range_hi")
-        or meta.get("range_hi")
-        or sig.get("range_hi")
-        or (rinfo.get("hi") if isinstance(rinfo, dict) else None)
-        or hi if 'hi' in locals() else None
-    )
-    
+    range_lo_v = None
+    range_hi_v = None
+    if "range_lo" in locals():
+        range_lo_v = range_lo
+    elif "lo" in locals():
+        range_lo_v = lo
+    elif isinstance(rinfo, dict):
+        range_lo_v = rinfo.get("lo")
+    if "range_hi" in locals():
+        range_hi_v = range_hi
+    elif "hi" in locals():
+        range_hi_v = hi
+    elif isinstance(rinfo, dict):
+        range_hi_v = rinfo.get("hi")
     add(lines, "⏳ Wait for:")
-    
-    wait_lines = lr1.get("wait_lines") or []
-    
-    seen_wait = set()
-    
-    if wait_lines:
-        for s in wait_lines[:4]:
-            ss = str(s).strip()
-            if ss and ss not in seen_wait:
-                seen_wait.add(ss)
-                add(lines, f"- {ss}")
-    
-    # fallback nếu wait_lines rỗng hoặc chưa đủ dữ liệu
-    if not seen_wait:
+    if final_side == "SELL":
         if range_hi_v is not None:
-            add(lines, f"- Break lên {_fmt(range_hi_v)} → xem có giữ được không")
+            add(lines, f"- Sweep high tại {_fmt(range_hi_v)} rồi fail giữ → canh SELL")
         if range_lo_v is not None:
-            add(lines, f"- Break xuống {_fmt(range_lo_v)} → xem có follow-through không")
-    
-    # fallback cuối cùng, tránh block rỗng
-    if len(seen_wait) == 0 and range_hi_v is None and range_lo_v is None:
-        add(lines, "- Chờ quét 1 đầu rồi quan sát phản ứng giữ / fail giữ")
+            add(lines, f"- Hoặc break low {_fmt(range_lo_v)} với follow-through → canh SELL")
+    elif final_side == "BUY":
+        if range_lo_v is not None:
+            add(lines, f"- Sweep low tại {_fmt(range_lo_v)} rồi giữ được → canh BUY")
+        if range_hi_v is not None:
+            add(lines, f"- Hoặc break high {_fmt(range_hi_v)} với follow-through → canh BUY")
+    else:
+        if range_hi_v is not None:
+            add(lines, f"- Sweep high tại {_fmt(range_hi_v)} rồi fail giữ → xét SELL")
+        if range_lo_v is not None:
+            add(lines, f"- Break low {_fmt(range_lo_v)} với follow-through → xét SELL")
+        if range_hi_v is not None:
+            add(lines, f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
     # ===== TRIGGER ENGINE V3 OUTPUT =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
     lr1 = (sig.get("meta") or {}).get("liquidity_reaction_v1") or {}
