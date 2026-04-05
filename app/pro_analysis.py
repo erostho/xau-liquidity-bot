@@ -5515,7 +5515,14 @@ def _fmt_num(v):
     try:
         return f"{float(v):.3f}".rstrip("0").rstrip(".")
     except Exception:
-        return str(v)    
+        return str(v)
+        
+ def _f(v):
+    try:
+        return f"{float(v):,.2f}"
+    except Exception:
+        return str(v)
+        
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
