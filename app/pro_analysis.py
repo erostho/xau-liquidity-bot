@@ -5517,7 +5517,7 @@ def _fmt_num(v):
     except Exception:
         return str(v)
         
- def _f(v):
+def _f(v):
     try:
         return f"{float(v):,.2f}"
     except Exception:
