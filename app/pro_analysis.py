@@ -3971,6 +3971,31 @@ def _attach_vnext_meta(
             no_trade_zone_v3=no_trade_zone_v3,
         )
         meta["final_decision_engine_v1"] = final_decision_engine_v1
+
+        # ===== SIGNAL CONSISTENCY SYNC WITH FINAL DECISION =====
+        try:
+            sce1 = meta.get("signal_consistency_v1") or {}
+            fd1 = meta.get("final_decision_engine_v1") or {}
+            me1 = meta.get("master_engine_v1") or {}
+            rv1 = meta.get("reveal_engine_v1") or {}
+
+            fd_decision = str(fd1.get("decision") or "NO_TRADE").upper()
+            master_state = str(me1.get("state") or "WAIT").upper()
+            revealed = bool(rv1.get("reveal"))
+            final_side_sync = str(sce1.get("final_side") or "NONE").upper()
+
+            if fd_decision == "NO_TRADE" or master_state == "NO_TRADE":
+                sce1["action_mode"] = "NO_TRADE"
+                if str(sce1.get("current_move") or "").upper() == "TREND":
+                    sce1["current_move"] = "CHOP"
+                if final_side_sync in ("BUY", "SELL"):
+                    sce1["narrative"] = "Đúng hướng nhưng market chưa lộ mặt → ưu tiên chờ xác nhận"
+                else:
+                    sce1["narrative"] = "Thị trường đang nhiễu / chưa có edge rõ → ưu tiên đứng ngoài"
+
+            meta["signal_consistency_v1"] = sce1
+        except Exception:
+            pass
         
         # ===== MASTER ENGINE OVERRIDE =====
         try:
@@ -4003,22 +4028,35 @@ def _market_state_machine_v1(h1_trend, h4_trend, m15_struct_tag, market_state_v2
     if (liquidation_evt or {}).get("ok"):
         return {"state": "LIQUIDATION", "label": "Biến động thanh khoản mạnh"}
 
+    tag = str(m15_struct_tag or "").upper()
+    h1t = str(h1_trend or "").lower()
+    h4t = str(h4_trend or "").lower()
+
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
     if market_state_v2 in ("CHOP", "TRANSITION"):
         return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
 
-    tag = str(m15_struct_tag or "").upper()
+    if (h1t not in ("bullish", "bearish") and h4t not in ("bullish", "bearish")):
+        return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
 
-    if h1_trend == "bullish" and h4_trend == "bullish":
+    if tag in ("", "TRANSITION", "N/A") and rp is not None and 0.35 <= rp <= 0.65:
+        return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
+
+    if h1t == "bullish" and h4t == "bullish":
         if "LL" in tag or "LH" in tag:
             return {"state": "PULLBACK_BUY", "label": "Hồi trong xu hướng tăng"}
         return {"state": "TREND_UP", "label": "Xu hướng tăng"}
 
-    if h1_trend == "bearish" and h4_trend == "bearish":
+    if h1t == "bearish" and h4t == "bearish":
         if "HH" in tag or "HL" in tag:
             return {"state": "PULLBACK_SELL", "label": "Hồi trong xu hướng giảm"}
         return {"state": "TREND_DOWN", "label": "Xu hướng giảm"}
 
-    return {"state": "TRANSITION", "label": "Chuyển pha"}
+    return {"state": "CHOP", "label": "Nhiễu / chuyển pha"}
 
 
 def _bias_layers_v1(h1_trend, h4_trend, m15_struct_tag, context_verdict):
@@ -8658,11 +8696,28 @@ def format_signal(sig: Dict[str, Any]) -> str:
     timing = str(pump_dump.get("timing") or "CHƯA RÕ")
     reasons = pump_dump.get("reasons") or []
     sniper = ((sig.get("meta") or {}).get("entry_sniper") or {})
+    sce1_for_sniper = ((sig.get("meta") or {}).get("signal_consistency_v1") or {})
+    tg3_for_sniper = ((sig.get("meta") or {}).get("trigger_engine_v3") or {})
+    sniper_dir = str(sniper.get('direction', 'NONE') or 'NONE').upper()
+    sniper_trigger = str(sniper.get('trigger', 'NONE') or 'NONE').upper()
+    sniper_state = str(sniper.get('state', 'KHÔNG CÓ SETUP') or 'KHÔNG CÓ SETUP')
+    final_side_for_sniper = str(sce1_for_sniper.get('final_side') or 'NONE').upper()
+    tg3_state_for_sniper = str(tg3_for_sniper.get('state') or 'WAIT').upper()
+
+    if final_side_for_sniper in ("BUY", "SELL") and tg3_state_for_sniper == "WAIT" and sniper_trigger == "NONE":
+        sniper_dir = final_side_for_sniper
+        sniper_trigger = "WAIT_TRIGGER"
+        sniper_state = "CHỜ TRIGGER"
+    elif final_side_for_sniper in ("BUY", "SELL") and tg3_state_for_sniper == "READY" and sniper_trigger == "NONE":
+        sniper_dir = final_side_for_sniper
+        sniper_trigger = "READY"
+        sniper_state = "SẮP ĐỦ ĐIỀU KIỆN"
+
     lines.append("")
     lines.append("🎯 ENTRY SNIPER:")
-    lines.append(f"- Cây chỉ hướng: {sniper.get('direction', 'NONE')} ({sniper.get('strength', '-')})")
-    lines.append(f"- Điểm nổ: {sniper.get('trigger', 'NONE')}")
-    lines.append(f"- Trạng thái: {sniper.get('state', 'KHÔNG CÓ SETUP')}")
+    lines.append(f"- Cây chỉ hướng: {sniper_dir} ({sniper.get('strength', '-')})")
+    lines.append(f"- Điểm nổ: {sniper_trigger}")
+    lines.append(f"- Trạng thái: {sniper_state}")
     #lines.append("")
     #lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
     #lines.append(f"- Compression: {compression}")
@@ -8690,6 +8745,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
         lines.append(f"- State: {'REVEALED' if rv1.get('reveal') else 'NOT REVEALED'}")
         lines.append(f"- Direction: {rv1.get('direction', 'NONE')}")
         lines.append(f"- Quality: {rv1.get('quality', 'LOW')}")
+        if not rv1.get('reveal'):
+            lines.append("- Market chưa lộ mặt")
         if rv1.get("reasons"):
             lines.append(f"- Lý do: {' | '.join(rv1.get('reasons', [])[:3])}")
             
@@ -8753,13 +8810,17 @@ def format_signal(sig: Dict[str, Any]) -> str:
     lines.append("⚙️ Hành động:")
     sce1 = meta.get("signal_consistency_v1") or {}
     fd1 = meta.get("final_decision_engine_v1") or {}
+    rv1_action = meta.get("reveal_engine_v1") or {}
     final_side = str(sce1.get("final_side") or "NONE").upper()
     current_move = str(sce1.get("current_move") or "CHOP").upper()
     fd_decision = str(fd1.get("decision") or "").upper()
+    revealed = bool(rv1_action.get("reveal"))
     
     if final_side == "NONE":
         lines.append("- Chưa nên mở lệnh mới")
-        if current_move == "CHOP":
+        if not revealed:
+            lines.append("- Market chưa lộ mặt → ưu tiên đứng ngoài")
+        elif current_move == "CHOP":
             lines.append("- Market còn nhiễu → ưu tiên đứng ngoài")
         else:
             lines.append("- Chưa có hướng đủ rõ → tiếp tục quan sát phản ứng giá")
@@ -8769,9 +8830,13 @@ def format_signal(sig: Dict[str, Any]) -> str:
             lines.append("- Market đã lộ mặt → có thể cân nhắc manual strike")
         elif fd_decision.startswith("WAIT_TRIGGER_"):
             lines.append("- Đúng hướng nhưng timing chưa tới → chờ trigger")
+            if not revealed:
+                lines.append("- Market chưa lộ mặt hoàn toàn → chưa trade")
         else:
             lines.append("- Chưa nên mở lệnh mới")
-            if current_move == "CHOP":
+            if not revealed:
+                lines.append("- Market chưa lộ mặt → chưa trade")
+            elif current_move == "CHOP":
                 lines.append("- Tránh trade trong vùng nhiễu / giữa biên độ")
 
     
