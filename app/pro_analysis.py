@@ -5350,7 +5350,172 @@ def _final_decision_engine_v1(
         "label": label,
         "reasons": reasons[:3],
     }
-    
+# =========================
+# LIQUIDITY REACTION ENGINE V1
+# Sweep -> Confirm -> Entry
+# =========================
+def _liquidity_reaction_engine_v1(
+    signal_consistency_v1: dict | None,
+    liquidity_map: dict | None,
+    liquidity_completion_v1: dict | None,
+    close_confirm_v4: dict | None,
+    m15_struct: dict | None,
+    current_price: float | None,
+    range_lo: float | None,
+    range_hi: float | None,
+) -> dict:
+    sce1 = signal_consistency_v1 or {}
+    liq_map = liquidity_map or {}
+    liq1 = liquidity_completion_v1 or {}
+    cc4 = close_confirm_v4 or {}
+    m15s = m15_struct or {}
+
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    current_move = str(sce1.get("current_move") or "CHOP").upper()
+
+    try:
+        px = float(current_price) if current_price is not None else None
+    except Exception:
+        px = None
+
+    try:
+        lo = float(range_lo) if range_lo is not None else None
+    except Exception:
+        lo = None
+
+    try:
+        hi = float(range_hi) if range_hi is not None else None
+    except Exception:
+        hi = None
+
+    cc_strength = str(cc4.get("strength") or "NO").upper()
+    liq_state = str(liq1.get("state") or "NO").upper()
+
+    break_up = bool(m15s.get("break_up"))
+    break_dn = bool(m15s.get("break_dn"))
+    hl_ok = bool(m15s.get("hl"))
+    lh_ok = bool(m15s.get("lh"))
+
+    top_liq = str(liq_map.get("top_liquidity") or liq_map.get("above_level") or "").upper()
+    bot_liq = str(liq_map.get("bottom_liquidity") or liq_map.get("below_level") or "").upper()
+
+    # vùng phản ứng gần đúng
+    top_zone_low = liq_map.get("top_zone_low")
+    top_zone_high = liq_map.get("top_zone_high")
+    bot_zone_low = liq_map.get("bottom_zone_low")
+    bot_zone_high = liq_map.get("bottom_zone_high")
+
+    state = "WAIT"
+    reaction_type = "NONE"
+    entry_side = "NONE"
+    reasons = []
+    wait_lines = []
+
+    # fallback zone nếu liquidity_map chưa có vùng
+    if top_zone_low is None and hi is not None:
+        top_zone_low = hi
+    if top_zone_high is None and hi is not None:
+        top_zone_high = hi
+
+    if bot_zone_low is None and lo is not None:
+        bot_zone_low = lo
+    if bot_zone_high is None and lo is not None:
+        bot_zone_high = lo
+
+    # =========================
+    # CASE 1: Sweep high -> fail giữ -> SELL
+    # =========================
+    sell_reaction_possible = (
+        final_side == "SELL"
+        or (final_side == "NONE" and current_move in ("CHOP", "PULLBACK"))
+    )
+
+    if sell_reaction_possible:
+        if top_liq in ("HIGH", "MEDIUM") and top_zone_low is not None:
+            wait_lines.append(f"Quét vùng trên {_fmt_num(top_zone_low)} – {_fmt_num(top_zone_high)} rồi fail giữ → xét SELL")
+        elif hi is not None:
+            wait_lines.append(f"Break lên {_fmt_num(hi)} rồi không giữ được → xét SELL")
+
+        if final_side == "SELL":
+            entry_side = "SELL"
+
+            # đã có dấu hiệu reject + cấu trúc yếu đi
+            if (lh_ok or break_dn) and cc_strength in ("WEAK", "STRONG"):
+                state = "READY"
+                reaction_type = "SWEEP_FAIL"
+                reasons.append("có phản ứng từ chối sau vùng cao")
+                reasons.append("đang có xác nhận yếu theo hướng SELL")
+
+            if liq_state in ("YES", "PARTIAL") and break_dn and cc_strength in ("WEAK", "STRONG"):
+                state = "TRIGGERED"
+                reaction_type = "SWEEP_FAIL"
+                reasons.append("đã sweep xong và fail giữ")
+                reasons.append("M15 đang break xuống có confirm")
+
+    # =========================
+    # CASE 2: Sweep low -> giữ được -> BUY
+    # =========================
+    buy_reaction_possible = (
+        final_side == "BUY"
+        or (final_side == "NONE" and current_move in ("CHOP", "PULLBACK"))
+    )
+
+    if buy_reaction_possible:
+        if bot_liq in ("HIGH", "MEDIUM") and bot_zone_low is not None:
+            wait_lines.append(f"Quét vùng dưới {_fmt_num(bot_zone_low)} – {_fmt_num(bot_zone_high)} rồi giữ được → xét BUY")
+        elif lo is not None:
+            wait_lines.append(f"Break xuống {_fmt_num(lo)} rồi reclaim lại → xét BUY")
+
+        if final_side == "BUY":
+            entry_side = "BUY"
+
+            if (hl_ok or break_up) and cc_strength in ("WEAK", "STRONG"):
+                state = "READY"
+                reaction_type = "SWEEP_HOLD"
+                reasons.append("có phản ứng giữ giá sau vùng thấp")
+                reasons.append("đang có xác nhận yếu theo hướng BUY")
+
+            if liq_state in ("YES", "PARTIAL") and break_up and cc_strength in ("WEAK", "STRONG"):
+                state = "TRIGGERED"
+                reaction_type = "SWEEP_HOLD"
+                reasons.append("đã quét xong và giữ được")
+                reasons.append("M15 đang break lên có confirm")
+
+    # =========================
+    # CASE 3: Break -> Hold
+    # =========================
+    if final_side == "SELL" and break_dn and cc_strength in ("WEAK", "STRONG"):
+        state = "TRIGGERED"
+        reaction_type = "BREAK_HOLD"
+        entry_side = "SELL"
+        reasons.append("đã break xuống và giữ dưới")
+
+    if final_side == "BUY" and break_up and cc_strength in ("WEAK", "STRONG"):
+        state = "TRIGGERED"
+        reaction_type = "BREAK_HOLD"
+        entry_side = "BUY"
+        reasons.append("đã break lên và giữ trên")
+
+    return {
+        "state": state,                 # WAIT / READY / TRIGGERED
+        "reaction_type": reaction_type, # SWEEP_FAIL / SWEEP_HOLD / BREAK_HOLD / NONE
+        "entry_side": entry_side,       # BUY / SELL / NONE
+        "reasons": reasons[:4],
+        "wait_lines": wait_lines[:4],
+        "top_zone_low": top_zone_low,
+        "top_zone_high": top_zone_high,
+        "bot_zone_low": bot_zone_low,
+        "bot_zone_high": bot_zone_high,
+        "range_lo": lo,
+        "range_hi": hi,
+    }
+
+
+def _fmt_num(v):
+    try:
+        return f"{float(v):.3f}".rstrip("0").rstrip(".")
+    except Exception:
+        return str(v)    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -6831,7 +6996,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         entry_sniper=entry_sniper,
         playbook_v2=playbook_v2,
     )
+    # ===== LIQUIDITY REACTION ENGINE V1 =====
+    liquidity_reaction_v1 = _liquidity_reaction_engine_v1(
+        signal_consistency_v1=signal_consistency_v1,
+        liquidity_map=liquidity_map if 'liquidity_map' in locals() and isinstance(liquidity_map, dict) else {},
+        liquidity_completion_v1=liquidity_completion_v1,
+        close_confirm_v4=close_confirm_v4,
+        m15_struct=(m15_struct or {}),
+        current_price=last_px if 'last_px' in locals() else None,
+        range_lo=range_lo if 'range_lo' in locals() else None,
+        range_hi=range_hi if 'range_hi' in locals() else None,
+    )
+    meta["liquidity_reaction_v1"] = liquidity_reaction_v1
 
+    
     base.setdefault("meta", {})["context_verdict_v1"] = context_verdict_v1
     base.setdefault("meta", {})["rsi_context_v1"] = rsi_context_v1
     base.setdefault("meta", {})["fib_confluence_v1"] = fib_confluence_v1
@@ -8250,25 +8428,23 @@ def format_signal(sig: Dict[str, Any]) -> str:
     buy_near, sell_near, buy_strong, sell_strong = trigger_lines_v2(rec, k, playbook)
     plan_pack = _now_plan_and_triggers_v7(trend_ctx, k, playbook, last_px)
     sce1 = meta.get("signal_consistency_v1") or {}
+    lr1 = meta.get("liquidity_reaction_v1") or {}
     final_side = str(sce1.get("final_side") or "NONE").upper()
     action_mode = str(sce1.get("action_mode") or "NO_TRADE").upper()
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
-    
     if action_mode == "NO_TRADE":
-        add(lines, "- Ưu tiên đứng ngoài quan sát, chưa có lợi thế rõ để mở lệnh mới")
-    
+        add(lines, "- Ưu tiên đứng ngoài; chờ market quét 1 đầu rồi quan sát phản ứng giữ/không giữ")
     elif final_side == "SELL":
-        add(lines, "- Đây là nhịp hồi trong bối cảnh giảm → KHÔNG BUY")
-        add(lines, "- Chỉ chờ SELL khi xuất hiện sweep / fail giữ / breakdown xác nhận")
-    
+        add(lines, "- Chỉ SELL khi có 1 trong 2 điều kiện:")
+        add(lines, "  • sweep high rồi fail giữ")
+        add(lines, "  • hoặc break xuống và giữ dưới")
     elif final_side == "BUY":
-        add(lines, "- Đây là nhịp điều chỉnh trong bối cảnh tăng → KHÔNG SELL")
-        add(lines, "- Chỉ chờ BUY khi xuất hiện sweep / giữ giá / breakout xác nhận")
-    
+        add(lines, "- Chỉ BUY khi có 1 trong 2 điều kiện:")
+        add(lines, "  • sweep low rồi giữ được")
+        add(lines, "  • hoặc break lên và giữ trên")
     else:
         add(lines, "- Chưa có hướng đủ rõ → đứng ngoài")
-    #add(lines, f"- {plan_pack['main_plan']}")
     
     add(lines, "")
     add(lines, "🪄 Kịch bản phụ:")
@@ -8568,18 +8744,36 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(lines, f"🎯 Decision: {de1.get('decision')}")
         add(lines, f"- {de1.get('reason')}")
         
-    if wf1.get("lines"):
-        add(lines, "⏳ Wait for:")
-        for s in wf1.get("lines")[:3]:
-            add(lines, f"- {s}")
+    lr1 = meta.get("liquidity_reaction_v1") or {}
+    sce1 = meta.get("signal_consistency_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    range_lo_v = lr1.get("range_lo")
+    range_hi_v = lr1.get("range_hi")
+    add(lines, "⏳ Wait for:")
+    
+    # Ưu tiên in các reaction-based wait lines trước
+    wait_lines = lr1.get("wait_lines") or []
+    if wait_lines:
+        seen_wait = set()
+        for s in wait_lines[:3]:
+            ss = str(s).strip()
+            if ss and ss not in seen_wait:
+                seen_wait.add(ss)
+                add(lines, f"- {ss}")
+    else:
+        # fallback 2 chiều
+        if range_hi_v is not None:
+            add(lines, f"- Break lên {_fmt_num(range_hi_v)} → xem có giữ được không")
+        if range_lo_v is not None:
+            add(lines, f"- Break xuống {_fmt_num(range_lo_v)} → xem có follow-through không")
     # ===== TRIGGER ENGINE V3 OUTPUT =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
+    lr1 = (sig.get("meta") or {}).get("liquidity_reaction_v1") or {}
     lines.append("")
     lines.append("🎯 TRIGGER ENGINE V3:")
     lines.append(f"- State: {tg3.get('state', 'WAIT')}")
     lines.append(f"- Side: {tg3.get('entry_side', 'NONE')}")
     lines.append(f"- Quality: {tg3.get('quality', 'LOW')}")
-    
     if tg3.get("trigger_line"):
         lines.append(f"- Trigger: {tg3.get('trigger_line')}")
     if tg3.get("invalidation_line"):
@@ -8588,17 +8782,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if tg3.get("reason"):
         for s in tg3.get("reason", [])[:3]:
             lines.append(f"- {s}")
+    if lr1:
+        lines.append(f"- Liquidity reaction: {lr1.get('reaction_type', 'NONE')} | {lr1.get('state', 'WAIT')}")
                 
     # ===== CONFLICT + SUGGESTION OUTPUT =====
     cf1 = meta.get("conflict_engine_v1") or {}
     sg1 = meta.get("suggestion_block_v1") or {}
     
     if cf1.get("active"):
+        add(lines, "")
         add(lines, "⚖️ Conflict:")
         add(lines, f"- {cf1.get('verdict')}")
         for s in (cf1.get("reasons") or [])[:3]:
             add(lines, f"- {s}")
-    
     if sg1:
         add(lines, "")
         add(lines, "📌 SUGGESTION:")
