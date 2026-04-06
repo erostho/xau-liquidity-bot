@@ -8479,179 +8479,179 @@ def _add(buf, s):
         buf.append(s)
 
 
-# ====== INIT ======
-lines: List[str] = []
-action_lines: List[str] = []
-reason_lines: List[str] = []
-
-# ===== HEADER =====
-head = f"📌 {symbol} NOW"
-if tf:
-    head += f" | {tf}"
-if session:
-    head += f" | {session}"
-
-lines.append(head)
-if data_source:
-    lines.append(f"📡 Dữ liệu: {data_source}")
-lines.append("")
-
-# ===== PRICE =====
-last_px = k.get("M15_LAST") or sig.get("last_price") or sig.get("current_price") or sig.get("entry")
-price_now = nf(last_px)
-
-# ===== VERDICT =====
-reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
-verdict_quick = "Chưa đẹp để vào ngay"
-if ntz.get("active") or trade_mode == "WAIT":
-    verdict_quick = "Ưu tiên đứng ngoài"
-verdict_full = f"{verdict_quick}; {reason_text}" if reason_text else verdict_quick
-
-# ===== ACTION LAYER =====
-_add(action_lines, f"💵 Giá hiện tại: {price_now}")
-_add(action_lines, f"📌 Kết luận: {verdict_full}")
-_add(action_lines, f"🧭 Hướng ưu tiên: {rec}")
-
-# ===== PHASE =====
-if phase:
-    phase_num = phase.get("phase", "n/a")
-    phase_label_render = phase_text(phase)
-    _add(action_lines, f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
-
-# ===== TRIGGER / SCENARIO =====
-_add(action_lines, "")
-_add(action_lines, "🎯 Kịch bản hành động:")
-
-sce1 = meta.get("signal_consistency_v1") or {}
-final_side = str(sce1.get("final_side") or "NONE").upper()
-
-range_lo_v = range_lo if 'range_lo' in locals() else None
-range_hi_v = range_hi if 'range_hi' in locals() else None
-
-if final_side == "SELL":
-    _add(action_lines, "- Chỉ SELL khi:")
-    if range_hi_v:
-        _add(action_lines, f"  • Sweep high {nf(range_hi_v)} rồi fail")
-    if range_lo_v:
-        _add(action_lines, f"  • Hoặc break {nf(range_lo_v)} giữ dưới")
-
-elif final_side == "BUY":
-    _add(action_lines, "- Chỉ BUY khi:")
-    if range_lo_v:
-        _add(action_lines, f"  • Sweep low {nf(range_lo_v)} rồi giữ")
-    if range_hi_v:
-        _add(action_lines, f"  • Hoặc break {nf(range_hi_v)} giữ trên")
-
-else:
-    _add(action_lines, "- Ưu tiên đứng ngoài, chờ sweep hoặc break rõ")
-
-# ===== ENTRY SNIPER =====
-sniper = (meta.get("entry_sniper") or {})
-_add(action_lines, "")
-_add(action_lines, "🎯 ENTRY SNIPER:")
-_add(action_lines, f"- Hướng: {sniper.get('direction', 'NONE')}")
-_add(action_lines, f"- Trigger: {sniper.get('trigger', 'WAIT')}")
-_add(action_lines, f"- Trạng thái: {sniper.get('state', 'NO SETUP')}")
-
-# ===== FINAL ACTION =====
-fd1 = meta.get("final_decision_engine_v1") or {}
-_add(action_lines, "")
-_add(action_lines, "⚙️ Hành động:")
-
-decision = str(fd1.get("decision") or "").upper()
-
-if decision.startswith("EXECUTE"):
-    _add(action_lines, "- Có thể cân nhắc vào lệnh khi đủ điều kiện")
-elif decision.startswith("WAIT"):
-    _add(action_lines, "- Chờ trigger, chưa vào ngay")
-else:
-    _add(action_lines, "- Chưa nên mở lệnh mới")
-
-# =========================================================
-# ================= REASON LAYER ===========================
-# =========================================================
-
-# ===== STATE =====
-state_line = state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
-_add(reason_lines, f"🌡 Trạng thái: {state_line}")
-
-# ===== FLOW =====
-if flow:
-    _add(reason_lines, f"💰 Dòng tiền: {flow_text(flow)}")
-
-# ===== RANGE =====
-_add(reason_lines, "")
-_add(reason_lines, "📍 Vị trí giá:")
-
-if last_px:
-    _add(reason_lines, f"- Giá: {nf(last_px)}")
-
-if range_lo and range_hi:
-    _add(reason_lines, f"- Range: {nf(range_lo)} – {nf(range_hi)}")
-
-if range_pos is not None:
-    pos_pct = int(range_pos * 100)
-    _add(reason_lines, f"- Vị trí: ~{pos_pct}%")
-
-# ===== LIQUIDITY =====
-liq_map = ((sig.get("meta") or {}).get("liquidity_map_v1") or {})
-_add(reason_lines, "")
-_add(reason_lines, "💧 Thanh khoản:")
-
-_add(reason_lines, f"- Trên: {liq_map.get('above_strength', 'LOW')}")
-_add(reason_lines, f"- Dưới: {liq_map.get('below_strength', 'LOW')}")
-_add(reason_lines, f"- Bias quét: {liq_map.get('sweep_bias', 'NEUTRAL')}")
-
-# ===== STRUCTURE =====
-_add(reason_lines, "")
-_add(reason_lines, "✅ Xác nhận:")
-if struct:
-    _add(reason_lines, f"- H4: {struct.get('H4')} | H1: {struct.get('H1')}")
-    _add(reason_lines, f"- M15: {struct.get('M15')}")
-
-# ===== EMA =====
-ema_pack = meta.get("ema") or {}
-if ema_pack:
+    # ====== INIT ======
+    lines: List[str] = []
+    action_lines: List[str] = []
+    reason_lines: List[str] = []
+    
+    # ===== HEADER =====
+    head = f"📌 {symbol} NOW"
+    if tf:
+        head += f" | {tf}"
+    if session:
+        head += f" | {session}"
+    
+    lines.append(head)
+    if data_source:
+        lines.append(f"📡 Dữ liệu: {data_source}")
+    lines.append("")
+    
+    # ===== PRICE =====
+    last_px = k.get("M15_LAST") or sig.get("last_price") or sig.get("current_price") or sig.get("entry")
+    price_now = nf(last_px)
+    
+    # ===== VERDICT =====
+    reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
+    verdict_quick = "Chưa đẹp để vào ngay"
+    if ntz.get("active") or trade_mode == "WAIT":
+        verdict_quick = "Ưu tiên đứng ngoài"
+    verdict_full = f"{verdict_quick}; {reason_text}" if reason_text else verdict_quick
+    
+    # ===== ACTION LAYER =====
+    _add(action_lines, f"💵 Giá hiện tại: {price_now}")
+    _add(action_lines, f"📌 Kết luận: {verdict_full}")
+    _add(action_lines, f"🧭 Hướng ưu tiên: {rec}")
+    
+    # ===== PHASE =====
+    if phase:
+        phase_num = phase.get("phase", "n/a")
+        phase_label_render = phase_text(phase)
+        _add(action_lines, f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
+    
+    # ===== TRIGGER / SCENARIO =====
+    _add(action_lines, "")
+    _add(action_lines, "🎯 Kịch bản hành động:")
+    
+    sce1 = meta.get("signal_consistency_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    
+    range_lo_v = range_lo if 'range_lo' in locals() else None
+    range_hi_v = range_hi if 'range_hi' in locals() else None
+    
+    if final_side == "SELL":
+        _add(action_lines, "- Chỉ SELL khi:")
+        if range_hi_v:
+            _add(action_lines, f"  • Sweep high {nf(range_hi_v)} rồi fail")
+        if range_lo_v:
+            _add(action_lines, f"  • Hoặc break {nf(range_lo_v)} giữ dưới")
+    
+    elif final_side == "BUY":
+        _add(action_lines, "- Chỉ BUY khi:")
+        if range_lo_v:
+            _add(action_lines, f"  • Sweep low {nf(range_lo_v)} rồi giữ")
+        if range_hi_v:
+            _add(action_lines, f"  • Hoặc break {nf(range_hi_v)} giữ trên")
+    
+    else:
+        _add(action_lines, "- Ưu tiên đứng ngoài, chờ sweep hoặc break rõ")
+    
+    # ===== ENTRY SNIPER =====
+    sniper = (meta.get("entry_sniper") or {})
+    _add(action_lines, "")
+    _add(action_lines, "🎯 ENTRY SNIPER:")
+    _add(action_lines, f"- Hướng: {sniper.get('direction', 'NONE')}")
+    _add(action_lines, f"- Trigger: {sniper.get('trigger', 'WAIT')}")
+    _add(action_lines, f"- Trạng thái: {sniper.get('state', 'NO SETUP')}")
+    
+    # ===== FINAL ACTION =====
+    fd1 = meta.get("final_decision_engine_v1") or {}
+    _add(action_lines, "")
+    _add(action_lines, "⚙️ Hành động:")
+    
+    decision = str(fd1.get("decision") or "").upper()
+    
+    if decision.startswith("EXECUTE"):
+        _add(action_lines, "- Có thể cân nhắc vào lệnh khi đủ điều kiện")
+    elif decision.startswith("WAIT"):
+        _add(action_lines, "- Chờ trigger, chưa vào ngay")
+    else:
+        _add(action_lines, "- Chưa nên mở lệnh mới")
+    
+    # =========================================================
+    # ================= REASON LAYER ===========================
+    # =========================================================
+    
+    # ===== STATE =====
+    state_line = state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
+    _add(reason_lines, f"🌡 Trạng thái: {state_line}")
+    
+    # ===== FLOW =====
+    if flow:
+        _add(reason_lines, f"💰 Dòng tiền: {flow_text(flow)}")
+    
+    # ===== RANGE =====
     _add(reason_lines, "")
-    _add(reason_lines, "📉 EMA:")
-    _add(reason_lines, f"- Trend: {ema_pack.get('trend')}")
-    _add(reason_lines, f"- Alignment: {ema_pack.get('alignment')}")
-
-# ===== SCORE =====
-final_score, tradeable_label, _, _ = _final_score_now(
-    sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
-)
-
-_add(reason_lines, "")
-_add(reason_lines, f"📊 Score: {final_score}/100 | Tradeable: {tradeable_label}")
-
-# =========================================================
-# ================= FINAL BUILD ============================
-# =========================================================
-
-out = []
-
-# HEADER
-out.extend(lines)
-
-# ACTION
-out.append("")
-out.append("━━━━━━━━━━━")
-out.append("🧭 LAYER 1: ACTION")
-out.append("━━━━━━━━━━━")
-out.extend(action_lines)
-
-# REASON
-out.append("")
-out.append("━━━━━━━━━━━")
-out.append("🧠 LAYER 2: REASON")
-out.append("━━━━━━━━━━━")
-out.extend(reason_lines)
-
-# CLEAN
-final = []
-for line in out:
-    if line == "" and (not final or final[-1] == ""):
-        continue
-    final.append(line)
+    _add(reason_lines, "📍 Vị trí giá:")
+    
+    if last_px:
+        _add(reason_lines, f"- Giá: {nf(last_px)}")
+    
+    if range_lo and range_hi:
+        _add(reason_lines, f"- Range: {nf(range_lo)} – {nf(range_hi)}")
+    
+    if range_pos is not None:
+        pos_pct = int(range_pos * 100)
+        _add(reason_lines, f"- Vị trí: ~{pos_pct}%")
+    
+    # ===== LIQUIDITY =====
+    liq_map = ((sig.get("meta") or {}).get("liquidity_map_v1") or {})
+    _add(reason_lines, "")
+    _add(reason_lines, "💧 Thanh khoản:")
+    
+    _add(reason_lines, f"- Trên: {liq_map.get('above_strength', 'LOW')}")
+    _add(reason_lines, f"- Dưới: {liq_map.get('below_strength', 'LOW')}")
+    _add(reason_lines, f"- Bias quét: {liq_map.get('sweep_bias', 'NEUTRAL')}")
+    
+    # ===== STRUCTURE =====
+    _add(reason_lines, "")
+    _add(reason_lines, "✅ Xác nhận:")
+    if struct:
+        _add(reason_lines, f"- H4: {struct.get('H4')} | H1: {struct.get('H1')}")
+        _add(reason_lines, f"- M15: {struct.get('M15')}")
+    
+    # ===== EMA =====
+    ema_pack = meta.get("ema") or {}
+    if ema_pack:
+        _add(reason_lines, "")
+        _add(reason_lines, "📉 EMA:")
+        _add(reason_lines, f"- Trend: {ema_pack.get('trend')}")
+        _add(reason_lines, f"- Alignment: {ema_pack.get('alignment')}")
+    
+    # ===== SCORE =====
+    final_score, tradeable_label, _, _ = _final_score_now(
+        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
+    )
+    
+    _add(reason_lines, "")
+    _add(reason_lines, f"📊 Score: {final_score}/100 | Tradeable: {tradeable_label}")
+    
+    # =========================================================
+    # ================= FINAL BUILD ============================
+    # =========================================================
+    
+    out = []
+    
+    # HEADER
+    out.extend(lines)
+    
+    # ACTION
+    out.append("")
+    out.append("━━━━━━━━━━━")
+    out.append("🧭 LAYER 1: ACTION")
+    out.append("━━━━━━━━━━━")
+    out.extend(action_lines)
+    
+    # REASON
+    out.append("")
+    out.append("━━━━━━━━━━━")
+    out.append("🧠 LAYER 2: REASON")
+    out.append("━━━━━━━━━━━")
+    out.extend(reason_lines)
+    
+    # CLEAN
+    final = []
+    for line in out:
+        if line == "" and (not final or final[-1] == ""):
+            continue
+        final.append(line)
 return "\n".join(final).strip()
