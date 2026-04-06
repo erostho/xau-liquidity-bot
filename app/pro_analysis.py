@@ -3348,7 +3348,289 @@ def _fib_confluence_v1(
         "reason": reason[:4],
     })
     return out
+    
+def _pullback_engine_v1(
+    bias_side: str | None,
+    current_price: float | None,
+    key_levels: dict | None,
+    ema_pack: dict | None,
+    h1_trend: str | None,
+    h4_trend: str | None,
+    m15_struct_tag: str | None,
+    close_confirm_v4: dict | None,
+    liquidity_completion_v1: dict | None,
+    trap_warning_v1: dict | None,
+    atr15: float | None = None,
+) -> dict:
+    """
+    Pullback engine:
+    - Đo % hồi trong xu hướng
+    - Phân biệt: hồi nông / hồi đẹp / hồi sâu / nguy cơ đảo chiều
+    - Không tạo lệnh, chỉ phục vụ phân tích + guidance
 
+    BUY context:
+        anchor_low  = vùng giữ xu hướng
+        anchor_high = đỉnh cấu trúc / swing high gần
+        pullback_pct = (anchor_high - current) / (anchor_high - anchor_low)
+
+    SELL context:
+        anchor_low  = đáy cấu trúc / swing low gần
+        anchor_high = vùng giữ xu hướng giảm
+        pullback_pct = (current - anchor_low) / (anchor_high - anchor_low)
+    """
+    out = {
+        "ok": False,
+        "side": str(bias_side or "NONE").upper(),
+        "anchor_low": None,
+        "anchor_high": None,
+        "pullback_pct": None,      # 0..1
+        "pullback_pct_text": "n/a",
+        "stage": "NONE",
+        "label": "CHƯA RÕ",
+        "action": "WAIT",
+        "reversal_risk": "LOW",
+        "enough_for_entry": False,
+        "reason": [],
+        "message": "Chưa đủ dữ liệu để đánh giá pullback",
+    }
+
+    side = str(bias_side or "NONE").upper()
+    if side not in ("BUY", "SELL"):
+        return out
+
+    cp = _safe_float(current_price)
+    if cp is None:
+        return out
+
+    k = key_levels or {}
+    ema = ema_pack or {}
+    cc = close_confirm_v4 or {}
+    ld = liquidity_completion_v1 or {}
+    tw = trap_warning_v1 or {}
+
+    h1 = str(h1_trend or "").lower()
+    h4 = str(h4_trend or "").lower()
+    m15_tag = str(m15_struct_tag or "").upper()
+
+    ema34 = _safe_float(ema.get("ema34"))
+    ema89 = _safe_float(ema.get("ema89"))
+    ema200 = _safe_float(ema.get("ema200"))
+
+    reasons = []
+
+    # ===== Anchor selection =====
+    if side == "BUY":
+        # Ưu tiên low = H1_HL / M15_PB_EXT / M15_RANGE_LOW
+        anchor_low = (
+            _safe_float(k.get("H1_HL"))
+            or _safe_float(k.get("M15_PB_EXT"))
+            or _safe_float(k.get("M15_RANGE_LOW"))
+        )
+        # Ưu tiên high = H1_HH / M15_RANGE_HIGH
+        anchor_high = (
+            _safe_float(k.get("H1_HH"))
+            or _safe_float(k.get("M15_RANGE_HIGH"))
+        )
+    else:
+        # SELL
+        anchor_low = (
+            _safe_float(k.get("H1_LL"))
+            or _safe_float(k.get("M15_RANGE_LOW"))
+        )
+        anchor_high = (
+            _safe_float(k.get("H1_LH"))
+            or _safe_float(k.get("M15_PB_EXT"))
+            or _safe_float(k.get("M15_RANGE_HIGH"))
+        )
+
+    if anchor_low is None or anchor_high is None or anchor_high <= anchor_low:
+        return out
+
+    span = max(1e-9, anchor_high - anchor_low)
+
+    # ===== Pullback % =====
+    if side == "BUY":
+        pullback_pct = (anchor_high - cp) / span
+    else:
+        pullback_pct = (cp - anchor_low) / span
+
+    pullback_pct = _clamp(pullback_pct, 0.0, 1.5)
+
+    # ===== Base stage =====
+    if pullback_pct < 0.25:
+        stage = "SHALLOW"
+        label = "Hồi nông"
+        action = "WAIT"
+        enough_for_entry = False
+        reasons.append("độ hồi còn nông")
+    elif pullback_pct < 0.40:
+        stage = "EARLY_OK"
+        label = "Hồi sớm"
+        action = "WAIT_CONFIRM"
+        enough_for_entry = False
+        reasons.append("đã bắt đầu hồi nhưng chưa đủ sâu")
+    elif pullback_pct <= 0.62:
+        stage = "HEALTHY"
+        label = "Hồi đẹp"
+        action = "LOOK_FOR_TRIGGER"
+        enough_for_entry = True
+        reasons.append("độ hồi nằm trong vùng đẹp")
+    elif pullback_pct <= 0.78:
+        stage = "DEEP"
+        label = "Hồi sâu"
+        action = "CAREFUL"
+        enough_for_entry = True
+        reasons.append("độ hồi khá sâu")
+    else:
+        stage = "EXTREME"
+        label = "Hồi quá sâu"
+        action = "AVOID_OR_WAIT"
+        enough_for_entry = False
+        reasons.append("độ hồi quá sâu")
+
+    reversal_risk_score = 0
+
+    # ===== HTF context =====
+    if side == "BUY":
+        if h1 == "bullish" and h4 == "bullish":
+            reasons.append("khung lớn vẫn tăng")
+        else:
+            reversal_risk_score += 2
+            reasons.append("khung lớn không đồng thuận BUY")
+    else:
+        if h1 == "bearish" and h4 == "bearish":
+            reasons.append("khung lớn vẫn giảm")
+        else:
+            reversal_risk_score += 2
+            reasons.append("khung lớn không đồng thuận SELL")
+
+    # ===== EMA filter =====
+    if side == "BUY":
+        if ema34 is not None and cp >= ema34:
+            reasons.append("giá vẫn giữ trên EMA34")
+        elif ema89 is not None and cp >= ema89:
+            reasons.append("giá đã hồi về EMA89")
+        elif ema200 is not None and cp < ema200:
+            reversal_risk_score += 3
+            reasons.append("giá thủng EMA200")
+    else:
+        if ema34 is not None and cp <= ema34:
+            reasons.append("giá vẫn dưới EMA34")
+        elif ema89 is not None and cp <= ema89:
+            reasons.append("giá hồi lên EMA89")
+        elif ema200 is not None and cp > ema200:
+            reversal_risk_score += 3
+            reasons.append("giá vượt EMA200")
+
+    # ===== M15 structure =====
+    if side == "BUY":
+        if "LL" in m15_tag or "LH" in m15_tag:
+            reversal_risk_score += 2
+            reasons.append("M15 đang nghiêng yếu cho BUY")
+        elif "HL" in m15_tag or "HH" in m15_tag:
+            reasons.append("M15 chưa phá cấu trúc tăng")
+        elif "TRANSITION" in m15_tag:
+            reversal_risk_score += 1
+            reasons.append("M15 đang chuyển pha")
+    else:
+        if "HH" in m15_tag or "HL" in m15_tag:
+            reversal_risk_score += 2
+            reasons.append("M15 đang nghiêng yếu cho SELL")
+        elif "LH" in m15_tag or "LL" in m15_tag:
+            reasons.append("M15 chưa phá cấu trúc giảm")
+        elif "TRANSITION" in m15_tag:
+            reversal_risk_score += 1
+            reasons.append("M15 đang chuyển pha")
+
+    # ===== confirm / liquidity =====
+    cc_strength = str(cc.get("strength") or "NO").upper()
+    if cc_strength in ("NO", "N/A"):
+        reversal_risk_score += 1
+        reasons.append("chưa có close confirmation")
+    else:
+        reasons.append(f"đã có close confirm {cc_strength}")
+
+    liq_state = str(ld.get("state") or "NO").upper()
+    if liq_state == "YES":
+        reasons.append("thanh khoản đã hoàn tất")
+    elif liq_state == "PARTIAL":
+        reversal_risk_score += 1
+        reasons.append("thanh khoản mới hoàn tất một phần")
+    else:
+        reversal_risk_score += 1
+        reasons.append("thanh khoản chưa hoàn tất")
+
+    if (tw or {}).get("active"):
+        reversal_risk_score += 1
+        reasons.append("trap risk đang hiện diện")
+
+    # ===== ATR sanity =====
+    a = _safe_float(atr15)
+    if a is not None and a > 0:
+        # check distance to invalid side
+        if side == "BUY" and anchor_low is not None:
+            if (cp - anchor_low) <= 0.25 * a:
+                reversal_risk_score += 1
+                reasons.append("giá đang quá gần vùng invalid BUY")
+        if side == "SELL" and anchor_high is not None:
+            if (anchor_high - cp) <= 0.25 * a:
+                reversal_risk_score += 1
+                reasons.append("giá đang quá gần vùng invalid SELL")
+
+    # ===== final reversal risk =====
+    if reversal_risk_score >= 6:
+        reversal_risk = "HIGH"
+    elif reversal_risk_score >= 3:
+        reversal_risk = "MEDIUM"
+    else:
+        reversal_risk = "LOW"
+
+    # ===== tighten enough_for_entry =====
+    if enough_for_entry:
+        if reversal_risk == "HIGH":
+            enough_for_entry = False
+        if cc_strength in ("NO", "N/A") and liq_state == "NO":
+            enough_for_entry = False
+
+    # ===== final message =====
+    if side == "BUY":
+        if enough_for_entry and stage == "HEALTHY":
+            message = "Hồi đẹp trong xu hướng tăng; có thể chờ trigger BUY"
+        elif enough_for_entry and stage == "DEEP":
+            message = "Hồi sâu nhưng vẫn còn giữ logic tăng; chỉ BUY khi có xác nhận mạnh"
+        elif stage == "SHALLOW":
+            message = "Hồi còn nông; chưa đẹp để BUY ngay"
+        elif stage == "EXTREME":
+            message = "Hồi quá sâu; nguy cơ không còn là pullback sạch"
+        else:
+            message = "Đang hồi trong xu hướng tăng nhưng chưa đủ điều kiện vào"
+    else:
+        if enough_for_entry and stage == "HEALTHY":
+            message = "Hồi đẹp trong xu hướng giảm; có thể chờ trigger SELL"
+        elif enough_for_entry and stage == "DEEP":
+            message = "Hồi sâu nhưng vẫn còn giữ logic giảm; chỉ SELL khi có xác nhận mạnh"
+        elif stage == "SHALLOW":
+            message = "Hồi còn nông; chưa đẹp để SELL ngay"
+        elif stage == "EXTREME":
+            message = "Hồi quá sâu; nguy cơ không còn là pullback sạch"
+        else:
+            message = "Đang hồi trong xu hướng giảm nhưng chưa đủ điều kiện vào"
+
+    out.update({
+        "ok": True,
+        "anchor_low": anchor_low,
+        "anchor_high": anchor_high,
+        "pullback_pct": pullback_pct,
+        "pullback_pct_text": f"{int(round(pullback_pct * 100))}%",
+        "stage": stage,
+        "label": label,
+        "action": action,
+        "reversal_risk": reversal_risk,
+        "enough_for_entry": bool(enough_for_entry),
+        "reason": reasons[:6],
+        "message": message,
+    })
+    return out
 
 def _trap_warning_v1(
     bias_side: str | None,
@@ -3666,6 +3948,20 @@ def _attach_vnext_meta(
             close_confirm_v4=close_confirm_v4 or {"strength": "NO"},
         )
 
+        pullback_engine_v1 = _pullback_engine_v1(
+            bias_side=bias_side,
+            current_price=float(m15c[-1].close) if m15c else None,
+            key_levels=(base.get("meta", {}) or {}).get("key_levels", {}),
+            ema_pack=ema_pack or {},
+            h1_trend=h1_trend,
+            h4_trend=h4_trend,
+            m15_struct_tag=(m15_struct or {}).get("tag"),
+            close_confirm_v4=close_confirm_v4 or {"strength": "NO"},
+            liquidity_completion_v1=liquidity_completion_v1 or {"state": "NO"},
+            trap_warning_v1=trap_warning_v1 or {"active": False},
+            atr15=atr15,
+        )
+        
         manual_likelihood_v1 = _manual_likelihood_v1(
             bias_side=bias_side,
             context_verdict=context_verdict_v1,
@@ -3695,7 +3991,8 @@ def _attach_vnext_meta(
         meta["trap_warning_v1"] = trap_warning_v1
         meta["manual_likelihood_v1"] = manual_likelihood_v1
         meta["manual_guidance_v1"] = manual_guidance_v1
-
+        meta["pullback_engine_v1"] = pullback_engine_v1
+        
         # ===== PRO DESK =====
         m15_tag = str((m15_struct or {}).get("tag") or "n/a").upper()
 
@@ -8557,7 +8854,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if final_side == "NONE":
             phase_label_render = "Đang quan sát phản ứng"
         push_action(f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
-
+    pb1 = meta.get("pullback_engine_v1") or {}
+    if pb1.get("ok"):
+        add(lines, f"📌 Pullback: {pb1.get('label', 'CHƯA RÕ')} | {pb1.get('message', '')}")
+        
     # ===== REASON =====
     sce1 = meta.get("signal_consistency_v1") or {}
     state_line = sce1.get("narrative") or state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
@@ -8600,7 +8900,18 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if tw1.get("active"):
         for s in (tw1.get("warnings") or [])[:3]:
             push_reason(f"⚠️ Trap: {s}")
-
+    
+    pb1 = meta.get("pullback_engine_v1") or {}
+    if pb1.get("ok"):
+        add(lines, f"📉 Pullback engine: {pb1.get('label', 'CHƯA RÕ')} | hồi ~{pb1.get('pullback_pct_text', 'n/a')}")
+        add(lines, f"- Đánh giá: {pb1.get('message', 'Chưa rõ')}")
+        add(lines, f"- Reversal risk: {pb1.get('reversal_risk', 'LOW')}")
+        add(lines, f"- Enough for entry: {'YES' if pb1.get('enough_for_entry') else 'NO'}")
+        if pb1.get("anchor_low") is not None and pb1.get("anchor_high") is not None:
+            add(lines, f"- Khung đo hồi: {nf(pb1.get('anchor_low'))} – {nf(pb1.get('anchor_high'))}")
+        if pb1.get("reason"):
+            add(lines, f"- Lý do: {', '.join(pb1.get('reason', [])[:4])}")
+    
     push_reason("")
     push_reason("📍 Vị trí giá:")
     if last_px is not None:
