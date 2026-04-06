@@ -8654,5 +8654,4 @@ for line in out:
     if line == "" and (not final or final[-1] == ""):
         continue
     final.append(line)
-
-    return "\n".join(final).strip()
+return "\n".join(final).strip()
