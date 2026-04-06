@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional, Tuple, Sequence
 from datetime import datetime, timedelta
 import math
 import os
+import re
 from app.risk import calc_smart_sl_tp
 from dataclasses import dataclass
 
@@ -22,35 +23,8 @@ def add(buf, s):
     s = str(s).strip()
     if s:
         buf.append(s)
+import re
 
-def _setup_class_from_setup_score_v1(sig: dict) -> tuple[str, float]:
-    """
-    Class theo setup_score, KHÔNG theo final_score.
-    A: >=80
-    B: 60-79
-    C: 40-59
-    D: <40
-    """
-    try:
-        ns = get_now_status(sig) or {}
-    except Exception:
-        ns = {}
-
-    try:
-        setup_score = float(ns.get("setup_score") or 0.0)
-    except Exception:
-        setup_score = 0.0
-
-    if setup_score >= 80:
-        cls = "A"
-    elif setup_score >= 60:
-        cls = "B"
-    elif setup_score >= 40:
-        cls = "C"
-    else:
-        cls = "D"
-
-    return cls, round(setup_score, 1)
 def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
     """
     Score riêng cho SETUP CLASS.
@@ -139,7 +113,7 @@ def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
         score += 5
         reasons.append("liquidity = PARTIAL")
 
-    # Clamp
+    # clamp
     score = max(0.0, min(100.0, score))
 
     if score >= 80:
@@ -155,20 +129,75 @@ def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
     out = []
     seen = set()
     for r in reasons:
+        r = str(r).strip()
         if r and r not in seen:
             seen.add(r)
             out.append(r)
 
     return cls, round(score, 1), out[:4]
 
-def _setup_levels_v2(sig: dict, cls: str) -> dict:
+
+def _extract_from_trade_method_lines_v1(method_pack: dict) -> dict:
+    """
+    Parse text từ _pick_trade_method_m30(...) để lấy Entry / SL / TP fallback.
+    """
+    out = {"entry": None, "sl": None, "tp": None}
+    if not isinstance(method_pack, dict):
+        return out
+
+    lines = method_pack.get("lines") or []
+    if not lines:
+        return out
+
+    text = "\n".join(str(x) for x in lines)
+
+    # Entry gợi ý: chờ RETEST về ~1234 rồi mới vào
+    m_entry = re.search(r"Entry gợi ý:.*?~([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+    if m_entry:
+        try:
+            out["entry"] = nf(float(m_entry.group(1)))
+        except Exception:
+            pass
+
+    # SL gợi ý: 123 | TP1: 456 | TP2: 789
+    m_triplet = re.search(
+        r"SL gợi ý:\s*([0-9]+(?:\.[0-9]+)?)\s*\|\s*TP1:\s*([0-9]+(?:\.[0-9]+)?)\s*\|\s*TP2:\s*([0-9]+(?:\.[0-9]+)?)",
+        text,
+        re.IGNORECASE
+    )
+    if m_triplet:
+        try:
+            out["sl"] = nf(float(m_triplet.group(1)))
+            out["tp"] = f"{nf(float(m_triplet.group(2)))} / {nf(float(m_triplet.group(3)))}"
+            return out
+        except Exception:
+            pass
+
+    # Range style: BUY gần đáy range: ~123 | SL: 120 | TP: 130
+    m_range = re.search(
+        r"(BUY|SELL).*?:\s*~([0-9]+(?:\.[0-9]+)?)\s*\|\s*SL:\s*([0-9]+(?:\.[0-9]+)?)\s*\|\s*TP:\s*([0-9]+(?:\.[0-9]+)?)",
+        text,
+        re.IGNORECASE
+    )
+    if m_range:
+        try:
+            out["entry"] = nf(float(m_range.group(2)))
+            out["sl"] = nf(float(m_range.group(3)))
+            out["tp"] = nf(float(m_range.group(4)))
+        except Exception:
+            pass
+
+    return out
+
+
+def _setup_levels_v3(sig: dict, cls: str) -> dict:
     """
     Entry / TP / SL:
-    - ưu tiên playbook_v2 zone
-    - fallback sig.entry
-    - fallback scale_plan_v2.orders[0]
-    - nếu A/B/C mà chưa có mức vào cụ thể -> Entry = WAIT_TRIGGER
-    - nếu D -> Entry = n/a
+    ưu tiên:
+    1) playbook_v2 zone
+    2) sig.entry / sl / tp1 / tp2
+    3) scale_plan_v2
+    4) _pick_trade_method_m30 fallback
     """
     meta = (sig.get("meta") or {})
     playbook = meta.get("playbook_v2") or {}
@@ -198,7 +227,7 @@ def _setup_levels_v2(sig: dict, cls: str) -> dict:
         if entry is not None:
             entry_text = _fmt_price(entry)
 
-    # 3) scale plan fallback
+    # 3) scale plan
     if entry_text is None:
         try:
             sp = meta.get("scale_plan_v2") or {}
@@ -214,15 +243,10 @@ def _setup_levels_v2(sig: dict, cls: str) -> dict:
         except Exception:
             pass
 
-    # NEW: nếu chưa có entry cụ thể
-    if entry_text is None:
-        entry_text = "WAIT_TRIGGER" if cls in ("A", "B", "C") else "n/a"
-
     sl = sig.get("sl")
     tp1 = sig.get("tp1")
     tp2 = sig.get("tp2")
 
-    # TP
     if tp1 is not None and tp2 is not None:
         tp_text = f"{_fmt_price(tp1)} / {_fmt_price(tp2)}"
     elif tp1 is not None:
@@ -230,10 +254,37 @@ def _setup_levels_v2(sig: dict, cls: str) -> dict:
     elif tp2 is not None:
         tp_text = _fmt_price(tp2)
     else:
-        tp_text = "n/a"
+        tp_text = None
 
-    # SL
-    sl_text = _fmt_price(sl) if sl is not None else "n/a"
+    sl_text = _fmt_price(sl) if sl is not None else None
+
+    # 4) fallback từ trade method
+    if entry_text is None or tp_text is None or sl_text is None:
+        try:
+            m30_raw = meta.get("_m30_raw") or []
+            atr30 = meta.get("atr30")
+            if atr30 is None:
+                atr30 = meta.get("atr15") or 0.0
+
+            method_pack = _pick_trade_method_m30(m30_raw, atr30)
+            fallback = _extract_from_trade_method_lines_v1(method_pack)
+
+            if entry_text is None and fallback.get("entry"):
+                entry_text = fallback["entry"]
+            if tp_text is None and fallback.get("tp"):
+                tp_text = fallback["tp"]
+            if sl_text is None and fallback.get("sl"):
+                sl_text = fallback["sl"]
+        except Exception:
+            pass
+
+    # final normalize
+    if entry_text is None:
+        entry_text = "WAIT_TRIGGER" if cls in ("A", "B", "C") else "n/a"
+    if tp_text is None:
+        tp_text = "n/a"
+    if sl_text is None:
+        sl_text = "n/a"
 
     return {
         "entry": entry_text,
@@ -242,76 +293,16 @@ def _setup_levels_v2(sig: dict, cls: str) -> dict:
     }
 
 
-def _setup_reasons_v2(sig: dict, setup_class: str, setup_score: float, tradeable_label: str) -> list[str]:
-    meta = (sig.get("meta") or {})
-    reasons = []
-
-    sce1 = meta.get("signal_consistency_v1") or {}
-    final_side = str(sce1.get("final_side") or "NONE").upper()
-    if final_side in ("BUY", "SELL"):
-        reasons.append(f"final side = {final_side}")
-
-    pb1 = meta.get("pullback_engine_v1") or {}
-    if pb1.get("ok"):
-        label = str(pb1.get("label") or "CHƯA RÕ")
-        pct = str(pb1.get("pullback_pct_text") or "n/a")
-        rr = str(pb1.get("reversal_risk") or "LOW")
-        reasons.append(f"pullback {label.lower()} ({pct})")
-        reasons.append(f"reversal risk = {rr}")
-
-    cc1 = meta.get("close_confirm_v4") or {}
-    cc_strength = str(cc1.get("strength") or "NO").upper()
-    if cc_strength not in ("", "NO", "N/A", "NONE"):
-        reasons.append(f"close confirm = {cc_strength}")
-    else:
-        reasons.append("chưa có close confirm rõ")
-
-    ntz = meta.get("no_trade_zone_v3") or meta.get("no_trade_zone") or {}
-    if isinstance(ntz, dict) and ntz.get("active"):
-        reasons.append("đang ở no-trade zone")
-
-    tg3 = meta.get("trigger_engine_v3") or {}
-    tg3_state = str(tg3.get("state") or "").upper()
-    if tg3_state == "WAIT":
-        reasons.append("trigger chưa sẵn sàng")
-    elif tg3_state:
-        reasons.append(f"trigger = {tg3_state}")
-
-    # setup class wording
-    if setup_class == "A":
-        reasons.append("setup khá sạch")
-    elif setup_class == "B":
-        reasons.append("setup dùng được nhưng chưa thật sự sạch")
-    elif setup_class == "C":
-        reasons.append("setup còn yếu")
-    else:
-        reasons.append("edge chưa đủ mạnh")
-
-    if str(tradeable_label).upper() == "NO" and setup_class in ("A", "B", "C"):
-        reasons.append("timing chưa sẵn sàng để vào ngay")
-
-    # dedupe
-    out = []
-    seen = set()
-    for r in reasons:
-        r = str(r).strip()
-        if r and r not in seen:
-            seen.add(r)
-            out.append(r)
-
-    return out[:4]
-
-
-def _render_setup_class_block_v2(sig: dict, final_score, tradeable_label: str) -> list[str]:
+def _render_setup_class_block_v3(sig: dict, final_score, tradeable_label: str) -> list[str]:
     cls, setup_score, reasons = _setup_class_score_v3(sig)
-    levels = _setup_levels_v2(sig, cls)
+    levels = _setup_levels_v3(sig, cls)
 
     score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
 
     lines = []
     lines.append("")
     lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
-    lines.append("🧠 Lý do:")
+    lines.append("Lý do:")
     for s in reasons:
         lines.append(f"- {s}")
     lines.append("")
@@ -4299,7 +4290,7 @@ def _attach_vnext_meta(
         meta["manual_likelihood_v1"] = manual_likelihood_v1
         meta["manual_guidance_v1"] = manual_guidance_v1
         meta["pullback_engine_v1"] = pullback_engine_v1
-        
+
         # ===== PRO DESK =====
         m15_tag = str((m15_struct or {}).get("tag") or "n/a").upper()
 
@@ -6427,6 +6418,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     m30c = _safe_candles(m30)
     h1c = _safe_candles(h1)
     h4c = _safe_candles(h4)
+
     if not m15c or not m30c:
         base["note_lines"].append("⚠️ Không đọc được nến M15/M30 sau khi chuẩn hoá dữ liệu.")
         base["short_hint"] = ["- Dữ liệu nến lỗi / thiếu → CHỜ KÈO"]
@@ -6457,7 +6449,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base["meta"]["volq"] = volq
     base["meta"]["candle"] = cpat
     base["meta"]["div"] = div
-
+    meta["_m15_raw"] = m15c
+    meta["_m30_raw"] = m30c
+    meta["atr15"] = atr15
+    meta["atr30"] = _atr(m30c, 14) if m30c else None
     # show vào quality_lines (đọc phát hiểu)
     if volq["state"] != "N/A":
         quality_lines.append(f"Volume: {volq['state']} (x{volq['ratio']:.2f} vs SMA20)")
@@ -9868,7 +9863,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
     # ===== SETUP CLASS BLOCK =====
-    for s in _render_setup_class_block_v2(sig, final_score, tradeable_label):
+    for s in _render_setup_class_block_v3(sig, final_score, tradeable_label):
         add(reason_lines, s)
         
     # ===== BUILD FINAL =====
