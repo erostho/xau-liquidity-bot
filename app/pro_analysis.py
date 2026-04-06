@@ -8438,7 +8438,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
         return out[:3]
 
     gap_lines = extract_gap_lines(ctx_lines, notes)
-
     entry = sig.get("entry")
     sl = sig.get("sl")
     tp1 = sig.get("tp1")
@@ -8471,737 +8470,189 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if trade_mode == "WAIT":
         verdict_quick = f"{verdict_quick}; {reason_text}"
 
-    lines: List[str] = []
-    head = f"📌 {symbol} NOW"
-    if tf:
-        head += f" | {tf}"
-    if session:
-        head += f" | {session}"
-    add(lines, head)
-    if data_source:
-        add(lines, f"📡 Dữ liệu: {data_source}")
+# ====== ADD HELPER ======
+def _add(buf, s):
+    if s is None:
+        return
+    s = str(s).strip()
+    if s:
+        buf.append(s)
 
-    add(lines, "")   
-    # ===== Giá hiện tại: fallback nhiều lớp =====
-    last_px = k.get("M15_LAST")
-    if last_px is None:
-        last_px = sig.get("last_price")
-    if last_px is None:
-        last_px = sig.get("current_price")
-    if last_px is None:
-        last_px = sig.get("entry")
-    price_now = nf(last_px)
-    # ===== Kết luận nhanh: lý do ngắn gọn, không lặp =====
-    reason = ""
-    if range_pos is not None:
-        try:
-            rp = float(range_pos)
-            if rp > 0.8:
-                reason = "đang sát vùng cao, không nên BUY đuổi"
-            elif rp < 0.2:
-                reason = "đang sát vùng thấp, không nên SELL đuổi"
-            else:
-                reason = "đang ở giữa biên độ, dễ nhiễu"
-        except Exception:
-            reason = ""
-    
-    verdict_full = verdict_quick
-    if reason and reason not in verdict_quick:
-        verdict_full += f"; {reason}"
-    trend_ctx = _trend_context_for_now(str(htf_pressure_v4.get("state") or ""), struct, rec)
-    state_text_final = _state_text_v7(symbol, trend_ctx, meta.get("market_state_v2"))
-    
-    # chỉ override rec khi đang CHỜ, không đè mạnh lên engine hiện có
-    if rec == "CHỜ":
-        if trend_ctx == "BEAR":
-            rec = "CHỜ"
-        elif trend_ctx == "BULL":
-            rec = "CHỜ"
-    
-    reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
-    verdict_quick = "Chưa đẹp để vào ngay"
-    if ntz.get("active") or trade_mode == "WAIT":
-        verdict_quick = "Ưu tiên đứng ngoài"
-    verdict_full = f"{verdict_quick}; {reason_text}" if reason_text else verdict_quick
-    add(lines, f"💵 Giá hiện tại: {price_now}")
-    add(lines, f"📌 Kết luận nhanh: {verdict_full}")
-    add(lines, f"🧭 Hướng ưu tiên: {rec}")
-    phase369 = meta.get("phase369_v1") or {}
-    
-    if phase:
-        sce1 = meta.get("signal_consistency_v1") or {}
-        final_side = str(sce1.get("final_side") or "NONE").upper()
-        phase_num = phase.get("phase", "n/a")
-        phase_label_render = phase_text(phase)
-        # override khi chưa có hướng rõ
-        if final_side == "NONE":
-            phase_label_render = "Đang quan sát phản ứng"
-        add(lines, f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
-    
-    sce1 = meta.get("signal_consistency_v1") or {}
-    state_line = sce1.get("narrative") or state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
-    pbc1 = (meta.get("post_break_continuity_v1") or {})
-    pbc_state = str(pbc1.get("state") or "NONE").upper()
-    pbc_narrative = str(pbc1.get("narrative") or "").strip()
-    
-    if pbc_narrative:
-        status = pbc_narrative
-    add(lines, f"🌡 Trạng thái: {state_line}")
-    #add(lines, f"🌡 Trạng thái: {state_text(meta.get('market_state_v2'), narrative, struct, htf_pressure_v4)}")
-    if flow:
-        add(lines, f"💰 Dòng tiền: {flow_text(flow)}")
 
-    cv1 = meta.get("context_verdict_v1") or {}
-    rc1 = meta.get("rsi_context_v1") or {}
-    ml1 = meta.get("manual_likelihood_v1") or {}
-    tw1 = meta.get("trap_warning_v1") or {}
-    fg1 = meta.get("fib_confluence_v1") or {}
-    ld1 = meta.get("liquidity_completion_v1") or {}
-    if cv1.get("verdict"):
-        add(lines, f"🧠 Context verdict: {cv1.get('verdict')}")
-    
-    if rc1.get("message"):
-        add(lines, f"📈 RSI context: {rc1.get('message')}")
-    
-    if fg1.get("ok"):
-        add(lines, f"📐 Fib confluence: YES | zone {nf(fg1.get('zone_low'))} – {nf(fg1.get('zone_high'))}")
-    else:
-        add(lines, "📐 Fib confluence: NO")
-    
-    if ml1:
-        add(lines, f"📊 Manual likelihood: BUY={int(ml1.get('buy_likelihood', 0))}/100 | SELL={int(ml1.get('sell_likelihood', 0))}/100 | Trap={int(ml1.get('trap_risk', 0))}/100")
-    
-    if tw1.get("active"):
-        for s in (tw1.get("warnings") or [])[:3]:
-            add(lines, f"⚠️ Trap: {s}")
-    
-    add(lines, "")
-    add(lines, "📍 Vị trí giá:")
-    if last_px is not None:
-        add(lines, f"- Giá hiện tại: {nf(last_px)}")
-    
-    if range_lo is not None and range_hi is not None:
-        add(lines, f"- Biên độ M15: {nf(range_lo)} – {nf(range_hi)}")
-    
-    if range_pos is not None:
-        pos_pct = int(round(float(range_pos) * 100))
-    
-        if pos_pct >= 80:
-            pos_note = "→ sát vùng cao, không nên BUY đuổi, chờ phản ứng rồi quyết định theo xu hướng"
-        elif pos_pct >= 60:
-            pos_note = "→ vùng cao, ưu tiên chờ tín hiệu SELL"
-        elif pos_pct >= 40:
-            pos_note = "→ giữa biên độ, dễ nhiễu, nên đứng ngoài"
-        elif pos_pct >= 20:
-            pos_note = "→ vùng thấp, ưu tiên chờ tín hiệu BUY"
-        else:
-            pos_note = "→ sát vùng thấp, không nên SELL đuổi, chờ phản ứng rồi quyết định theo xu hướng"
-    
-        add(lines, f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
+# ====== INIT ======
+lines: List[str] = []
+action_lines: List[str] = []
+reason_lines: List[str] = []
 
-    liq_map = ((sig.get("meta") or {}).get("liquidity_map_v1") or {})
-    above_strength = str(liq_map.get("above_strength") or "LOW")
-    below_strength = str(liq_map.get("below_strength") or "LOW")
-    above_zone = liq_map.get("above_zone")
-    below_zone = liq_map.get("below_zone")
-    state_text = str(liq_map.get("state_text") or "Chưa thấy sweep/spring rõ")
-    sweep_bias = str(liq_map.get("sweep_bias") or "NEUTRAL")
-    
-    lines.append("")
-    lines.append("💧 Thanh khoản:")
-    if above_zone:
-        lines.append(f"- Liquidity trên: {above_strength} ({_fmt_price_range(above_zone[0], above_zone[1])})")
-    else:
-        lines.append(f"- Liquidity trên: {above_strength}")
-    if below_zone:
-        lines.append(f"- Liquidity dưới: {below_strength} ({_fmt_price_range(below_zone[0], below_zone[1])})")
-    else:
-        lines.append(f"- Liquidity dưới: {below_strength}")
-    if liq_evt.get("ok"):
-        add(lines, f"- ⚠️ Vừa có liquidation mạnh: {liq_evt.get('side')} | {liq_evt.get('kind')} → nguy cơ bật ngược cao")
-    if sweep_grade_v6 and sweep_grade_v6 != "NONE":
-        add(lines, f"- Độ mạnh sweep hiện tại: {sweep_grade_v6}")            
-    lines.append(f"- Trạng thái: {state_text}")
-    lines.append(f"- Khả năng quét: {sweep_bias}")
-    liq_story = str(liq_map.get("story") or "").strip()
-    if liq_story:
-        lines.append(f"- Câu chuyện: {liq_story}")
-    liq_reasons = liq_map.get("reasons") or []
-    if liq_reasons:
-        lines.append(f"- Lý do nghiêng quét: {', '.join(liq_reasons[:3])}")
-    if ld1.get("state"):
-        add(lines, f"💧 Liquidity done: {ld1.get('state')} | {ld1.get('message')}")
-        
-    meta = (sig.get("meta") or {})
-    mm_play = meta.get("mm_real_play_v1")
-    # fallback: nếu analyze_pro chưa nhét được vào meta thì build lại ngay tại format
-    if not isinstance(mm_play, dict) or not mm_play:
-        mm_play = _build_mm_real_play_v1(
-            liq_map=liq_map,
-            range_pos=(playbook or {}).get("range_pos"),
-            htf_pressure_v4=htf_pressure_v4,
-            playbook_v2=playbook,
-            ema_pack=(meta.get("ema") or {}),
-        )
-    lines.append("")
-    lines.append("🎯 KỊCH BẢN MM (REAL PLAY):")
-    lines.append(f"- Kịch bản: {mm_play.get('headline', 'Chưa rõ')}")
-    lines.append(f"- Đường đi: {mm_play.get('path', 'NEUTRAL')}")
-    lines.append(f"- Entry chuẩn: {mm_play.get('entry_hint', 'Chờ thêm xác nhận')}")
-    reasons = mm_play.get("reason") or []
-    if reasons:
-        lines.append(f"- Lý do: {', '.join(reasons[:3])}")
-     
-    add(lines, "")
-    add(lines, "✅ Xác nhận:")
-    if struct:
-        add(lines, f"- Cấu trúc lớn: H4 {struct.get('H4', 'n/a')} | H1 {struct.get('H1', 'n/a')}")
-        add(lines, f"- Cấu trúc ngắn hạn: M15 {struct.get('M15', 'n/a')}")
-    bos = k.get("M15_BOS")
-    if bos is not None:
-        add(lines, f"- Mốc xác nhận gần: {nf(bos)}")
-    if close_confirm_v4 and close_confirm_v4.get("strength") not in (None, "N/A"):
-        hold_txt = "đã giữ được mốc" if close_confirm_v4.get("hold") == "YES" else "chưa giữ mốc rõ"
-        add(lines, f"- Đóng nến xác nhận: {close_confirm_v4.get('strength')} | {hold_txt}")
-    if k.get("M15_BOS"):
-        add(lines, f"- Mốc xác nhận gần: {nf(k.get('M15_BOS'))}")
-    add(lines, "")
-    add(lines, "🕳 GAP:")
-    if gap_lines:
-        for s in gap_lines:
-            add(lines, f"- {s}")
-    else:
-        add(lines, "- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
-    buy_near, sell_near, buy_strong, sell_strong = trigger_lines_v2(rec, k, playbook)
-    plan_pack = _now_plan_and_triggers_v7(trend_ctx, k, playbook, last_px)
-    sce1 = meta.get("signal_consistency_v1") or {}
-    final_side = str(sce1.get("final_side") or "NONE").upper()
-    range_lo_v = None
-    range_hi_v = None
-    if "range_lo" in locals():
-        range_lo_v = range_lo
-    elif "lo" in locals():
-        range_lo_v = lo
-    elif isinstance(rinfo, dict):
-        range_lo_v = rinfo.get("lo")
-    
-    if "range_hi" in locals():
-        range_hi_v = range_hi
-    elif "hi" in locals():
-        range_hi_v = hi
-    elif isinstance(rinfo, dict):
-        range_hi_v = rinfo.get("hi")
-    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
-    pbc_state = str(pbc1.get("state") or "NONE").upper()
-    ref_lv = pbc1.get("reference_level")    
-    add(lines, "")
-    add(lines, "🎯 Kịch bản chính:")
-    if final_side == "SELL":
-        if range_hi_v is not None and range_lo_v is not None:
-            add(lines, f"- Chỉ SELL khi có 1 trong 2 điều kiện:")
-            add(lines, f"  • Sweep high {_fmt(range_hi_v)} rồi fail giữ")
-            add(lines, f"  • Hoặc break low {_fmt(range_lo_v)} và giữ dưới")
-        else:
-            add(lines, "- Chỉ SELL khi có sweep high fail giữ hoặc break low rõ")
-    
-    elif final_side == "BUY":
-        if range_hi_v is not None and range_lo_v is not None:
-            add(lines, f"- Chỉ BUY khi có 1 trong 2 điều kiện:")
-            add(lines, f"  • Sweep low {_fmt(range_lo_v)} rồi giữ được")
-            add(lines, f"  • Hoặc break high {_fmt(range_hi_v)} và giữ trên")
-        else:
-            add(lines, "- Chỉ BUY khi có sweep low giữ được hoặc break high rõ")
-    
-    else:
-        if range_hi_v is not None and range_lo_v is not None:
-            add(lines, f"- Ưu tiên đứng ngoài; chờ sweep high {_fmt(range_hi_v)} hoặc break low {_fmt(range_lo_v)} rồi mới đánh giá tiếp")
-        else:
-            add(lines, "- Ưu tiên đứng ngoài; chờ market quét 1 đầu rồi quan sát phản ứng")
-            
-    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
-    if pbc1:
-        #and pbc1.get("state") not in (None, "", "NONE"):
-        add(lines, "")
-        add(lines, "🔁 POST-BREAK CONTINUITY:")
-        add(lines, f"- State: {pbc1.get('state')}")
-        if pbc1.get("reference_level") is not None:
-            add(lines, f"- Mốc đang theo dõi: {nf(pbc1.get('reference_level'))} ({pbc1.get('reference_type')})")
-        add(lines, f"- Vai trò mới của mốc: {pbc1.get('role_shift')}")
-        add(lines, f"- Hướng sau break: {pbc1.get('side_after_break')}")
-        add(lines, f"- Hành động: {pbc1.get('action')}")
-        if pbc1.get("message"):
-            add(lines, f"- {pbc1.get('message')}")
-        if pbc1.get("narrative"):
-            add(lines, f"- Câu chuyện tiếp diễn: {pbc1.get('narrative')}")
-        for s in (pbc1.get("reasons") or [])[:3]:
-            add(lines, f"- {s}")
-    add(lines, "")
-    add(lines, "🪄 Kịch bản phụ:")
-    add(lines, f"- {plan_pack['alt_plan']}")
-    
-    add(lines, "")
-    add(lines, "🧯 Điểm sai kịch bản:")
-    if plan_pack["invalid_lines"]:
-        for s in plan_pack["invalid_lines"]:
-            add(lines, f"- {s}")
-    else:
-        add(lines, "- Nếu cấu trúc hiện tại bị phá thì bỏ kịch bản")
-    psych_warnings = []
-    try:
-        rp = float(range_pos) if range_pos is not None else None
-    except Exception:
-        rp = None
-    try:
-        phase_num = int(phase.get('phase')) if phase and phase.get('phase') is not None else None
-    except Exception:
-        phase_num = None
-    rsi_now = None
-    for s in q_lines:
-        ss = str(s)
-        if 'RSI(14) M15:' in ss:
-            try:
-                rsi_now = float(ss.split(':')[-1].strip())
-                break
-            except Exception:
-                pass
-    if rp is not None and rp <= 0.10:
-        psych_warnings.append("⚠️ FOMO SELL vùng thấp → dễ đuổi giá")
-    elif rp is not None and rp >= 0.90:
-        psych_warnings.append("⚠️ FOMO BUY vùng cao → dễ đuổi đỉnh")
-    if phase_num is not None and phase_num >= 8:
-        psych_warnings.append("⚠️ Late move → vào lệnh dễ dính đảo chiều")
-    if liq_evt.get('ok'):
-        psych_warnings.append("⚠️ Sau liquidation → market dễ bật ngược / nhiễu mạnh")
-    if rsi_now is not None and rsi_now < 30:
-        psych_warnings.append("⚠️ RSI quá bán → không nên SELL đuổi")
-    elif rsi_now is not None and rsi_now > 70:
-        psych_warnings.append("⚠️ RSI quá mua → không nên BUY đuổi")
-    if 'CHOP' in str(session_v4.get('session_tag') or '').upper():
-        psych_warnings.append("⚠️ Market đang nhiễu → dễ bị quét 2 đầu")
-    if psych_warnings:
-        add(lines, "")
-        add(lines, "🧠 Cảnh báo tâm lý:")
-        for s in psych_warnings[:5]:
-            add(lines, f"- {s}")
+# ===== HEADER =====
+head = f"📌 {symbol} NOW"
+if tf:
+    head += f" | {tf}"
+if session:
+    head += f" | {session}"
 
-    if q_lines:
-        add(lines, "")
-        add(lines, "🧪 Chi tiết bổ sung:")
-        for s in q_lines[:5]:
-            add(lines, f"- {str(s).replace(chr(10), ' ').strip()}")
-    meta = sig.get("meta") or {}
-    session_v4 = meta.get("session_v4") or {}
-    htf_pressure_v4 = meta.get("htf_pressure_v4") or {}
-    macro_v4 = meta.get("macro_v4") or {}
-    playbook_v4 = meta.get("playbook_v4") or {}
-    
-    if session_v4 or htf_pressure_v4 or macro_v4 or playbook_v4:
-        add(lines, "")
-        add(lines, "🧩 Toàn Cảnh Thị Trường:")
-    
-        if session_v4.get("session_tag"):
-            add(
-                lines,
-                f"- Session: {session_v4.get('session_tag')} | "
-                f"Follow-through: {session_v4.get('follow_through')} | "
-                f"Fake risk: {session_v4.get('fake_move_risk')}"
-            )
-    
-        if htf_pressure_v4.get("state"):
-            add(
-                lines,
-                f"- HTF Pressure: {htf_pressure_v4.get('state')} | "
-                f"H1 close: {htf_pressure_v4.get('h1_close_bias')} | "
-                f"H4 close: {htf_pressure_v4.get('h4_close_bias')}"
-            )
-    
-            htf_state = str(htf_pressure_v4.get("state") or "")
-            if "BULLISH" in htf_state and rec in ("SELL", "BÁN"):
-                add(lines, "- ⚠️ SELL đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-            if "BEARISH" in htf_state and rec in ("BUY", "MUA"):
-                add(lines, "- ⚠️ BUY đang ngược khung lớn → chỉ nên đánh ngắn, không gồng")
-    
-        comment = _session_htf_comment(session_v4 or {}, htf_pressure_v4 or {})
-        if comment:
-            add(lines, f"- {comment}")
-    
-        if macro_v4.get("headline"):
-            add(
-                lines,
-                f"- Macro: {macro_v4.get('headline')} | "
-                f"Bias: {macro_v4.get('bias')} | {macro_v4.get('note')}"
-            )
-    
-        if playbook_v4.get("quality"):
-            trig = ", ".join(playbook_v4.get("trigger_pack") or [])
-            add(
-                lines,
-                f"- Playbook V4: quality={playbook_v4.get('quality')}"
-                + (f" | triggers: {trig}" if trig else "")
-            )
-    # ===== SAFE DEFINE TRIGGER LEVELS =====
-    add(lines, "")
-    add(lines, "🧯 Trigger quan trọng:")
-    sce1 = meta.get("signal_consistency_v1") or {}
-    final_side = str(sce1.get("final_side") or "NONE").upper()
-    
-    # fallback range an toàn
-    range_lo_v = None
-    range_hi_v = None
-    
-    if "range_lo" in locals():
-        range_lo_v = range_lo
-    elif "lo" in locals():
-        range_lo_v = lo
-    elif isinstance(rinfo, dict):
-        range_lo_v = rinfo.get("lo")
-    
-    if "range_hi" in locals():
-        range_hi_v = range_hi
-    elif "hi" in locals():
-        range_hi_v = hi
-    elif isinstance(rinfo, dict):
-        range_hi_v = rinfo.get("hi")
-    
-    if final_side == "SELL":
-        if range_hi_v is not None:
-            add(lines, f"- SELL gần: sweep high tại {_fmt(range_hi_v)} rồi fail giữ")
-        if range_lo_v is not None:
-            add(lines, f"- SELL mạnh: M15 đóng dưới {_fmt(range_lo_v)} với follow-through")
-        if range_hi_v is not None:
-            add(lines, f"- BUY vô hiệu hóa SELL: M15 đóng trên {_fmt(range_hi_v)} và giữ được")
-    
-    elif final_side == "BUY":
-        if range_lo_v is not None:
-            add(lines, f"- BUY gần: sweep low tại {_fmt(range_lo_v)} rồi giữ được")
-        if range_hi_v is not None:
-            add(lines, f"- BUY mạnh: M15 đóng trên {_fmt(range_hi_v)} với follow-through")
-        if range_lo_v is not None:
-            add(lines, f"- SELL vô hiệu hóa BUY: M15 đóng dưới {_fmt(range_lo_v)} và giữ được")
-    
-    else:
-        if range_hi_v is not None:
-            add(lines, f"- Sweep high tại {_fmt(range_hi_v)} rồi fail giữ → xét SELL")
-        if range_lo_v is not None:
-            add(lines, f"- Break low tại {_fmt(range_lo_v)} với follow-through → xét SELL")
-        if range_hi_v is None and range_lo_v is None:
-            add(lines, "- Chưa có trigger đáng tin → đứng ngoài")
+lines.append(head)
+if data_source:
+    lines.append(f"📡 Dữ liệu: {data_source}")
+lines.append("")
 
-    if ema_pack:
-        add(lines, "")
-        add(lines, "📉 EMA FILTER:")
-        if ema_pack.get("ema34") is not None:
-            add(lines, f"- EMA34: {nf(ema_pack.get('ema34'))}")
-        if ema_pack.get("ema89") is not None:
-            add(lines, f"- EMA89: {nf(ema_pack.get('ema89'))}")
-        if ema_pack.get("ema200") is not None:
-            add(lines, f"- EMA200: {nf(ema_pack.get('ema200'))}")
-        add(lines, f"- Trend: {ema_pack.get('trend', 'N/A')}")
-        add(lines, f"- Alignment: {ema_pack.get('alignment', 'NO')}")
-        if ema_pack.get("zone"):
-            add(lines, f"- Vị trí giá vs EMA: {ema_pack.get('zone')}")
-    pump_dump = ((sig.get("meta") or {}).get("pump_dump_v1") or {})
-    compression = str(pump_dump.get("compression") or "LOW")
-    bias_bung = str(pump_dump.get("bias") or "NEUTRAL")
-    probability = str(pump_dump.get("probability") or "LOW")
-    timing = str(pump_dump.get("timing") or "CHƯA RÕ")
-    reasons = pump_dump.get("reasons") or []
-    sniper = ((sig.get("meta") or {}).get("entry_sniper") or {})
-    sce1_for_sniper = ((sig.get("meta") or {}).get("signal_consistency_v1") or {})
-    tg3_for_sniper = ((sig.get("meta") or {}).get("trigger_engine_v3") or {})
-    sniper_dir = str(sniper.get('direction', 'NONE') or 'NONE').upper()
-    sniper_trigger = str(sniper.get('trigger', 'NONE') or 'NONE').upper()
-    sniper_state = str(sniper.get('state', 'KHÔNG CÓ SETUP') or 'KHÔNG CÓ SETUP')
-    final_side_for_sniper = str(sce1_for_sniper.get('final_side') or 'NONE').upper()
-    tg3_state_for_sniper = str(tg3_for_sniper.get('state') or 'WAIT').upper()
+# ===== PRICE =====
+last_px = k.get("M15_LAST") or sig.get("last_price") or sig.get("current_price") or sig.get("entry")
+price_now = nf(last_px)
 
-    if final_side_for_sniper in ("BUY", "SELL") and tg3_state_for_sniper == "WAIT" and sniper_trigger == "NONE":
-        sniper_dir = final_side_for_sniper
-        sniper_trigger = "WAIT_TRIGGER"
-        sniper_state = "CHỜ TRIGGER"
-    elif final_side_for_sniper in ("BUY", "SELL") and tg3_state_for_sniper == "READY" and sniper_trigger == "NONE":
-        sniper_dir = final_side_for_sniper
-        sniper_trigger = "READY"
-        sniper_state = "SẮP ĐỦ ĐIỀU KIỆN"
+# ===== VERDICT =====
+reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
+verdict_quick = "Chưa đẹp để vào ngay"
+if ntz.get("active") or trade_mode == "WAIT":
+    verdict_quick = "Ưu tiên đứng ngoài"
+verdict_full = f"{verdict_quick}; {reason_text}" if reason_text else verdict_quick
 
-    lines.append("")
-    lines.append("🎯 ENTRY SNIPER:")
-    lines.append(f"- Cây chỉ hướng: {sniper_dir} ({sniper.get('strength', '-')})")
-    lines.append(f"- Điểm nổ: {sniper_trigger}")
-    lines.append(f"- Trạng thái: {sniper_state}")
-    #lines.append("")
-    #lines.append("🚀 DỰ ĐOÁN PUMP/DUMP:")
-    #lines.append(f"- Compression: {compression}")
-    #lines.append(f"- Bias bung: {bias_bung}")
-    #lines.append(f"- Xác suất: {probability}")
-    #lines.append(f"- Thời điểm: {timing}")
-    #if reasons:
-        #lines.append(f"- Lý do: {' + '.join(reasons[:3])}")
-    pd3 = (sig.get("meta") or {}).get("pump_dump_v3") or {}
+# ===== ACTION LAYER =====
+_add(action_lines, f"💵 Giá hiện tại: {price_now}")
+_add(action_lines, f"📌 Kết luận: {verdict_full}")
+_add(action_lines, f"🧭 Hướng ưu tiên: {rec}")
 
-    lines.append("")
-    lines.append("🚀 DỰ ĐOÁN PUMP/DUMP V3:")
-    lines.append(f"- Stage: {pd3.get('stage_label', 'NONE')}")
-    lines.append(f"- Bias bung: {pd3.get('bias', 'NEUTRAL')}")
-    lines.append(f"- Compression: {pd3.get('compression', 'LOW')}")
-    lines.append(f"- Xác suất: {pd3.get('probability', 'LOW')}")
-    lines.append(f"- Thời điểm: {pd3.get('timing', 'CHƯA RÕ')}")
-    if pd3.get("reason"):
-        lines.append(f"- Lý do: {' | '.join(pd3.get('reason', [])[:3])}")
-        
-    rv1 = (sig.get("meta") or {}).get("reveal_engine_v1") or {}
-    if rv1:
-        lines.append("")
-        lines.append("🧠 REVEAL ENGINE:")
-        lines.append(f"- State: {'REVEALED' if rv1.get('reveal') else 'NOT REVEALED'}")
-        lines.append(f"- Direction: {rv1.get('direction', 'NONE')}")
-        lines.append(f"- Quality: {rv1.get('quality', 'LOW')}")
-        if not rv1.get('reveal'):
-            lines.append("- Market chưa lộ mặt")
-        if rv1.get("reasons"):
-            lines.append(f"- Lý do: {' | '.join(rv1.get('reasons', [])[:3])}")
-            
-    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
-        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
-    )
-    grade = _score_to_grade_v2(final_score)
-    # ===== FINAL DECISION OVERRIDE =====
-    fd1 = meta.get("final_decision_engine_v1") or {}
-    me1 = meta.get("master_engine_v1") or {}
-    sce1 = meta.get("signal_consistency_v1") or {}
-    
-    fd_decision = str(fd1.get("decision") or "").upper()
-    master_state = str(me1.get("state") or "").upper()
-    final_side = str(sce1.get("final_side") or "NONE").upper()
-    
-    # Nếu decision cuối là NO_TRADE / STAND ASIDE / Final side NONE
-    # thì score không được cao và tradeable phải về NO
-    if (
-        fd_decision == "NO_TRADE"
-        or master_state == "NO_TRADE"
-        or final_side == "NONE"
-    ):
-        try:
-            final_score = min(float(final_score or 0), 35.0)
-        except Exception:
-            final_score = 35.0
-    
-        tradeable_label = "NO"
-        grade = _score_to_grade_v2(final_score)
-    add(lines, "")
-    add(lines, f"📊 Chất lượng cơ hội: {grade}")   
-    add(lines, f"🔥 Final Score: {final_score}/100")
-    add(lines, f"→ Tradeable: {tradeable_label}")
-    
-    summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
-    add(lines, f"- {summary_line}")
-    
-    if score_reasons:
-        add(lines, f"- Điểm cộng/trừ chính: {', '.join(score_reasons)}")
-    if tradeable_reasons:
-        add(lines, f"- Lý do chưa trade: {', '.join(tradeable_reasons)}")
-    
-    if playbook_v4.get("quality"):
-        add(lines, f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
-    if ntz.get("active"):
-        rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
-        add(lines, f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
-    
-    # Grade explanation
-    if grade == "A":
-        add(lines, "- Edge mạnh: có thể theo nếu giá vào đúng vùng")
-    elif grade in ("A", "B", "B-"):
-        add(lines, "- Có edge nhưng cần chọn điểm vào kỹ, không đuổi giá")
-    elif grade == "C":
-        add(lines, "- Ý tưởng có thể đúng nhưng rủi ro còn cao")
-        
-    fd1 = (sig.get("meta") or {}).get("final_decision_engine_v1") or {}
-    sce1 = (sig.get("meta") or {}).get("signal_consistency_v1") or {}
-    lines.append("")
-    lines.append("⚙️ Hành động:")
-    sce1 = meta.get("signal_consistency_v1") or {}
-    fd1 = meta.get("final_decision_engine_v1") or {}
-    rv1_action = meta.get("reveal_engine_v1") or {}
-    final_side = str(sce1.get("final_side") or "NONE").upper()
-    current_move = str(sce1.get("current_move") or "CHOP").upper()
-    fd_decision = str(fd1.get("decision") or "").upper()
-    revealed = bool(rv1_action.get("reveal"))
-    
-    if final_side == "NONE":
-        lines.append("- Chưa nên mở lệnh mới")
-        if not revealed:
-            lines.append("- Market chưa lộ mặt → ưu tiên đứng ngoài")
-        elif current_move == "CHOP":
-            lines.append("- Market còn nhiễu → ưu tiên đứng ngoài")
-        else:
-            lines.append("- Chưa có hướng đủ rõ → tiếp tục quan sát phản ứng giá")
-    
-    else:
-        if fd_decision.startswith("EXECUTE_"):
-            lines.append("- Market đã lộ mặt → có thể cân nhắc manual strike")
-        elif fd_decision.startswith("WAIT_TRIGGER_"):
-            lines.append("- Đúng hướng nhưng timing chưa tới → chờ trigger")
-            if not revealed:
-                lines.append("- Market chưa lộ mặt hoàn toàn → chưa trade")
-        else:
-            lines.append("- Chưa nên mở lệnh mới")
-            if not revealed:
-                lines.append("- Market chưa lộ mặt → chưa trade")
-            elif current_move == "CHOP":
-                lines.append("- Tránh trade trong vùng nhiễu / giữa biên độ")
+# ===== PHASE =====
+if phase:
+    phase_num = phase.get("phase", "n/a")
+    phase_label_render = phase_text(phase)
+    _add(action_lines, f"🪜 Giai đoạn: {phase_num} | {phase_label_render}")
 
-    
-    # ===== PRO DESK OUTPUT =====
-    ms1 = meta.get("market_state_machine_v1") or {}
-    bl1 = meta.get("bias_layers_v1") or {}
-    ntz3 = meta.get("no_trade_zone_v3") or {}
-    de1 = meta.get("decision_engine_v1") or {}
-    wf1 = meta.get("wait_for_v1") or {}
-    
-    add(lines, "")
-    add(lines, "🧠 ===== PRO DESK =====")
-    if ms1.get("state"):
-        add(lines, f"🧠 Market state: {ms1.get('state')} | {ms1.get('label')}")
-        
-    if bl1:
-        add(lines, "🧭 Bias:")
-        add(lines, f"- HTF: {bl1.get('htf_bias')}")
-        #add(lines, f"- Entry: {bl1.get('entry_bias')}")
-        sce1 = meta.get("signal_consistency_v1") or {}
-        mtf_bias_txt = str(bl1.get("mtf_bias") or "WAIT").upper()
-        if sce1.get("final_side") == "SELL" and "BUY_PULLBACK" in mtf_bias_txt:
-            mtf_bias_txt = "PULLBACK_UP"
-        elif sce1.get("final_side") == "BUY" and "SELL_PULLBACK" in mtf_bias_txt:
-            mtf_bias_txt = "PULLBACK_DOWN"
-        elif mtf_bias_txt in ("BUY_PULLBACK", "SELL_PULLBACK"):
-            mtf_bias_txt = "PULLBACK"
-        add(lines, f"- MTF: {mtf_bias_txt}")
-    if ntz3.get("active"):
-        add(lines, "🚫 NO TRADE ZONE")
-        for r in ntz3.get("reasons", [])[:3]:
-            add(lines, f"- {r}")
-        
-    if de1.get("decision"):
-        add(lines, f"🎯 Decision: {de1.get('decision')}")
-        add(lines, f"- {de1.get('reason')}")
-        
-    lr1 = meta.get("liquidity_reaction_v1") or {}
-    sce1 = meta.get("signal_consistency_v1") or {}
-    final_side = str(sce1.get("final_side") or "NONE").upper()
-    range_lo_v = None
-    range_hi_v = None
-    if "range_lo" in locals():
-        range_lo_v = range_lo
-    elif "lo" in locals():
-        range_lo_v = lo
-    elif isinstance(rinfo, dict):
-        range_lo_v = rinfo.get("lo")
-    if "range_hi" in locals():
-        range_hi_v = range_hi
-    elif "hi" in locals():
-        range_hi_v = hi
-    elif isinstance(rinfo, dict):
-        range_hi_v = rinfo.get("hi")
+# ===== TRIGGER / SCENARIO =====
+_add(action_lines, "")
+_add(action_lines, "🎯 Kịch bản hành động:")
 
-    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
-    pbc_state = str(pbc1.get("state") or "NONE").upper()
-    ref_lv = pbc1.get("reference_level")
-    add(lines, "⏳ Wait for:")
+sce1 = meta.get("signal_consistency_v1") or {}
+final_side = str(sce1.get("final_side") or "NONE").upper()
 
-    if final_side == "SELL":
-        if range_hi_v is not None:
-            add(lines, f"- Sweep high tại {_fmt(range_hi_v)} rồi fail giữ → canh SELL")
-        if range_lo_v is not None:
-            add(lines, f"- Hoặc break low {_fmt(range_lo_v)} với follow-through → canh SELL")
-    elif final_side == "BUY":
-        if range_lo_v is not None:
-            add(lines, f"- Sweep low tại {_fmt(range_lo_v)} rồi giữ được → canh BUY")
-        if range_hi_v is not None:
-            add(lines, f"- Hoặc break high {_fmt(range_hi_v)} với follow-through → canh BUY")
-    else:
-        if range_hi_v is not None:
-            add(lines, f"- Sweep high tại {_fmt(range_hi_v)} rồi fail giữ → xét SELL")
-        if range_lo_v is not None:
-            add(lines, f"- Break low {_fmt(range_lo_v)} với follow-through → xét SELL")
-        if range_hi_v is not None:
-            add(lines, f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
-    # ===== TRIGGER ENGINE V3 OUTPUT =====
-    tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
-    lr1 = (sig.get("meta") or {}).get("liquidity_reaction_v1") or {}
-    lines.append("")
-    lines.append("🎯 TRIGGER ENGINE V3:")
-    lines.append(f"- State: {tg3.get('state', 'WAIT')}")
-    lines.append(f"- Side: {tg3.get('entry_side', 'NONE')}")
-    lines.append(f"- Quality: {tg3.get('quality', 'LOW')}")
-    if tg3.get("trigger_line"):
-        lines.append(f"- Trigger: {tg3.get('trigger_line')}")
-    if tg3.get("close_confirm_line"):
-        lines.append(f"- {tg3.get('close_confirm_line')}")
-    if tg3.get("invalidation_line"):
-        lines.append(f"- Invalidation: {tg3.get('invalidation_line')}")
-    
-    if tg3.get("reason"):
-        for s in tg3.get("reason", [])[:3]:
-            lines.append(f"- {s}")
-    if lr1:
-        lines.append(f"- Liquidity reaction: {lr1.get('reaction_type', 'NONE')} | {lr1.get('state', 'WAIT')}")
-                
-    # ===== CONFLICT + SUGGESTION OUTPUT =====
-    cf1 = meta.get("conflict_engine_v1") or {}
-    sg1 = meta.get("suggestion_block_v1") or {}
-    
-    if cf1.get("active"):
-        add(lines, "")
-        add(lines, "⚖️ Conflict:")
-        add(lines, f"- {cf1.get('verdict')}")
-        for s in (cf1.get("reasons") or [])[:3]:
-            add(lines, f"- {s}")
-    if sg1:
-        add(lines, "")
-        add(lines, "📌 SUGGESTION:")
-        add(lines, f"- {sg1.get('title', 'NO TRADE')}")
-        for s in (sg1.get("lines") or [])[:4]:
-            add(lines, f"- {s}")
+range_lo_v = range_lo if 'range_lo' in locals() else None
+range_hi_v = range_hi if 'range_hi' in locals() else None
 
-    # ===== MASTER ENGINE OUTPUT =====
-    me1 = meta.get("master_engine_v1") or {}
-    if me1:
-        add(lines, "")
-        add(lines, "🧠 MASTER ENGINE:")
-        add(lines, f"- State: {me1.get('state', 'WAIT')}")
-        add(lines, f"- Best side: {me1.get('best_side', 'NONE')}")
-        add(lines, f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
-        add(lines, f"- Confidence: {me1.get('confidence', 'LOW')}")
-        if me1.get("reason"):
-            add(lines, "- Lý do:")
-            for s in me1.get("reason", [])[:4]:
-                add(lines, f"  • {s}")
+if final_side == "SELL":
+    _add(action_lines, "- Chỉ SELL khi:")
+    if range_hi_v:
+        _add(action_lines, f"  • Sweep high {nf(range_hi_v)} rồi fail")
+    if range_lo_v:
+        _add(action_lines, f"  • Hoặc break {nf(range_lo_v)} giữ dưới")
 
-    fd1 = (sig.get("meta") or {}).get("final_decision_engine_v1") or {}
-    if fd1:
-        lines.append("")
-        lines.append("🎯 FINAL DECISION:")
-        lines.append(f"- {fd1.get('label', 'STAND ASIDE')}")
-        if fd1.get("reasons"):
-            for s in fd1.get("reasons", [])[:2]:
-                lines.append(f"- {s}")
-                
-    sce1 = meta.get("signal_consistency_v1") or {}
-    if sce1:
-        add(lines, "")
-        add(lines, "🧠 SIGNAL CONSISTENCY:")
-        add(lines, f"- Final side: {sce1.get('final_side', 'NONE')}")
-        add(lines, f"- Current move: {sce1.get('current_move', 'CHOP')}")
-        add(lines, f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
-        add(lines, f"- Narrative: {sce1.get('narrative', '')}")            
-    #ex2 = meta.get("exit_engine_v2") or {}
-    #if ex2:
-        #add(lines, "🚪 Exit engine:")
-        #add(lines, f"- {ex2.get('state', 'HOLD')} | {ex2.get('decision', 'Giữ tạm')}")
-    
-    out = []
-    for line in lines:
-        if line == "" and (not out or out[-1] == ""):
-            continue
-        out.append(line)
-    return "\n".join(out).strip()
+elif final_side == "BUY":
+    _add(action_lines, "- Chỉ BUY khi:")
+    if range_lo_v:
+        _add(action_lines, f"  • Sweep low {nf(range_lo_v)} rồi giữ")
+    if range_hi_v:
+        _add(action_lines, f"  • Hoặc break {nf(range_hi_v)} giữ trên")
+
+else:
+    _add(action_lines, "- Ưu tiên đứng ngoài, chờ sweep hoặc break rõ")
+
+# ===== ENTRY SNIPER =====
+sniper = (meta.get("entry_sniper") or {})
+_add(action_lines, "")
+_add(action_lines, "🎯 ENTRY SNIPER:")
+_add(action_lines, f"- Hướng: {sniper.get('direction', 'NONE')}")
+_add(action_lines, f"- Trigger: {sniper.get('trigger', 'WAIT')}")
+_add(action_lines, f"- Trạng thái: {sniper.get('state', 'NO SETUP')}")
+
+# ===== FINAL ACTION =====
+fd1 = meta.get("final_decision_engine_v1") or {}
+_add(action_lines, "")
+_add(action_lines, "⚙️ Hành động:")
+
+decision = str(fd1.get("decision") or "").upper()
+
+if decision.startswith("EXECUTE"):
+    _add(action_lines, "- Có thể cân nhắc vào lệnh khi đủ điều kiện")
+elif decision.startswith("WAIT"):
+    _add(action_lines, "- Chờ trigger, chưa vào ngay")
+else:
+    _add(action_lines, "- Chưa nên mở lệnh mới")
+
+# =========================================================
+# ================= REASON LAYER ===========================
+# =========================================================
+
+# ===== STATE =====
+state_line = state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
+_add(reason_lines, f"🌡 Trạng thái: {state_line}")
+
+# ===== FLOW =====
+if flow:
+    _add(reason_lines, f"💰 Dòng tiền: {flow_text(flow)}")
+
+# ===== RANGE =====
+_add(reason_lines, "")
+_add(reason_lines, "📍 Vị trí giá:")
+
+if last_px:
+    _add(reason_lines, f"- Giá: {nf(last_px)}")
+
+if range_lo and range_hi:
+    _add(reason_lines, f"- Range: {nf(range_lo)} – {nf(range_hi)}")
+
+if range_pos is not None:
+    pos_pct = int(range_pos * 100)
+    _add(reason_lines, f"- Vị trí: ~{pos_pct}%")
+
+# ===== LIQUIDITY =====
+liq_map = ((sig.get("meta") or {}).get("liquidity_map_v1") or {})
+_add(reason_lines, "")
+_add(reason_lines, "💧 Thanh khoản:")
+
+_add(reason_lines, f"- Trên: {liq_map.get('above_strength', 'LOW')}")
+_add(reason_lines, f"- Dưới: {liq_map.get('below_strength', 'LOW')}")
+_add(reason_lines, f"- Bias quét: {liq_map.get('sweep_bias', 'NEUTRAL')}")
+
+# ===== STRUCTURE =====
+_add(reason_lines, "")
+_add(reason_lines, "✅ Xác nhận:")
+if struct:
+    _add(reason_lines, f"- H4: {struct.get('H4')} | H1: {struct.get('H1')}")
+    _add(reason_lines, f"- M15: {struct.get('M15')}")
+
+# ===== EMA =====
+ema_pack = meta.get("ema") or {}
+if ema_pack:
+    _add(reason_lines, "")
+    _add(reason_lines, "📉 EMA:")
+    _add(reason_lines, f"- Trend: {ema_pack.get('trend')}")
+    _add(reason_lines, f"- Alignment: {ema_pack.get('alignment')}")
+
+# ===== SCORE =====
+final_score, tradeable_label, _, _ = _final_score_now(
+    sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
+)
+
+_add(reason_lines, "")
+_add(reason_lines, f"📊 Score: {final_score}/100 | Tradeable: {tradeable_label}")
+
+# =========================================================
+# ================= FINAL BUILD ============================
+# =========================================================
+
+out = []
+
+# HEADER
+out.extend(lines)
+
+# ACTION
+out.append("")
+out.append("━━━━━━━━━━━")
+out.append("🧭 LAYER 1: ACTION")
+out.append("━━━━━━━━━━━")
+out.extend(action_lines)
+
+# REASON
+out.append("")
+out.append("━━━━━━━━━━━")
+out.append("🧠 LAYER 2: REASON")
+out.append("━━━━━━━━━━━")
+out.extend(reason_lines)
+
+# CLEAN
+final = []
+for line in out:
+    if line == "" and (not final or final[-1] == ""):
+        continue
+    final.append(line)
+
+return "\n".join(final).strip()
