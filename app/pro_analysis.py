@@ -9512,14 +9512,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
         for s in (cf1.get("reasons") or [])[:3]:
             push_reason(f"- {s}")
 
-    # ===== ACTION: Suggestion =====
-    if sg1:
-        push_action("")
-        push_action("📌 SUGGESTION:")
-        push_action(f"- {sg1.get('title', 'NO TRADE')}")
-        for s in (sg1.get("lines") or [])[:4]:
-            push_action(f"- {s}")
-
     # ===== REASON: Master Engine =====
     me1 = meta.get("master_engine_v1") or {}
     if me1:
@@ -9533,16 +9525,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
             push_reason("- Lý do:")
             for s in me1.get("reason", [])[:4]:
                 push_reason(f"  • {s}")
-
-    # ===== ACTION: Final Decision =====
-    fd1 = (sig.get("meta") or {}).get("final_decision_engine_v1") or {}
-    if fd1:
-        push_action("")
-        push_action("🎯 FINAL DECISION:")
-        push_action(f"- {fd1.get('label', 'STAND ASIDE')}")
-        if fd1.get("reasons"):
-            for s in fd1.get("reasons", [])[:2]:
-                push_action(f"- {s}")
 
     # ===== REASON: Signal Consistency =====
     sce1 = meta.get("signal_consistency_v1") or {}
