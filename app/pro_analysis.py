@@ -8471,14 +8471,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
         verdict_quick = f"{verdict_quick}; {reason_text}"
 
 # ====== ADD HELPER ======
-def _add(buf, s):
-    if s is None:
-        return
-    s = str(s).strip()
-    if s:
-        buf.append(s)
-
-
     # ====== INIT ======
     lines: List[str] = []
     action_lines: List[str] = []
@@ -8654,4 +8646,4 @@ def _add(buf, s):
         if line == "" and (not final or final[-1] == ""):
             continue
         final.append(line)
-return "\n".join(final).strip()
+    return "\n".join(final).strip()
