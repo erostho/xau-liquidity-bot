@@ -6446,9 +6446,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     div  = _divergence_rsi(m15c, period=14, lookback=50)
 
     # nhét vào meta để main.py / review lệnh dùng lại
+    
     base["meta"]["volq"] = volq
     base["meta"]["candle"] = cpat
     base["meta"]["div"] = div
+    meta = base.setdefault("meta", {})
     meta["_m15_raw"] = m15c
     meta["_m30_raw"] = m30c
     meta["atr15"] = atr15
