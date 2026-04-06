@@ -16,7 +16,7 @@ def _c_val(c, key: str, default=None):
         return getattr(c, key, default)
     except Exception:
         return default
-def _add(buf, s):
+def add(buf, s):
     if s is None:
         return
     s = str(s).strip()
