@@ -16,7 +16,12 @@ def _c_val(c, key: str, default=None):
         return getattr(c, key, default)
     except Exception:
         return default
-
+def _add(buf, s):
+    if s is None:
+        return
+    s = str(s).strip()
+    if s:
+        buf.append(s)
 def _series(candles, key: str):
     return [float(_c_val(c, key, 0.0) or 0.0) for c in (candles or [])]
 
