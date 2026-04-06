@@ -22,11 +22,7 @@ def add(buf, s):
     s = str(s).strip()
     if s:
         buf.append(s)
-def push_action(s=""):
-    add(action_lines, s)
 
-def push_reason(s=""):
-    add(reason_lines, s)
     
 def _series(candles, key: str):
     return [float(_c_val(c, key, 0.0) or 0.0) for c in (candles or [])]
@@ -8483,6 +8479,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
 # ====== ADD HELPER ======
     # ====== INIT ======
+    def push_action(s=""):
+        add(action_lines, s)
+    
+    def push_reason(s=""):
+        add(reason_lines, s)
     lines: List[str] = []
     action_lines: List[str] = []
     reason_lines: List[str] = []
