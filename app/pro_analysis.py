@@ -3554,16 +3554,27 @@ def _pullback_engine_v1(
     if liq_state == "YES":
         reasons.append("thanh khoản đã hoàn tất")
     elif liq_state == "PARTIAL":
-        reversal_risk_score += 1
+        reversal_risk_score += 0.5   # 👈 giảm nhẹ
         reasons.append("thanh khoản mới hoàn tất một phần")
     else:
-        reversal_risk_score += 1
+        # ❌ KHÔNG tăng risk mạnh nữa nếu HTF đang đẹp
+        if not (h1 == "bullish" and h4 == "bullish" and side == "BUY"):
+            reversal_risk_score += 1
         reasons.append("thanh khoản chưa hoàn tất")
 
     if (tw or {}).get("active"):
-        reversal_risk_score += 1
+        # chỉ tăng mạnh nếu đã hồi sâu
+        if pullback_pct > 0.6:
+            reversal_risk_score += 1
+        else:
+            reversal_risk_score += 0.5
         reasons.append("trap risk đang hiện diện")
-
+        
+    # ===== ADJUST FOR SHALLOW PULLBACK =====
+    if side == "BUY" and pullback_pct < 0.25:
+        # hồi nông → không nên coi là reversal risk
+        reversal_risk_score = min(reversal_risk_score, 2)
+        
     # ===== ATR sanity =====
     a = _safe_float(atr15)
     if a is not None and a > 0:
@@ -8922,18 +8933,42 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     if range_pos is not None:
         pos_pct = int(round(float(range_pos) * 100))
-
+        final_side = str((meta.get("signal_consistency_v1") or {}).get("final_side") or "NONE").upper()
         if pos_pct >= 80:
-            pos_note = "→ sát vùng cao, không nên BUY đuổi, chờ phản ứng rồi quyết định theo xu hướng"
+            if final_side == "BUY":
+                pos_note = "→ sát vùng cao, không nên BUY đuổi"
+            elif final_side == "SELL":
+                pos_note = "→ sát vùng cao, có thể là vùng canh SELL nếu có xác nhận"
+            else:
+                pos_note = "→ sát vùng cao, chờ phản ứng rồi quyết định"
+    
         elif pos_pct >= 60:
-            pos_note = "→ vùng cao, ưu tiên chờ tín hiệu SELL"
+            if final_side == "BUY":
+                pos_note = "→ vùng cao, chưa đẹp để BUY, không mua đuổi"
+            elif final_side == "SELL":
+                pos_note = "→ vùng cao, ưu tiên chờ tín hiệu SELL"
+            else:
+                pos_note = "→ vùng cao, cần chờ phản ứng rõ"
+    
         elif pos_pct >= 40:
             pos_note = "→ giữa biên độ, dễ nhiễu, nên đứng ngoài"
+    
         elif pos_pct >= 20:
-            pos_note = "→ vùng thấp, ưu tiên chờ tín hiệu BUY"
+            if final_side == "BUY":
+                pos_note = "→ vùng thấp, thuận lợi hơn cho kịch bản BUY nếu có xác nhận"
+            elif final_side == "SELL":
+                pos_note = "→ vùng thấp, chưa đẹp để SELL đuổi"
+            else:
+                pos_note = "→ vùng thấp, chờ phản ứng rõ"
+    
         else:
-            pos_note = "→ sát vùng thấp, không nên SELL đuổi, chờ phản ứng rồi quyết định theo xu hướng"
-
+            if final_side == "SELL":
+                pos_note = "→ sát vùng thấp, không nên SELL đuổi"
+            elif final_side == "BUY":
+                pos_note = "→ sát vùng thấp, có thể là vùng quan sát BUY nếu giữ được"
+            else:
+                pos_note = "→ sát vùng thấp, chờ phản ứng rồi quyết định"
+    
         push_reason(f"- Vị trí trong biên độ: ~{pos_pct}% {pos_note}")
 
     liq_map = ((sig.get("meta") or {}).get("liquidity_map_v1") or {})
