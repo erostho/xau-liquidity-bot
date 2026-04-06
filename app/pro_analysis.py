@@ -136,7 +136,23 @@ def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
 
     return cls, round(score, 1), out[:4]
 
+def should_send_now_alert_v2(sig: dict) -> tuple[bool, str]:
+    """
+    Gửi NOW khi:
+    - SETUP CLASS là A hoặc B
+    - score >= 50
+    """
+    try:
+        cls, score, _ = _setup_class_score_v3(sig)
+        score = float(score or 0)
+    except Exception:
+        return False, "ERR"
 
+    if cls in ("A", "B") and score >= 50:
+        return True, f"{cls}/{int(score)}"
+
+    return False, f"{cls}/{int(score)}"
+    
 def _extract_from_trade_method_lines_v1(method_pack: dict) -> dict:
     """
     Parse text từ _pick_trade_method_m30(...) để lấy Entry / SL / TP fallback.
