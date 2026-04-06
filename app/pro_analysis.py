@@ -193,10 +193,9 @@ def _render_setup_class_block_v1(sig: dict, final_score, tradeable_label: str) -
     lines = []
     lines.append("")
     lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
-    lines.append("🧠 Lý do:")
+    lines.append("Lý do:")
     for s in reasons:
         lines.append(f"- {s}")
-    lines.append("")
     lines.append(f"🎯 Entry: {levels.get('entry', 'n/a')}")
     lines.append(f"🎯 TP: {levels.get('tp', 'n/a')}")
     lines.append(f"🛑 SL: {levels.get('sl', 'n/a')}")
@@ -9586,9 +9585,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # ===== ACTION: Hành động cuối =====
     fd1 = (sig.get("meta") or {}).get("final_decision_engine_v1") or {}
     sce1 = (sig.get("meta") or {}).get("signal_consistency_v1") or {}
-    # ===== SETUP CLASS BLOCK =====
-    for s in _render_setup_class_block_v1(sig, final_score, tradeable_label):
-        add(action_lines, s)
+
     push_action("")
     push_action("⚙️ Hành động:")
     sce1 = meta.get("signal_consistency_v1") or {}
@@ -9751,7 +9748,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Current move: {sce1.get('current_move', 'CHOP')}")
         push_reason(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
-
+    # ===== SETUP CLASS BLOCK =====
+    for s in _render_setup_class_block_v1(sig, final_score, tradeable_label):
+        add(action_lines, s)
+        
     # ===== BUILD FINAL =====
     out = []
     out.extend(lines)
