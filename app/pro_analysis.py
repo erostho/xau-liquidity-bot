@@ -278,6 +278,58 @@ def _setup_levels_v3(sig: dict, cls: str) -> dict:
         except Exception:
             pass
 
+    # 5) fallback theo pullback/fib structure (ưu tiên hơn method WAIT)
+    if entry_text is None or tp_text is None or sl_text is None:
+        try:
+            fib1 = meta.get("fib_confluence_v1") or {}
+            pb1 = meta.get("pullback_engine_v1") or {}
+            sce1 = meta.get("signal_consistency_v1") or {}
+            side = str(sce1.get("final_side") or "NONE").upper()
+
+            # fib zone ưu tiên nhất
+            fz_lo = fib1.get("zone_low")
+            fz_hi = fib1.get("zone_high")
+            if entry_text is None and fz_lo is not None and fz_hi is not None:
+                lo = min(float(fz_lo), float(fz_hi))
+                hi = max(float(fz_lo), float(fz_hi))
+                entry_text = f"{nf(lo)} – {nf(hi)}"
+
+            # pullback anchors
+            a_lo = pb1.get("anchor_low")
+            a_hi = pb1.get("anchor_high")
+
+            # nếu chưa có entry thì lấy vùng giữa anchor theo kiểu pullback
+            if entry_text is None and a_lo is not None and a_hi is not None:
+                lo = float(a_lo)
+                hi = float(a_hi)
+                rng = max(1e-9, hi - lo)
+
+                if side == "BUY":
+                    ez_lo = hi - 0.62 * rng
+                    ez_hi = hi - 0.40 * rng
+                elif side == "SELL":
+                    ez_lo = lo + 0.40 * rng
+                    ez_hi = lo + 0.62 * rng
+                else:
+                    ez_lo = lo + 0.40 * rng
+                    ez_hi = lo + 0.62 * rng
+
+                entry_text = f"{nf(min(ez_lo, ez_hi))} – {nf(max(ez_lo, ez_hi))}"
+
+            # TP/SL theo anchor
+            if sl_text is None and a_lo is not None and a_hi is not None:
+                if side == "BUY":
+                    sl_text = nf(float(a_lo))
+                elif side == "SELL":
+                    sl_text = nf(float(a_hi))
+
+            if tp_text is None and a_lo is not None and a_hi is not None:
+                if side == "BUY":
+                    tp_text = nf(float(a_hi))
+                elif side == "SELL":
+                    tp_text = nf(float(a_lo))
+        except Exception:
+            pass
     # final normalize
     if entry_text is None:
         entry_text = "WAIT_TRIGGER" if cls in ("A", "B", "C") else "n/a"
