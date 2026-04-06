@@ -51,7 +51,115 @@ def _setup_class_from_setup_score_v1(sig: dict) -> tuple[str, float]:
         cls = "D"
 
     return cls, round(setup_score, 1)
+def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
+    """
+    Score riêng cho SETUP CLASS.
+    KHÔNG dùng final_score.
+    KHÔNG để no-trade zone kéo setup xuống quá mạnh.
+    Setup Class = độ đẹp setup
+    Entry/Tradeable = timing
+    """
+    meta = (sig.get("meta") or {})
+    reasons = []
+    score = 0.0
 
+    # 1) Final side
+    sce1 = meta.get("signal_consistency_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    if final_side in ("BUY", "SELL"):
+        score += 20
+        reasons.append(f"final side = {final_side}")
+    else:
+        reasons.append("final side = NONE")
+
+    # 2) Pullback
+    pb1 = meta.get("pullback_engine_v1") or {}
+    if pb1.get("ok"):
+        try:
+            pb_pct = float(pb1.get("pullback_pct") or 0.0)
+        except Exception:
+            pb_pct = 0.0
+
+        pb_label = str(pb1.get("label") or "CHƯA RÕ")
+        rr = str(pb1.get("reversal_risk") or "LOW").upper()
+
+        # vùng pullback đẹp
+        if 0.40 <= pb_pct <= 0.62:
+            score += 30
+        elif 0.25 <= pb_pct < 0.40 or 0.62 < pb_pct <= 0.78:
+            score += 22
+        elif 0.15 <= pb_pct < 0.25:
+            score += 15
+        else:
+            score += 8
+
+        reasons.append(f"pullback {pb_label.lower()} ({pb1.get('pullback_pct_text', 'n/a')})")
+
+        # reversal risk
+        if rr == "LOW":
+            score += 15
+        elif rr == "MEDIUM":
+            score += 8
+        else:
+            score -= 5
+
+        reasons.append(f"reversal risk = {rr}")
+
+    # 3) Close confirm
+    cc1 = meta.get("close_confirm_v4") or {}
+    cc_strength = str(cc1.get("strength") or "NO").upper()
+    if cc_strength == "STRONG":
+        score += 20
+        reasons.append("close confirm = STRONG")
+    elif cc_strength == "WEAK":
+        score += 10
+        reasons.append("close confirm = WEAK")
+    else:
+        reasons.append("chưa có close confirm rõ")
+
+    # 4) Trigger
+    tg3 = meta.get("trigger_engine_v3") or {}
+    tg_state = str(tg3.get("state") or "WAIT").upper()
+    if tg_state == "READY":
+        score += 10
+        reasons.append("trigger = READY")
+    elif tg_state == "TRIGGERED":
+        score += 15
+        reasons.append("trigger = TRIGGERED")
+    else:
+        reasons.append("trigger chưa sẵn sàng")
+
+    # 5) Liquidity completion
+    ld1 = meta.get("liquidity_completion_v1") or {}
+    ld_state = str(ld1.get("state") or "").upper()
+    if ld_state == "YES":
+        score += 10
+        reasons.append("liquidity = YES")
+    elif ld_state == "PARTIAL":
+        score += 5
+        reasons.append("liquidity = PARTIAL")
+
+    # Clamp
+    score = max(0.0, min(100.0, score))
+
+    if score >= 80:
+        cls = "A"
+    elif score >= 60:
+        cls = "B"
+    elif score >= 40:
+        cls = "C"
+    else:
+        cls = "D"
+
+    # dedupe
+    out = []
+    seen = set()
+    for r in reasons:
+        if r and r not in seen:
+            seen.add(r)
+            out.append(r)
+
+    return cls, round(score, 1), out[:4]
 
 def _setup_levels_v2(sig: dict, cls: str) -> dict:
     """
@@ -195,15 +303,8 @@ def _setup_reasons_v2(sig: dict, setup_class: str, setup_score: float, tradeable
 
 
 def _render_setup_class_block_v2(sig: dict, final_score, tradeable_label: str) -> list[str]:
-    """
-    NOTE:
-    - Class hiển thị theo setup_score
-    - Không theo final_score
-    - Nhưng vẫn có thể giữ final_score ở chỗ khác trong NOW như cũ
-    """
-    cls, setup_score = _setup_class_from_setup_score_v1(sig)
+    cls, setup_score, reasons = _setup_class_score_v3(sig)
     levels = _setup_levels_v2(sig, cls)
-    reasons = _setup_reasons_v2(sig, cls, setup_score, tradeable_label)
 
     score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
 
