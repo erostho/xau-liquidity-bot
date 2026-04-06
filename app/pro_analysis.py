@@ -8719,7 +8719,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, "- Ưu tiên đứng ngoài; chờ market quét 1 đầu rồi quan sát phản ứng")
             
     pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
-    if pbc1 and pbc1.get("state") not in (None, "", "NONE"):
+    if pbc1:
+        #and pbc1.get("state") not in (None, "", "NONE"):
         add(lines, "")
         add(lines, "🔁 POST-BREAK CONTINUITY:")
         add(lines, f"- State: {pbc1.get('state')}")
