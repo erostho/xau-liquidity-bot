@@ -189,15 +189,15 @@ def _extract_from_trade_method_lines_v1(method_pack: dict) -> dict:
 
     return out
 
-
 def _setup_levels_v3(sig: dict, cls: str) -> dict:
     """
     Entry / TP / SL:
     ưu tiên:
-    1) playbook_v2 zone
-    2) sig.entry / sl / tp1 / tp2
+    1) sig.entry / sl / tp1 / tp2
+    2) playbook_v2 zone
     3) scale_plan_v2
-    4) _pick_trade_method_m30 fallback
+    4) fib_confluence_v1
+    5) pullback_engine_v1 anchor
     """
     meta = (sig.get("meta") or {})
     playbook = meta.get("playbook_v2") or {}
@@ -206,31 +206,45 @@ def _setup_levels_v3(sig: dict, cls: str) -> dict:
         try:
             return nf(float(x))
         except Exception:
-            return "n/a"
+            return None
 
     entry_text = None
+    tp_text = None
+    sl_text = None
 
-    # 1) playbook zone
-    zone_low = playbook.get("zone_low")
-    zone_high = playbook.get("zone_high")
-    if zone_low is not None and zone_high is not None:
-        try:
-            lo = min(float(zone_low), float(zone_high))
-            hi = max(float(zone_low), float(zone_high))
-            entry_text = f"{nf(lo)} – {nf(hi)}"
-        except Exception:
-            entry_text = None
+    # ===== 1) sig direct =====
+    entry = sig.get("entry")
+    sl = sig.get("sl")
+    tp1 = sig.get("tp1")
+    tp2 = sig.get("tp2")
 
-    # 2) sig.entry
+    if entry is not None:
+        entry_text = _fmt_price(entry)
+    if sl is not None:
+        sl_text = _fmt_price(sl)
+    if tp1 is not None and tp2 is not None:
+        tp_text = f"{_fmt_price(tp1)} / {_fmt_price(tp2)}"
+    elif tp1 is not None:
+        tp_text = _fmt_price(tp1)
+    elif tp2 is not None:
+        tp_text = _fmt_price(tp2)
+
+    # ===== 2) playbook zone =====
     if entry_text is None:
-        entry = sig.get("entry")
-        if entry is not None:
-            entry_text = _fmt_price(entry)
+        zone_low = playbook.get("zone_low")
+        zone_high = playbook.get("zone_high")
+        if zone_low is not None and zone_high is not None:
+            try:
+                lo = min(float(zone_low), float(zone_high))
+                hi = max(float(zone_low), float(zone_high))
+                entry_text = f"{nf(lo)} – {nf(hi)}"
+            except Exception:
+                pass
 
-    # 3) scale plan
+    # ===== 3) scale plan =====
+    sp = meta.get("scale_plan_v2") or {}
     if entry_text is None:
         try:
-            sp = meta.get("scale_plan_v2") or {}
             orders = sp.get("orders") or []
             if orders:
                 o1 = orders[0]
@@ -243,67 +257,54 @@ def _setup_levels_v3(sig: dict, cls: str) -> dict:
         except Exception:
             pass
 
-    sl = sig.get("sl")
-    tp1 = sig.get("tp1")
-    tp2 = sig.get("tp2")
-
-    if tp1 is not None and tp2 is not None:
-        tp_text = f"{_fmt_price(tp1)} / {_fmt_price(tp2)}"
-    elif tp1 is not None:
-        tp_text = _fmt_price(tp1)
-    elif tp2 is not None:
-        tp_text = _fmt_price(tp2)
-    else:
-        tp_text = None
-
-    sl_text = _fmt_price(sl) if sl is not None else None
-
-    # 4) fallback từ trade method
-    if entry_text is None or tp_text is None or sl_text is None:
+    if tp_text is None:
         try:
-            m30_raw = meta.get("_m30_raw") or []
-            atr30 = meta.get("atr30")
-            if atr30 is None:
-                atr30 = meta.get("atr15") or 0.0
-
-            method_pack = _pick_trade_method_m30(m30_raw, atr30)
-            fallback = _extract_from_trade_method_lines_v1(method_pack)
-
-            if entry_text is None and fallback.get("entry"):
-                entry_text = fallback["entry"]
-            if tp_text is None and fallback.get("tp"):
-                tp_text = fallback["tp"]
-            if sl_text is None and fallback.get("sl"):
-                sl_text = fallback["sl"]
+            sp_tp1 = sp.get("tp1")
+            sp_tp2 = sp.get("tp2")
+            if sp_tp1 is not None and sp_tp2 is not None:
+                tp_text = f"{nf(float(sp_tp1))} / {nf(float(sp_tp2))}"
+            elif sp_tp1 is not None:
+                tp_text = nf(float(sp_tp1))
         except Exception:
             pass
 
-    # 5) fallback theo pullback/fib structure (ưu tiên hơn method WAIT)
-    if entry_text is None or tp_text is None or sl_text is None:
+    if sl_text is None:
         try:
-            fib1 = meta.get("fib_confluence_v1") or {}
-            pb1 = meta.get("pullback_engine_v1") or {}
-            sce1 = meta.get("signal_consistency_v1") or {}
-            side = str(sce1.get("final_side") or "NONE").upper()
+            invalid = sp.get("invalid")
+            if invalid is not None:
+                sl_text = nf(float(invalid))
+        except Exception:
+            pass
 
-            # fib zone ưu tiên nhất
+    # ===== 4) fib confluence =====
+    fib1 = meta.get("fib_confluence_v1") or {}
+    if entry_text is None:
+        try:
             fz_lo = fib1.get("zone_low")
             fz_hi = fib1.get("zone_high")
-            if entry_text is None and fz_lo is not None and fz_hi is not None:
+            if fz_lo is not None and fz_hi is not None:
                 lo = min(float(fz_lo), float(fz_hi))
                 hi = max(float(fz_lo), float(fz_hi))
                 entry_text = f"{nf(lo)} – {nf(hi)}"
+        except Exception:
+            pass
 
-            # pullback anchors
-            a_lo = pb1.get("anchor_low")
-            a_hi = pb1.get("anchor_high")
+    # ===== 5) pullback anchor fallback =====
+    pb1 = meta.get("pullback_engine_v1") or {}
+    sce1 = meta.get("signal_consistency_v1") or {}
+    side = str(sce1.get("final_side") or "NONE").upper()
 
-            # nếu chưa có entry thì lấy vùng giữa anchor theo kiểu pullback
-            if entry_text is None and a_lo is not None and a_hi is not None:
-                lo = float(a_lo)
-                hi = float(a_hi)
-                rng = max(1e-9, hi - lo)
+    try:
+        a_lo = pb1.get("anchor_low")
+        a_hi = pb1.get("anchor_high")
 
+        if a_lo is not None and a_hi is not None:
+            lo = float(a_lo)
+            hi = float(a_hi)
+            rng = max(1e-9, hi - lo)
+
+            # Entry fallback
+            if entry_text is None:
                 if side == "BUY":
                     ez_lo = hi - 0.62 * rng
                     ez_hi = hi - 0.40 * rng
@@ -311,26 +312,28 @@ def _setup_levels_v3(sig: dict, cls: str) -> dict:
                     ez_lo = lo + 0.40 * rng
                     ez_hi = lo + 0.62 * rng
                 else:
-                    ez_lo = lo + 0.40 * rng
-                    ez_hi = lo + 0.62 * rng
+                    ez_lo = hi - 0.62 * rng
+                    ez_hi = hi - 0.40 * rng
 
                 entry_text = f"{nf(min(ez_lo, ez_hi))} – {nf(max(ez_lo, ez_hi))}"
 
-            # TP/SL theo anchor
-            if sl_text is None and a_lo is not None and a_hi is not None:
+            # SL fallback
+            if sl_text is None:
                 if side == "BUY":
-                    sl_text = nf(float(a_lo))
+                    sl_text = nf(lo)
                 elif side == "SELL":
-                    sl_text = nf(float(a_hi))
+                    sl_text = nf(hi)
 
-            if tp_text is None and a_lo is not None and a_hi is not None:
+            # TP fallback
+            if tp_text is None:
                 if side == "BUY":
-                    tp_text = nf(float(a_hi))
+                    tp_text = nf(hi)
                 elif side == "SELL":
-                    tp_text = nf(float(a_lo))
-        except Exception:
-            pass
-    # final normalize
+                    tp_text = nf(lo)
+    except Exception:
+        pass
+
+    # ===== final normalize =====
     if entry_text is None:
         entry_text = "WAIT_TRIGGER" if cls in ("A", "B", "C") else "n/a"
     if tp_text is None:
