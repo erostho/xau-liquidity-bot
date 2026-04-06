@@ -7541,8 +7541,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         playbook_v2=playbook_v2,
     )
     # ===== LIQUIDITY REACTION ENGINE V1 =====
+    meta = base.setdefault("meta", {})
     liquidity_reaction_v1 = _liquidity_reaction_engine_v1(
-        signal_consistency_v1=meta.get["signal_consistency_v1"],
+        signal_consistency_v1=(base.get("meta", {}) or {}).get("signal_consistency_v1"),
         liquidity_map=liquidity_map if 'liquidity_map' in locals() and isinstance(liquidity_map, dict) else {},
         liquidity_completion_v1=liquidity_completion_v1,
         close_confirm_v4=close_confirm_v4,
