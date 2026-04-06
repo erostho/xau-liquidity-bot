@@ -1943,16 +1943,21 @@ async def cron_run(token: str = "", request: Request = None):
                 setup_score = int(now_status.get("setup_score", 0) or 0)
                 entry_score = int(now_status.get("entry_score_now", 0) or 0)
                 tradeable_now = str(now_status.get("tradeable_now") or "NO")
-                force_send = _force_send(sig)                
+                #force_send = _force_send(sig)                
                 # ----- LUỒNG A: KÈO CHÍNH -----
-                should_send_main = stars >= MIN_STARS
-                #and rec != "CHỜ"
-                should_send_now = setup_score >= 65 and entry_score >= 50
-                #and tradeable_now == "YES"
-                if should_send_main or force_send or should_send_now:
+                #should_send_main = stars >= MIN_STARS and rec != "CHỜ"
+                #should_send_now = setup_score >= 65 and entry_score >= 50 and tradeable_now == "YES"
+                #if should_send_main or force_send or should_send_now:
+                try:
+                    cls, score, _ = _setup_class_score_v3(sig)
+                    score = float(score or 0)
+                except Exception:
+                    cls, score = "D", 0
+                
+                should_send_now = cls in ("A", "B") and score >= 50
+                if should_send_now:
                     msg = format_signal(sig)
-                    if should_send_now and not should_send_main:
-                        msg = "🚨 **NOW ALERT**\n----------------\n" + msg
+                    msg = "🚨 **NOW ALERT**\n----------------\n" + msg
                     _send_long_telegram(msg, chat_id=ADMIN_CHAT_ID)
                 #if should_send_main or force_send or should_send_now:
                     #_send_telegram(format_signal(sig), chat_id=ADMIN_CHAT_ID)
