@@ -23,27 +23,44 @@ def add(buf, s):
     if s:
         buf.append(s)
 
-def _setup_class_from_final_score_v1(final_score) -> str:
-    try:
-        s = float(final_score or 0.0)
-    except Exception:
-        s = 0.0
-
-    if s >= 80:
-        return "A"
-    if s >= 60:
-        return "B"
-    if s >= 40:
-        return "C"
-    return "D"
-
-
-def _setup_levels_v1(sig: dict) -> dict:
+def _setup_class_from_setup_score_v1(sig: dict) -> tuple[str, float]:
     """
-    Lấy Entry / TP / SL linh động theo thứ tự:
-    1) playbook_v2 zone
-    2) sig.entry
-    3) scale_plan_v2.orders[0]
+    Class theo setup_score, KHÔNG theo final_score.
+    A: >=80
+    B: 60-79
+    C: 40-59
+    D: <40
+    """
+    try:
+        ns = get_now_status(sig) or {}
+    except Exception:
+        ns = {}
+
+    try:
+        setup_score = float(ns.get("setup_score") or 0.0)
+    except Exception:
+        setup_score = 0.0
+
+    if setup_score >= 80:
+        cls = "A"
+    elif setup_score >= 60:
+        cls = "B"
+    elif setup_score >= 40:
+        cls = "C"
+    else:
+        cls = "D"
+
+    return cls, round(setup_score, 1)
+
+
+def _setup_levels_v2(sig: dict, cls: str) -> dict:
+    """
+    Entry / TP / SL:
+    - ưu tiên playbook_v2 zone
+    - fallback sig.entry
+    - fallback scale_plan_v2.orders[0]
+    - nếu A/B/C mà chưa có mức vào cụ thể -> Entry = WAIT_TRIGGER
+    - nếu D -> Entry = n/a
     """
     meta = (sig.get("meta") or {})
     playbook = meta.get("playbook_v2") or {}
@@ -54,40 +71,50 @@ def _setup_levels_v1(sig: dict) -> dict:
         except Exception:
             return "n/a"
 
+    entry_text = None
+
+    # 1) playbook zone
     zone_low = playbook.get("zone_low")
     zone_high = playbook.get("zone_high")
-
-    entry_text = "n/a"
     if zone_low is not None and zone_high is not None:
         try:
             lo = min(float(zone_low), float(zone_high))
             hi = max(float(zone_low), float(zone_high))
             entry_text = f"{nf(lo)} – {nf(hi)}"
         except Exception:
-            entry_text = "n/a"
-    else:
+            entry_text = None
+
+    # 2) sig.entry
+    if entry_text is None:
         entry = sig.get("entry")
         if entry is not None:
             entry_text = _fmt_price(entry)
-        else:
-            try:
-                sp = meta.get("scale_plan_v2") or {}
-                orders = sp.get("orders") or []
-                if orders:
-                    o1 = orders[0]
-                    zlo = o1.get("zone_lo")
-                    zhi = o1.get("zone_hi")
-                    if zlo is not None and zhi is not None:
-                        lo = min(float(zlo), float(zhi))
-                        hi = max(float(zlo), float(zhi))
-                        entry_text = f"{nf(lo)} – {nf(hi)}"
-            except Exception:
-                pass
+
+    # 3) scale plan fallback
+    if entry_text is None:
+        try:
+            sp = meta.get("scale_plan_v2") or {}
+            orders = sp.get("orders") or []
+            if orders:
+                o1 = orders[0]
+                zlo = o1.get("zone_lo")
+                zhi = o1.get("zone_hi")
+                if zlo is not None and zhi is not None:
+                    lo = min(float(zlo), float(zhi))
+                    hi = max(float(zlo), float(zhi))
+                    entry_text = f"{nf(lo)} – {nf(hi)}"
+        except Exception:
+            pass
+
+    # NEW: nếu chưa có entry cụ thể
+    if entry_text is None:
+        entry_text = "WAIT_TRIGGER" if cls in ("A", "B", "C") else "n/a"
 
     sl = sig.get("sl")
     tp1 = sig.get("tp1")
     tp2 = sig.get("tp2")
 
+    # TP
     if tp1 is not None and tp2 is not None:
         tp_text = f"{_fmt_price(tp1)} / {_fmt_price(tp2)}"
     elif tp1 is not None:
@@ -97,6 +124,7 @@ def _setup_levels_v1(sig: dict) -> dict:
     else:
         tp_text = "n/a"
 
+    # SL
     sl_text = _fmt_price(sl) if sl is not None else "n/a"
 
     return {
@@ -106,14 +134,9 @@ def _setup_levels_v1(sig: dict) -> dict:
     }
 
 
-def _setup_reasons_v1(sig: dict, final_score, tradeable_label: str) -> list[str]:
+def _setup_reasons_v2(sig: dict, setup_class: str, setup_score: float, tradeable_label: str) -> list[str]:
     meta = (sig.get("meta") or {})
     reasons = []
-
-    try:
-        fs = float(final_score or 0.0)
-    except Exception:
-        fs = 0.0
 
     sce1 = meta.get("signal_consistency_v1") or {}
     final_side = str(sce1.get("final_side") or "NONE").upper()
@@ -135,16 +158,6 @@ def _setup_reasons_v1(sig: dict, final_score, tradeable_label: str) -> list[str]
     else:
         reasons.append("chưa có close confirm rõ")
 
-    ld1 = meta.get("liquidity_completion_v1") or {}
-    ld_state = str(ld1.get("state") or "").upper()
-    if ld_state:
-        reasons.append(f"liquidity = {ld_state}")
-
-    play4 = meta.get("playbook_v4") or {}
-    quality = str(play4.get("quality") or "").upper()
-    if quality:
-        reasons.append(f"playbook = {quality}")
-
     ntz = meta.get("no_trade_zone_v3") or meta.get("no_trade_zone") or {}
     if isinstance(ntz, dict) and ntz.get("active"):
         reasons.append("đang ở no-trade zone")
@@ -156,17 +169,18 @@ def _setup_reasons_v1(sig: dict, final_score, tradeable_label: str) -> list[str]
     elif tg3_state:
         reasons.append(f"trigger = {tg3_state}")
 
-    if str(tradeable_label).upper() == "NO":
-        reasons.append("tradeable = NO")
-
-    if fs < 40:
-        reasons.append("edge chưa đủ mạnh")
-    elif fs < 60:
-        reasons.append("setup còn yếu")
-    elif fs < 80:
-        reasons.append("setup dùng được nhưng chưa thật sự sạch")
-    else:
+    # setup class wording
+    if setup_class == "A":
         reasons.append("setup khá sạch")
+    elif setup_class == "B":
+        reasons.append("setup dùng được nhưng chưa thật sự sạch")
+    elif setup_class == "C":
+        reasons.append("setup còn yếu")
+    else:
+        reasons.append("edge chưa đủ mạnh")
+
+    if str(tradeable_label).upper() == "NO" and setup_class in ("A", "B", "C"):
+        reasons.append("timing chưa sẵn sàng để vào ngay")
 
     # dedupe
     out = []
@@ -180,22 +194,26 @@ def _setup_reasons_v1(sig: dict, final_score, tradeable_label: str) -> list[str]
     return out[:4]
 
 
-def _render_setup_class_block_v1(sig: dict, final_score, tradeable_label: str) -> list[str]:
-    cls = _setup_class_from_final_score_v1(final_score)
-    levels = _setup_levels_v1(sig)
-    reasons = _setup_reasons_v1(sig, final_score, tradeable_label)
+def _render_setup_class_block_v2(sig: dict, final_score, tradeable_label: str) -> list[str]:
+    """
+    NOTE:
+    - Class hiển thị theo setup_score
+    - Không theo final_score
+    - Nhưng vẫn có thể giữ final_score ở chỗ khác trong NOW như cũ
+    """
+    cls, setup_score = _setup_class_from_setup_score_v1(sig)
+    levels = _setup_levels_v2(sig, cls)
+    reasons = _setup_reasons_v2(sig, cls, setup_score, tradeable_label)
 
-    try:
-        score_txt = f"{float(final_score):.1f}".rstrip("0").rstrip(".")
-    except Exception:
-        score_txt = "0"
+    score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
 
     lines = []
     lines.append("")
     lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
-    lines.append("Lý do:")
+    lines.append("🧠 Lý do:")
     for s in reasons:
         lines.append(f"- {s}")
+    lines.append("")
     lines.append(f"🎯 Entry: {levels.get('entry', 'n/a')}")
     lines.append(f"🎯 TP: {levels.get('tp', 'n/a')}")
     lines.append(f"🛑 SL: {levels.get('sl', 'n/a')}")
@@ -9749,7 +9767,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
     # ===== SETUP CLASS BLOCK =====
-    for s in _render_setup_class_block_v1(sig, final_score, tradeable_label):
+    for s in _render_setup_class_block_v2(sig, final_score, tradeable_label):
         add(reason_lines, s)
         
     # ===== BUILD FINAL =====
