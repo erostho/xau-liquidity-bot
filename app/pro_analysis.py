@@ -6401,7 +6401,126 @@ def _post_break_continuity_engine_v1(
         out["message"] = f"Giá đang đúng tại mốc {ref:.2f}"
         out["narrative"] = "Market đang phản ứng ngay tại mốc continuity"
 
-    return out        
+    return out
+
+
+def _inject_wait_levels_v1(base: dict, bias_side: str, m15c, m30c, h1c, atr15: float):
+    """
+    Dùng cho các nhánh WAIT / early return:
+    nếu chưa có entry/sl/tp thì nhét fallback levels để formatter đọc được.
+    Không đổi recommendation, chỉ bổ sung mức giá tham khảo.
+    """
+    try:
+        # nếu đã có rồi thì thôi
+        if base.get("entry") is not None or base.get("sl") is not None or base.get("tp1") is not None:
+            return base
+
+        # 1) ưu tiên method M30
+        atr30 = _atr(m30c, 14) if m30c else None
+        method_pack = _pick_trade_method_m30(m30c, atr30 or atr15)
+
+        lines = method_pack.get("lines") or []
+        text = "\n".join(str(x) for x in lines)
+
+        entry = sl = tp1 = tp2 = None
+
+        import re
+
+        # Entry kiểu: Entry gợi ý: chờ RETEST về ~1234
+        m_entry = re.search(r"Entry gợi ý:.*?~([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+        if m_entry:
+            try:
+                entry = float(m_entry.group(1))
+            except Exception:
+                pass
+
+        # SL/TP1/TP2 kiểu IPC/Breakout
+        m_trip = re.search(
+            r"SL gợi ý:\s*([0-9]+(?:\.[0-9]+)?)\s*\|\s*TP1:\s*([0-9]+(?:\.[0-9]+)?)\s*\|\s*TP2:\s*([0-9]+(?:\.[0-9]+)?)",
+            text,
+            re.IGNORECASE
+        )
+        if m_trip:
+            try:
+                sl = float(m_trip.group(1))
+                tp1 = float(m_trip.group(2))
+                tp2 = float(m_trip.group(3))
+            except Exception:
+                pass
+
+        # 2) fallback bằng pullback/fib nếu M30 method không ra
+        meta = base.setdefault("meta", {})
+        fib1 = meta.get("fib_confluence_v1") or {}
+        pb1 = meta.get("pullback_engine_v1") or {}
+
+        if entry is None:
+            zlo = fib1.get("zone_low")
+            zhi = fib1.get("zone_high")
+            if zlo is not None and zhi is not None:
+                try:
+                    entry = (float(zlo) + float(zhi)) / 2.0
+                except Exception:
+                    pass
+
+        if entry is None:
+            a_lo = pb1.get("anchor_low")
+            a_hi = pb1.get("anchor_high")
+            if a_lo is not None and a_hi is not None:
+                try:
+                    lo = float(a_lo)
+                    hi = float(a_hi)
+                    rng = max(1e-9, hi - lo)
+
+                    if str(bias_side).upper() == "BUY":
+                        entry = hi - 0.50 * rng
+                        if sl is None:
+                            sl = lo
+                        if tp1 is None:
+                            tp1 = hi
+                    elif str(bias_side).upper() == "SELL":
+                        entry = lo + 0.50 * rng
+                        if sl is None:
+                            sl = hi
+                        if tp1 is None:
+                            tp1 = lo
+                except Exception:
+                    pass
+
+        # 3) nếu có entry mà thiếu sl/tp thì ATR fallback
+        if entry is not None and (sl is None or tp1 is None):
+            try:
+                fallback_r = max(0.6, float(atr15 or 0.0) * 1.0)
+                if str(bias_side).upper() == "SELL":
+                    if sl is None:
+                        sl = float(entry) + fallback_r
+                    if tp1 is None:
+                        tp1 = float(entry) - 1.0 * fallback_r
+                    if tp2 is None:
+                        tp2 = float(entry) - 1.6 * fallback_r
+                else:
+                    if sl is None:
+                        sl = float(entry) - fallback_r
+                    if tp1 is None:
+                        tp1 = float(entry) + 1.0 * fallback_r
+                    if tp2 is None:
+                        tp2 = float(entry) + 1.6 * fallback_r
+            except Exception:
+                pass
+
+        # inject lại vào base nếu có
+        if entry is not None:
+            base["entry"] = float(entry)
+        if sl is not None:
+            base["sl"] = float(sl)
+        if tp1 is not None:
+            base["tp1"] = float(tp1)
+        if tp2 is not None:
+            base["tp2"] = float(tp2)
+
+        return base
+
+    except Exception:
+        return base
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -6459,6 +6578,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
         return base
 
     # derive major_bearish for gating logic
@@ -6479,6 +6599,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         base["short_hint"] = ["- Dữ liệu nến lỗi / thiếu → CHỜ KÈO"]
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
         return base
     if len(m15c) < 20 or len(m30c) < 5 or len(h1c) < 5 or len(h4c) < 5:
         base["note_lines"].append("⚠️ Dữ liệu candles chưa đủ → kết quả có thể thiếu chính xác (vẫn hiển thị).")
@@ -6809,6 +6930,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                     "notes": notes + ["➡️ Khi HL + BOS xuất hiện (trạng thái OK/OK) → mới canh BUY theo H1 + chờ M30 confirm."],
                 })
                 _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+                base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
                 base["last_price"] = float(last_close_15)
                 base["current_price"] = float(last_close_15)
                 _attach_vnext_meta(
@@ -6991,6 +7113,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "notes": ["Chưa đủ điều kiện vào kèo. Chờ thêm nến xác nhận/retest."],
         })
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
         base["last_price"] = float(last_close_15)
         base["current_price"] = float(last_close_15)
         _attach_vnext_meta(
@@ -7036,6 +7159,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 "notes": ["H1 chưa bullish → không BUY. Chờ H1 confirm hoặc kèo rõ hơn."],
             })
             _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+            base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
             base["last_price"] = float(last_close_15)
             base["current_price"] = float(last_close_15)
             _attach_vnext_meta(
@@ -7077,6 +7201,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
                 "notes": ["H1 chưa bearish → không SELL. Chờ H1 confirm hoặc kèo rõ hơn."],
             })
             _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+            base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
             base["last_price"] = float(last_close_15)
             base["current_price"] = float(last_close_15)
             _attach_vnext_meta(
@@ -7163,6 +7288,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "notes": notes + ["Chờ nến M30 đóng xác nhận rồi mới vào lệnh."],
         })
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
         base["last_price"] = float(last_close_15)
         base["current_price"] = float(last_close_15)
         _attach_vnext_meta(
@@ -8185,6 +8311,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "notes": notes,
     })
     _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+    base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
     base["last_price"] = float(last_close_15)
     base["current_price"] = float(last_close_15)
     _attach_vnext_meta(
