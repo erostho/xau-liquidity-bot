@@ -2675,6 +2675,227 @@ def _find_last_impulse_leg(m15c, side: str, lookback: int = 40) -> dict:
     return out
 
 
+
+def _safe_float(x, default=0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _candle_body(c) -> float:
+    return abs(_safe_float(c.close) - _safe_float(c.open))
+
+
+def _candle_range(c) -> float:
+    return max(1e-9, _safe_float(c.high) - _safe_float(c.low))
+
+
+def _upper_wick(c) -> float:
+    o = _safe_float(c.open)
+    cl = _safe_float(c.close)
+    h = _safe_float(c.high)
+    return max(0.0, h - max(o, cl))
+
+
+def _lower_wick(c) -> float:
+    o = _safe_float(c.open)
+    cl = _safe_float(c.close)
+    l = _safe_float(c.low)
+    return max(0.0, min(o, cl) - l)
+
+
+def _is_bull(c) -> bool:
+    return _safe_float(c.close) > _safe_float(c.open)
+
+
+def _is_bear(c) -> bool:
+    return _safe_float(c.close) < _safe_float(c.open)
+
+
+def _clone_candle(c):
+    class CandleClone:
+        pass
+    x = CandleClone()
+    x.time = getattr(c, "time", None)
+    x.open = _safe_float(getattr(c, "open", 0.0))
+    x.high = _safe_float(getattr(c, "high", 0.0))
+    x.low = _safe_float(getattr(c, "low", 0.0))
+    x.close = _safe_float(getattr(c, "close", 0.0))
+    x.tick_volume = _safe_float(getattr(c, "tick_volume", 0.0))
+    return x
+
+
+def _apply_live_price_to_last_candle(m15: List[Any], live_price: Optional[float]) -> List[Any]:
+    """
+    Tạo bản copy của M15 và ép giá live vào nến cuối.
+    Không sửa list gốc để tránh side-effect.
+    """
+    if not m15:
+        return m15
+
+    px = _safe_float(live_price, 0.0)
+    if px <= 0:
+        return m15
+
+    out = list(m15)
+    last = _clone_candle(out[-1])
+
+    last.close = px
+    last.high = max(_safe_float(last.high), px)
+    last.low = min(_safe_float(last.low), px)
+
+    out[-1] = last
+    return out
+
+
+def _estimate_live_volume_state(last_candle, prev_candles: List[Any]) -> str:
+    vols = [_safe_float(getattr(x, "tick_volume", 0.0)) for x in prev_candles[-20:] if x is not None]
+    cur = _safe_float(getattr(last_candle, "tick_volume", 0.0))
+    if not vols:
+        return "NORMAL"
+    sma = sum(vols) / max(1, len(vols))
+    if cur >= 1.8 * max(1.0, sma):
+        return "HIGH"
+    if cur <= 0.7 * max(1.0, sma):
+        return "LOW"
+    return "NORMAL"
+
+
+def _realtime_engine_v6(
+    m15: List[Any],
+    live_price: Optional[float],
+    atr15: float,
+    side_hint: str = "NONE",
+    range_low: Optional[float] = None,
+    range_high: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Engine đọc intrabar realtime.
+    side_hint: bias hiện tại của bot (BUY/SELL/NONE)
+    """
+    out = {
+        "state": "IDLE",                  # IDLE / LIVE_REACTION / SPIKE / LIQUIDATION / BREAKOUT
+        "side": "NONE",                   # BUY / SELL / NONE
+        "quality": "LOW",
+        "event": "NONE",
+        "message": "",
+        "live_price": _safe_float(live_price, 0.0),
+        "candle_live": "NO",
+        "body_vs_atr": 0.0,
+        "range_vs_atr": 0.0,
+        "wick_bias": "NONE",
+        "vol_state": "NORMAL",
+        "follow_hint": "NONE",
+        "entry_mode": "WAIT",
+        "reason_lines": [],
+    }
+
+    if not m15 or len(m15) < 3:
+        out["message"] = "Không đủ dữ liệu M15"
+        return out
+
+    live_m15 = _apply_live_price_to_last_candle(m15, live_price)
+    last = live_m15[-1]
+    prev = live_m15[-2]
+    prev2 = live_m15[-3]
+
+    out["candle_live"] = "YES"
+
+    body = _candle_body(last)
+    rng = _candle_range(last)
+    body_vs_atr = body / max(1e-9, _safe_float(atr15, 1.0))
+    range_vs_atr = rng / max(1e-9, _safe_float(atr15, 1.0))
+
+    out["body_vs_atr"] = round(body_vs_atr, 3)
+    out["range_vs_atr"] = round(range_vs_atr, 3)
+    out["vol_state"] = _estimate_live_volume_state(last, live_m15[:-1])
+
+    uw = _upper_wick(last)
+    lw = _lower_wick(last)
+    if uw > 1.2 * max(1e-9, lw):
+        out["wick_bias"] = "UPPER"
+    elif lw > 1.2 * max(1e-9, uw):
+        out["wick_bias"] = "LOWER"
+
+    bull = _is_bull(last)
+    bear = _is_bear(last)
+
+    strong_range = range_vs_atr >= 0.9
+    strong_body = body_vs_atr >= 0.55
+    extreme_range = range_vs_atr >= 1.35
+    high_vol = out["vol_state"] == "HIGH"
+
+    # -------- live breakout / liquidation style --------
+    if range_high is not None and _safe_float(live_price) > _safe_float(range_high):
+        out["state"] = "BREAKOUT"
+        out["side"] = "BUY"
+        out["event"] = "BREAK_HIGH_LIVE"
+        out["reason_lines"].append("Giá live đang vượt range high")
+    elif range_low is not None and _safe_float(live_price) < _safe_float(range_low):
+        out["state"] = "BREAKOUT"
+        out["side"] = "SELL"
+        out["event"] = "BREAK_LOW_LIVE"
+        out["reason_lines"].append("Giá live đang thủng range low")
+
+    if extreme_range and high_vol:
+        out["state"] = "LIQUIDATION"
+        out["event"] = "FAST_SWEEP"
+        out["quality"] = "HIGH"
+        if bull:
+            out["side"] = "BUY"
+        elif bear:
+            out["side"] = "SELL"
+        out["reason_lines"].append("Nến live có range rất lớn + volume cao")
+
+    elif strong_range or strong_body:
+        out["state"] = "LIVE_REACTION"
+        out["quality"] = "MEDIUM"
+        if bull:
+            out["side"] = "BUY"
+        elif bear:
+            out["side"] = "SELL"
+        out["reason_lines"].append("Nến live đang biến động mạnh hơn bình thường")
+
+    # -------- wick-based trap hint --------
+    if out["wick_bias"] == "UPPER" and bear:
+        out["follow_hint"] = "SELL_TRAP_UPPER_WICK"
+        out["reason_lines"].append("Râu trên dài + đóng yếu → khả năng fail phía trên")
+    elif out["wick_bias"] == "LOWER" and bull:
+        out["follow_hint"] = "BUY_TRAP_LOWER_WICK"
+        out["reason_lines"].append("Râu dưới dài + đóng hồi → khả năng fail phía dưới")
+
+    # -------- entry mode --------
+    if out["state"] in ("LIQUIDATION", "BREAKOUT") and high_vol:
+        out["entry_mode"] = "WATCH_1_2_CANDLES"
+    elif out["state"] == "LIVE_REACTION":
+        out["entry_mode"] = "WAIT_CONFIRM"
+    else:
+        out["entry_mode"] = "WAIT"
+
+    # -------- sync với bias hiện tại --------
+    hint = str(side_hint or "NONE").upper()
+    if hint in ("BUY", "SELL") and out["side"] != "NONE" and out["side"] != hint:
+        out["reason_lines"].append(f"Live move đang ngược bias hiện tại ({hint})")
+
+    # -------- message --------
+    msg_parts = []
+    if out["state"] == "LIQUIDATION":
+        msg_parts.append("Có dấu hiệu liquidation / stop-hunt intrabar")
+    elif out["state"] == "BREAKOUT":
+        msg_parts.append("Đang có breakout intrabar")
+    elif out["state"] == "LIVE_REACTION":
+        msg_parts.append("Đang có phản ứng mạnh trên nến live")
+
+    if out["follow_hint"] != "NONE":
+        msg_parts.append(out["follow_hint"])
+
+    if not msg_parts:
+        msg_parts.append("Chưa có tín hiệu realtime nổi bật")
+
+    out["message"] = " | ".join(msg_parts)
+    return out
+
 def _build_scale_zones_from_impulse(
     current_price: float,
     side: str,
@@ -2737,6 +2958,7 @@ def _build_scale_zones_from_impulse(
             "tp1": leg_high,
             "tp2": leg_high + 0.8 * rng,
         }
+        
 def build_scale_plan_v2(
     symbol: str,
     m15,
@@ -3679,7 +3901,69 @@ def _attach_vnext_meta(
             entry_sniper=entry_sniper or {"trigger": "NONE"},
             playbook_v2=playbook_v2 or {},
         )
-
+        # =========================================================
+        # CẮM VÀO META
+        # =========================================================
+        
+        live_price = None
+        try:
+            # nếu bạn đã có giá hiện tại trong pipeline thì dùng luôn
+            live_price = float(current_price)
+        except Exception:
+            try:
+                live_price = float(sig.get("price"))
+            except Exception:
+                live_price = None
+        
+        range_low = None
+        range_high = None
+        try:
+            range_low = float(k.get("M15_LOW")) if k.get("M15_LOW") is not None else None
+            range_high = float(k.get("M15_HIGH")) if k.get("M15_HIGH") is not None else None
+        except Exception:
+            pass
+        
+        side_hint = "NONE"
+        try:
+            side_hint = str(((meta.get("signal_consistency_v1") or {}).get("final_side") or "NONE")).upper()
+        except Exception:
+            pass
+        
+        realtime_v6 = _realtime_engine_v6(
+            m15=m15,
+            live_price=live_price,
+            atr15=atr15,
+            side_hint=side_hint,
+            range_low=range_low,
+            range_high=range_high,
+        )
+        
+        meta["realtime_engine_v6"] = realtime_v6
+        try:
+            continuity_v1 = _post_break_continuity_engine_v1(
+                current_price=float(last_px if 'last_px' in locals() and last_px is not None else current_price),
+                bos_level=(k or {}).get("M15_BOS"),
+                range_low=(k or {}).get("M15_LOW"),
+                range_high=(k or {}).get("M15_HIGH"),
+                struct=struct if 'struct' in locals() else {},
+                close_confirm_v4=close_confirm_v4 if 'close_confirm_v4' in locals() else {},
+                liquidity_map_v1=liquidity_map_v1 if 'liquidity_map_v1' in locals() else {},
+                trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() else {},
+            )
+        except Exception:
+            continuity_v1 = {
+                "state": "NONE",
+                "reference_level": None,
+                "reference_type": "NONE",
+                "side_after_break": "NONE",
+                "role_shift": "NONE",
+                "message": "",
+                "narrative": "",
+                "action": "WAIT",
+                "reasons": [],
+            }
+        
+        meta["post_break_continuity_v1"] = continuity_v1
         meta = base.setdefault("meta", {})
         meta["context_verdict_v1"] = context_verdict_v1
         meta["rsi_context_v1"] = rsi_context_v1
@@ -5595,7 +5879,130 @@ def _f(v):
         return f"{float(v):,.2f}"
     except Exception:
         return str(v)
-        
+def _post_break_continuity_engine_v1(
+    current_price: float,
+    bos_level: float | None,
+    range_low: float | None,
+    range_high: float | None,
+    struct: dict | None,
+    close_confirm_v4: dict | None,
+    liquidity_map_v1: dict | None,
+    trigger_engine_v3: dict | None,
+) -> dict:
+    """
+    Theo dõi câu chuyện sau khi market break một mốc quan trọng.
+    Ý tưởng:
+    - Nếu mốc BOS/trigger cũ đã bị break -> đừng quên nó
+    - Kiểm tra market đang ở pha:
+        1) PRE_BREAK
+        2) POST_BREAK_HOLD
+        3) POST_BREAK_FAIL
+        4) POST_BREAK_CHOP
+    """
+
+    out = {
+        "state": "NONE",
+        "reference_level": None,
+        "reference_type": "NONE",
+        "side_after_break": "NONE",
+        "role_shift": "NONE",   # RES_TO_SUP / SUP_TO_RES / NONE
+        "message": "",
+        "narrative": "",
+        "action": "WAIT",
+        "reasons": [],
+    }
+
+    px = float(current_price or 0.0)
+    bos = float(bos_level) if bos_level is not None else None
+    lo = float(range_low) if range_low is not None else None
+    hi = float(range_high) if range_high is not None else None
+
+    struct = struct or {}
+    cc = close_confirm_v4 or {}
+    liq = liquidity_map_v1 or {}
+    tg3 = trigger_engine_v3 or {}
+
+    h1 = str(struct.get("H1") or "").upper()
+    m15 = str(struct.get("M15") or "").upper()
+
+    # ưu tiên BOS level làm mốc continuity
+    ref = bos
+    ref_type = "BOS" if bos is not None else "NONE"
+
+    # fallback nếu chưa có BOS thì dùng range biên gần nhất
+    if ref is None:
+        if hi is not None and px >= ((lo + hi) / 2 if lo is not None else hi):
+            ref = hi
+            ref_type = "RANGE_HIGH"
+        elif lo is not None:
+            ref = lo
+            ref_type = "RANGE_LOW"
+
+    if ref is None:
+        out["message"] = "Không có mốc continuity rõ"
+        return out
+
+    out["reference_level"] = ref
+    out["reference_type"] = ref_type
+
+    hold = str(cc.get("hold") or "").upper()
+    strength = str(cc.get("strength") or "").upper()
+    tg_side = str((tg3 or {}).get("side") or "NONE").upper()
+
+    # ===== Logic chính =====
+    # 1) Nếu giá đang nằm trên mốc cũ
+    if px > ref:
+        # nếu cấu trúc ngắn hạn đang bullish / chuyển sang HH-HL
+        if "HH" in m15 or "HL" in m15:
+            out["state"] = "POST_BREAK_HOLD"
+            out["side_after_break"] = "BUY"
+            out["role_shift"] = "RES_TO_SUP"
+            out["action"] = "WAIT_RETEST_HOLD"
+            out["reasons"].append("Giá đang đứng trên mốc cũ")
+            out["reasons"].append("M15 đang giữ thiên hướng bullish")
+            if hold == "YES":
+                out["reasons"].append("Đã có dấu hiệu giữ mốc")
+            out["message"] = f"Mốc {ref:.2f} đã bị break lên; giờ phải xem retest giữ được hay không"
+            out["narrative"] = "Break cũ đang có xu hướng chuyển sang hỗ trợ; ưu tiên chờ retest giữ được để xét BUY"
+        else:
+            out["state"] = "POST_BREAK_CHOP"
+            out["side_after_break"] = "NONE"
+            out["role_shift"] = "RES_TO_SUP"
+            out["action"] = "WAIT"
+            out["reasons"].append("Giá ở trên mốc cũ nhưng chưa có follow-through rõ")
+            out["message"] = f"Giá đã vượt {ref:.2f} nhưng chưa xác nhận giữ đẹp"
+            out["narrative"] = "Đã break lên nhưng chưa rõ là break thật hay chỉ đứng lình xình trên vùng"
+
+    # 2) Nếu giá đang nằm dưới mốc cũ
+    elif px < ref:
+        # nếu trước đó có câu chuyện break lên, giờ fail lại xuống dưới
+        if tg_side == "SELL" or "LL" in m15 or "LH" in m15:
+            out["state"] = "POST_BREAK_FAIL"
+            out["side_after_break"] = "SELL"
+            out["role_shift"] = "SUP_TO_RES"
+            out["action"] = "FADE_FAIL_BREAK"
+            out["reasons"].append("Giá đã mất lại mốc cũ")
+            out["reasons"].append("Cấu trúc ngắn hạn nghiêng xuống")
+            out["message"] = f"Cú break qua {ref:.2f} có dấu hiệu fail; ưu tiên xem đây là false break"
+            out["narrative"] = "Mốc cũ không giữ được; breakout có thể là bẫy, nghiêng sang SELL nếu có xác nhận tiếp"
+        else:
+            out["state"] = "PRE_BREAK_OR_REJECT"
+            out["side_after_break"] = "NONE"
+            out["role_shift"] = "NONE"
+            out["action"] = "WAIT"
+            out["reasons"].append("Giá còn ở dưới mốc continuity")
+            out["message"] = f"Giá vẫn chưa giữ được trên {ref:.2f}"
+            out["narrative"] = "Mốc cũ vẫn chưa bị chinh phục rõ; tiếp tục quan sát"
+
+    else:
+        out["state"] = "AT_LEVEL"
+        out["side_after_break"] = "NONE"
+        out["role_shift"] = "NONE"
+        out["action"] = "WATCH_REACTION"
+        out["message"] = f"Giá đang đúng tại mốc {ref:.2f}"
+        out["narrative"] = "Market đang phản ứng ngay tại mốc continuity"
+
+    return out        
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -8391,6 +8798,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
     sce1 = meta.get("signal_consistency_v1") or {}
     state_line = sce1.get("narrative") or state_text(meta.get("market_state_v2"), narrative, struct, htf_pressure_v4)
+    pbc1 = (meta.get("post_break_continuity_v1") or {})
+    pbc_state = str(pbc1.get("state") or "NONE").upper()
+    pbc_narrative = str(pbc1.get("narrative") or "").strip()
+    
+    if pbc_narrative:
+        status = pbc_narrative
     add(lines, f"🌡 Trạng thái: {state_line}")
     #add(lines, f"🌡 Trạng thái: {state_text(meta.get('market_state_v2'), narrative, struct, htf_pressure_v4)}")
     if flow:
@@ -8496,7 +8909,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
     reasons = mm_play.get("reason") or []
     if reasons:
         lines.append(f"- Lý do: {', '.join(reasons[:3])}")
-            
+    # =========================================================
+    # FORMAT OUTPUT
+    # =========================================================
+    
+    rt6 = (sig.get("meta") or {}).get("realtime_engine_v6") or {}
+    if rt6:
+        add(lines, "")
+        add(lines, "⚡ REALTIME ENGINE V6:")
+        add(lines, f"- State: {rt6.get('state')}")
+        add(lines, f"- Side: {rt6.get('side')}")
+        add(lines, f"- Quality: {rt6.get('quality')}")
+        add(lines, f"- Live candle: {rt6.get('candle_live')}")
+        add(lines, f"- Body/ATR: {rt6.get('body_vs_atr')}")
+        add(lines, f"- Range/ATR: {rt6.get('range_vs_atr')}")
+        add(lines, f"- Wick bias: {rt6.get('wick_bias')}")
+        add(lines, f"- Volume state: {rt6.get('vol_state')}")
+        add(lines, f"- Entry mode: {rt6.get('entry_mode')}")
+        add(lines, f"- Message: {rt6.get('message')}")
+        for s in (rt6.get("reason_lines") or [])[:3]:
+            add(lines, f"- {s}")        
     add(lines, "")
     add(lines, "✅ Xác nhận:")
     if struct:
@@ -8536,10 +8968,22 @@ def format_signal(sig: Dict[str, Any]) -> str:
         range_hi_v = hi
     elif isinstance(rinfo, dict):
         range_hi_v = rinfo.get("hi")
-    
+    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
+    pbc_state = str(pbc1.get("state") or "NONE").upper()
+    ref_lv = pbc1.get("reference_level")    
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
-    
+   
+    if pbc_state == "POST_BREAK_HOLD" and ref_lv is not None:
+        add(lines, f"- Mốc cũ {nf(ref_lv)} đã bị break lên; giờ chỉ xét BUY nếu retest giữ được trên mốc này")
+    elif pbc_state == "POST_BREAK_FAIL" and ref_lv is not None:
+        add(lines, f"- Cú break qua {nf(ref_lv)} có dấu hiệu fail; ưu tiên xét SELL nếu mất lại mốc và follow-through")
+    elif pbc_state == "POST_BREAK_CHOP" and ref_lv is not None:
+        add(lines, f"- Giá đã vượt {nf(ref_lv)} nhưng chưa follow-through; đứng ngoài chờ rõ giữ được hay mất lại mốc")
+    else:
+        add(lines, "- Chỉ SELL khi có 1 trong 2 điều kiện:")
+        add(lines, f"  • Sweep high {nf((k or {}).get('M15_HIGH'))} rồi fail giữ")
+        add(lines, f"  • Hoặc break low {nf((k or {}).get('M15_LOW'))} và giữ dưới")
     if final_side == "SELL":
         if range_hi_v is not None and range_lo_v is not None:
             add(lines, f"- Chỉ SELL khi có 1 trong 2 điều kiện:")
@@ -8561,7 +9005,23 @@ def format_signal(sig: Dict[str, Any]) -> str:
             add(lines, f"- Ưu tiên đứng ngoài; chờ sweep high {_fmt(range_hi_v)} hoặc break low {_fmt(range_lo_v)} rồi mới đánh giá tiếp")
         else:
             add(lines, "- Ưu tiên đứng ngoài; chờ market quét 1 đầu rồi quan sát phản ứng")
-    
+            
+    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
+    if pbc1 and pbc1.get("state") not in (None, "", "NONE"):
+        add(lines, "")
+        add(lines, "🔁 POST-BREAK CONTINUITY:")
+        add(lines, f"- State: {pbc1.get('state')}")
+        if pbc1.get("reference_level") is not None:
+            add(lines, f"- Mốc đang theo dõi: {nf(pbc1.get('reference_level'))} ({pbc1.get('reference_type')})")
+        add(lines, f"- Vai trò mới của mốc: {pbc1.get('role_shift')}")
+        add(lines, f"- Hướng sau break: {pbc1.get('side_after_break')}")
+        add(lines, f"- Hành động: {pbc1.get('action')}")
+        if pbc1.get("message"):
+            add(lines, f"- {pbc1.get('message')}")
+        if pbc1.get("narrative"):
+            add(lines, f"- Câu chuyện tiếp diễn: {pbc1.get('narrative')}")
+        for s in (pbc1.get("reasons") or [])[:3]:
+            add(lines, f"- {s}")
     add(lines, "")
     add(lines, "🪄 Kịch bản phụ:")
     add(lines, f"- {plan_pack['alt_plan']}")
@@ -8929,7 +9389,27 @@ def format_signal(sig: Dict[str, Any]) -> str:
         range_hi_v = hi
     elif isinstance(rinfo, dict):
         range_hi_v = rinfo.get("hi")
+
+    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
+    pbc_state = str(pbc1.get("state") or "NONE").upper()
+    ref_lv = pbc1.get("reference_level")
     add(lines, "⏳ Wait for:")
+    
+    if pbc_state == "POST_BREAK_HOLD" and ref_lv is not None:
+        add(lines, f"- Retest giữ được trên {nf(ref_lv)} → xét BUY")
+        add(lines, f"- Nếu mất lại {nf(ref_lv)} → coi chừng false break")
+    elif pbc_state == "POST_BREAK_FAIL" and ref_lv is not None:
+        add(lines, f"- Mất lại {nf(ref_lv)} rõ ràng → xét SELL")
+        add(lines, f"- Nếu reclaim lại trên {nf(ref_lv)} → bỏ kịch bản SELL fail-break")
+    elif pbc_state == "POST_BREAK_CHOP" and ref_lv is not None:
+        add(lines, f"- Chờ market trả lời rõ: giữ trên {nf(ref_lv)} hay mất lại mốc này")
+    else:
+        hi_ = (k or {}).get("M15_HIGH")
+        lo_ = (k or {}).get("M15_LOW")
+        if hi_ is not None:
+            add(lines, f"- Sweep high tại {nf(hi_)} rồi fail giữ → canh SELL")
+        if lo_ is not None:
+            add(lines, f"- Hoặc break low {nf(lo_)} với follow-through → canh SELL")
     if final_side == "SELL":
         if range_hi_v is not None:
             add(lines, f"- Sweep high tại {_fmt(range_hi_v)} rồi fail giữ → canh SELL")
