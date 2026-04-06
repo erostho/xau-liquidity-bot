@@ -3679,33 +3679,7 @@ def _attach_vnext_meta(
             entry_sniper=entry_sniper or {"trigger": "NONE"},
             playbook_v2=playbook_v2 or {},
         )
-        # =========================================================
 
-        try:
-            continuity_v1 = _post_break_continuity_engine_v1(
-                current_price=float(last_px if 'last_px' in locals() and last_px is not None else current_price),
-                bos_level=(k or {}).get("M15_BOS"),
-                range_low=(k or {}).get("M15_LOW"),
-                range_high=(k or {}).get("M15_HIGH"),
-                struct=struct if 'struct' in locals() else {},
-                close_confirm_v4=close_confirm_v4 if 'close_confirm_v4' in locals() else {},
-                liquidity_map_v1=liquidity_map_v1 if 'liquidity_map_v1' in locals() else {},
-                trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() else {},
-            )
-        except Exception:
-            continuity_v1 = {
-                "state": "NONE",
-                "reference_level": None,
-                "reference_type": "NONE",
-                "side_after_break": "NONE",
-                "role_shift": "NONE",
-                "message": "",
-                "narrative": "",
-                "action": "WAIT",
-                "reasons": [],
-            }
-        
-        meta["post_break_continuity_v1"] = continuity_v1
         meta = base.setdefault("meta", {})
         meta["context_verdict_v1"] = context_verdict_v1
         meta["rsi_context_v1"] = rsi_context_v1
@@ -3988,7 +3962,33 @@ def _attach_vnext_meta(
             no_trade_zone_v3=no_trade_zone_v3,
         )
         meta["final_decision_engine_v1"] = final_decision_engine_v1
+        # =========================================================
 
+        try:
+            continuity_v1 = _post_break_continuity_engine_v1(
+                current_price=float(last_px if 'last_px' in locals() and last_px is not None else current_price),
+                bos_level=(k or {}).get("M15_BOS"),
+                range_low=(k or {}).get("M15_LOW"),
+                range_high=(k or {}).get("M15_HIGH"),
+                struct=struct if 'struct' in locals() else {},
+                close_confirm_v4=close_confirm_v4 if 'close_confirm_v4' in locals() else {},
+                liquidity_map_v1=liquidity_map_v1 if 'liquidity_map_v1' in locals() else {},
+                trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() else {},
+            )
+        except Exception:
+            continuity_v1 = {
+                "state": "NONE",
+                "reference_level": None,
+                "reference_type": "NONE",
+                "side_after_break": "NONE",
+                "role_shift": "NONE",
+                "message": "",
+                "narrative": "",
+                "action": "WAIT",
+                "reasons": [],
+            }
+        
+        meta["post_break_continuity_v1"] = continuity_v1
         # ===== SIGNAL CONSISTENCY SYNC WITH FINAL DECISION =====
         try:
             sce1 = meta.get("signal_consistency_v1") or {}
@@ -8696,17 +8696,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     ref_lv = pbc1.get("reference_level")    
     add(lines, "")
     add(lines, "🎯 Kịch bản chính:")
-   
-    if pbc_state == "POST_BREAK_HOLD" and ref_lv is not None:
-        add(lines, f"- Mốc cũ {nf(ref_lv)} đã bị break lên; giờ chỉ xét BUY nếu retest giữ được trên mốc này")
-    elif pbc_state == "POST_BREAK_FAIL" and ref_lv is not None:
-        add(lines, f"- Cú break qua {nf(ref_lv)} có dấu hiệu fail; ưu tiên xét SELL nếu mất lại mốc và follow-through")
-    elif pbc_state == "POST_BREAK_CHOP" and ref_lv is not None:
-        add(lines, f"- Giá đã vượt {nf(ref_lv)} nhưng chưa follow-through; đứng ngoài chờ rõ giữ được hay mất lại mốc")
-    else:
-        add(lines, "- Chỉ SELL khi có 1 trong 2 điều kiện:")
-        add(lines, f"  • Sweep high {nf((k or {}).get('M15_HIGH'))} rồi fail giữ")
-        add(lines, f"  • Hoặc break low {nf((k or {}).get('M15_LOW'))} và giữ dưới")
     if final_side == "SELL":
         if range_hi_v is not None and range_lo_v is not None:
             add(lines, f"- Chỉ SELL khi có 1 trong 2 điều kiện:")
@@ -9117,22 +9106,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     pbc_state = str(pbc1.get("state") or "NONE").upper()
     ref_lv = pbc1.get("reference_level")
     add(lines, "⏳ Wait for:")
-    
-    if pbc_state == "POST_BREAK_HOLD" and ref_lv is not None:
-        add(lines, f"- Retest giữ được trên {nf(ref_lv)} → xét BUY")
-        add(lines, f"- Nếu mất lại {nf(ref_lv)} → coi chừng false break")
-    elif pbc_state == "POST_BREAK_FAIL" and ref_lv is not None:
-        add(lines, f"- Mất lại {nf(ref_lv)} rõ ràng → xét SELL")
-        add(lines, f"- Nếu reclaim lại trên {nf(ref_lv)} → bỏ kịch bản SELL fail-break")
-    elif pbc_state == "POST_BREAK_CHOP" and ref_lv is not None:
-        add(lines, f"- Chờ market trả lời rõ: giữ trên {nf(ref_lv)} hay mất lại mốc này")
-    else:
-        hi_ = (k or {}).get("M15_HIGH")
-        lo_ = (k or {}).get("M15_LOW")
-        if hi_ is not None:
-            add(lines, f"- Sweep high tại {nf(hi_)} rồi fail giữ → canh SELL")
-        if lo_ is not None:
-            add(lines, f"- Hoặc break low {nf(lo_)} với follow-through → canh SELL")
+
     if final_side == "SELL":
         if range_hi_v is not None:
             add(lines, f"- Sweep high tại {_fmt(range_hi_v)} rồi fail giữ → canh SELL")
