@@ -7307,7 +7307,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             band_hi = max(e20, e50)
             last_close = float(m15c[-2].close)  # last closed candle
             # NORMAL: XAU chặt hơn chút, BTC thoáng hơn
-            tol_pct = 0.10 if xau_priority else 0.12
+            tol_pct = 0.11 if xau_priority else 0.12
             tol = tol_pct / 100.0
             in_zone = (band_lo * (1 - tol)) <= last_close <= (band_hi * (1 + tol))
 
@@ -7385,7 +7385,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         # - XAU: ưu tiên BOS+retest, cho BOS+micro-retest (để không đói kèo), engulf chỉ là "bonus" không đủ 1 mình
         # - BTC: BOS+retest / BOS+micro-retest, engulf là fallback
         if xau_priority:
-            momentum_ok = int(bool(bos_retest or bos_micro_retest))
+            momentum_ok = int(bool(bos_retest or bos_micro_retest or engulf_aligned))
         else:
             momentum_ok = int(bool(bos_retest or bos_micro_retest or engulf_aligned))
 
