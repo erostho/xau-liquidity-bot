@@ -23,6 +23,184 @@ def add(buf, s):
     if s:
         buf.append(s)
 
+def _setup_class_from_final_score_v1(final_score) -> str:
+    try:
+        s = float(final_score or 0.0)
+    except Exception:
+        s = 0.0
+
+    if s >= 80:
+        return "A"
+    if s >= 60:
+        return "B"
+    if s >= 40:
+        return "C"
+    return "D"
+
+
+def _setup_levels_v1(sig: dict) -> dict:
+    """
+    Lấy Entry / TP / SL linh động theo thứ tự:
+    1) playbook_v2 zone
+    2) sig.entry
+    3) scale_plan_v2.orders[0]
+    """
+    meta = (sig.get("meta") or {})
+    playbook = meta.get("playbook_v2") or {}
+
+    def _fmt_price(x):
+        try:
+            return nf(float(x))
+        except Exception:
+            return "n/a"
+
+    zone_low = playbook.get("zone_low")
+    zone_high = playbook.get("zone_high")
+
+    entry_text = "n/a"
+    if zone_low is not None and zone_high is not None:
+        try:
+            lo = min(float(zone_low), float(zone_high))
+            hi = max(float(zone_low), float(zone_high))
+            entry_text = f"{nf(lo)} – {nf(hi)}"
+        except Exception:
+            entry_text = "n/a"
+    else:
+        entry = sig.get("entry")
+        if entry is not None:
+            entry_text = _fmt_price(entry)
+        else:
+            try:
+                sp = meta.get("scale_plan_v2") or {}
+                orders = sp.get("orders") or []
+                if orders:
+                    o1 = orders[0]
+                    zlo = o1.get("zone_lo")
+                    zhi = o1.get("zone_hi")
+                    if zlo is not None and zhi is not None:
+                        lo = min(float(zlo), float(zhi))
+                        hi = max(float(zlo), float(zhi))
+                        entry_text = f"{nf(lo)} – {nf(hi)}"
+            except Exception:
+                pass
+
+    sl = sig.get("sl")
+    tp1 = sig.get("tp1")
+    tp2 = sig.get("tp2")
+
+    if tp1 is not None and tp2 is not None:
+        tp_text = f"{_fmt_price(tp1)} / {_fmt_price(tp2)}"
+    elif tp1 is not None:
+        tp_text = _fmt_price(tp1)
+    elif tp2 is not None:
+        tp_text = _fmt_price(tp2)
+    else:
+        tp_text = "n/a"
+
+    sl_text = _fmt_price(sl) if sl is not None else "n/a"
+
+    return {
+        "entry": entry_text,
+        "tp": tp_text,
+        "sl": sl_text,
+    }
+
+
+def _setup_reasons_v1(sig: dict, final_score, tradeable_label: str) -> list[str]:
+    meta = (sig.get("meta") or {})
+    reasons = []
+
+    try:
+        fs = float(final_score or 0.0)
+    except Exception:
+        fs = 0.0
+
+    sce1 = meta.get("signal_consistency_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    if final_side in ("BUY", "SELL"):
+        reasons.append(f"final side = {final_side}")
+
+    pb1 = meta.get("pullback_engine_v1") or {}
+    if pb1.get("ok"):
+        label = str(pb1.get("label") or "CHƯA RÕ")
+        pct = str(pb1.get("pullback_pct_text") or "n/a")
+        rr = str(pb1.get("reversal_risk") or "LOW")
+        reasons.append(f"pullback {label.lower()} ({pct})")
+        reasons.append(f"reversal risk = {rr}")
+
+    cc1 = meta.get("close_confirm_v4") or {}
+    cc_strength = str(cc1.get("strength") or "NO").upper()
+    if cc_strength not in ("", "NO", "N/A", "NONE"):
+        reasons.append(f"close confirm = {cc_strength}")
+    else:
+        reasons.append("chưa có close confirm rõ")
+
+    ld1 = meta.get("liquidity_completion_v1") or {}
+    ld_state = str(ld1.get("state") or "").upper()
+    if ld_state:
+        reasons.append(f"liquidity = {ld_state}")
+
+    play4 = meta.get("playbook_v4") or {}
+    quality = str(play4.get("quality") or "").upper()
+    if quality:
+        reasons.append(f"playbook = {quality}")
+
+    ntz = meta.get("no_trade_zone_v3") or meta.get("no_trade_zone") or {}
+    if isinstance(ntz, dict) and ntz.get("active"):
+        reasons.append("đang ở no-trade zone")
+
+    tg3 = meta.get("trigger_engine_v3") or {}
+    tg3_state = str(tg3.get("state") or "").upper()
+    if tg3_state == "WAIT":
+        reasons.append("trigger chưa sẵn sàng")
+    elif tg3_state:
+        reasons.append(f"trigger = {tg3_state}")
+
+    if str(tradeable_label).upper() == "NO":
+        reasons.append("tradeable = NO")
+
+    if fs < 40:
+        reasons.append("edge chưa đủ mạnh")
+    elif fs < 60:
+        reasons.append("setup còn yếu")
+    elif fs < 80:
+        reasons.append("setup dùng được nhưng chưa thật sự sạch")
+    else:
+        reasons.append("setup khá sạch")
+
+    # dedupe
+    out = []
+    seen = set()
+    for r in reasons:
+        r = str(r).strip()
+        if r and r not in seen:
+            seen.add(r)
+            out.append(r)
+
+    return out[:4]
+
+
+def _render_setup_class_block_v1(sig: dict, final_score, tradeable_label: str) -> list[str]:
+    cls = _setup_class_from_final_score_v1(final_score)
+    levels = _setup_levels_v1(sig)
+    reasons = _setup_reasons_v1(sig, final_score, tradeable_label)
+
+    try:
+        score_txt = f"{float(final_score):.1f}".rstrip("0").rstrip(".")
+    except Exception:
+        score_txt = "0"
+
+    lines = []
+    lines.append("")
+    lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
+    lines.append("🧠 Lý do:")
+    for s in reasons:
+        lines.append(f"- {s}")
+    lines.append("")
+    lines.append(f"🎯 Entry: {levels.get('entry', 'n/a')}")
+    lines.append(f"🎯 TP: {levels.get('tp', 'n/a')}")
+    lines.append(f"🛑 SL: {levels.get('sl', 'n/a')}")
+    return lines
     
 def _series(candles, key: str):
     return [float(_c_val(c, key, 0.0) or 0.0) for c in (candles or [])]
@@ -9408,7 +9586,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # ===== ACTION: Hành động cuối =====
     fd1 = (sig.get("meta") or {}).get("final_decision_engine_v1") or {}
     sce1 = (sig.get("meta") or {}).get("signal_consistency_v1") or {}
-
+    # ===== SETUP CLASS BLOCK =====
+    for s in _render_setup_class_block_v1(sig, final_score, tradeable_label):
+        add(action_lines, s)
     push_action("")
     push_action("⚙️ Hành động:")
     sce1 = meta.get("signal_consistency_v1") or {}
