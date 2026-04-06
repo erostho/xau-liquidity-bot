@@ -9750,7 +9750,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
     # ===== SETUP CLASS BLOCK =====
     for s in _render_setup_class_block_v1(sig, final_score, tradeable_label):
-        add(action_lines, s)
+        add(reason_lines, s)
         
     # ===== BUILD FINAL =====
     out = []
