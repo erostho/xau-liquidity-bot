@@ -11008,9 +11008,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
             push_action(f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
 
     # ===== ACTION/REASON: SMART ENTRY FILTER =====
-    rf1 = (fvg_range_plugin_v1 or {}).get("range_filter") or {}
-    ema1 = (fvg_range_plugin_v1 or {}).get("ema") or {}
-    fvg1 = (fvg_range_plugin_v1 or {}).get("fvg") or {}
+    rf1 = (_build_fvg_range_plugin_v1 or {}).get("range_filter") or {}
+    ema1 = (_build_fvg_range_plugin_v1 or {}).get("ema") or {}
+    fvg1 = (_build_fvg_range_plugin_v1 or {}).get("fvg") or {}
     
     push_action("🧩 SMART ENTRY FILTER:")
     
