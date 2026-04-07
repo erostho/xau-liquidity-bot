@@ -68,13 +68,13 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
     if cls == "C":
         return {"show": True, "entry": "WAIT_TRIGGER", "sl": "n/a", "tp": "n/a", "entry_status": "WAIT_CONFIRM"}
 
-    # ===== A/B bắt buộc có plan =====
     playbook = meta.get("playbook_v2") or {}
     fib1 = meta.get("fib_confluence_v1") or {}
     pb1 = meta.get("pullback_engine_v1") or {}
     sp = meta.get("scale_plan_v2") or {}
     cc1 = meta.get("close_confirm_v4") or {}
     tg3 = meta.get("trigger_engine_v3") or {}
+    k = meta.get("key_levels") or {}
 
     entry = _as_float(sig.get("entry"))
     sl = _as_float(sig.get("sl"))
@@ -94,14 +94,25 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         except Exception:
             current_price = None
 
+    # fallback thêm từ key_levels
+    if current_price is None:
+        rlo = _as_float(k.get("M15_RANGE_LOW"))
+        rhi = _as_float(k.get("M15_RANGE_HIGH"))
+        if rlo is not None and rhi is not None:
+            current_price = (rlo + rhi) / 2.0
+
     atr15 = _as_float(meta.get("atr15"))
     if atr15 is None or atr15 <= 0:
         try:
             atr15 = _atr(m15_raw, 14) if m15_raw else None
         except Exception:
             atr15 = None
+
     if atr15 is None or atr15 <= 0:
-        atr15 = max(1e-9, abs(float(current_price or 1.0)) * 0.003)
+        if current_price is not None:
+            atr15 = max(1e-9, abs(float(current_price)) * 0.003)
+        else:
+            atr15 = 1.0
 
     # 1) playbook zone
     if entry is None:
@@ -143,9 +154,25 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         rng = max(1e-9, hi - lo)
         entry = hi - 0.50 * rng if side == "BUY" else lo + 0.50 * rng
 
-    # 5) HARD FALLBACK CUỐI CÙNG
+    # 5) fallback range mid
+    if entry is None:
+        rlo = _as_float(k.get("M15_RANGE_LOW"))
+        rhi = _as_float(k.get("M15_RANGE_HIGH"))
+        if rlo is not None and rhi is not None:
+            entry = (rlo + rhi) / 2.0
+
+    # 6) hard fallback cuối
     if entry is None:
         entry = current_price
+
+    if entry is None:
+        return {
+            "show": True,
+            "entry": "n/a",
+            "sl": "n/a",
+            "tp": "n/a / n/a",
+            "entry_status": "WAIT_CONFIRM",
+        }
 
     if sl is None:
         if side == "BUY":
@@ -4687,6 +4714,27 @@ def _build_probe_engine_v1(
         range_pos=range_pos,
         atr15=atr15,
     )
+
+    # fallback: CLASS B vẫn cho probe mềm theo setup plan
+    if not zone.get("ok") and cls == "B":
+        plan_fallback = _build_setup_plan_v1(sig, cls)
+
+        entry_fb = _safe_float(plan_fallback.get("entry"))
+        sl_fb = _safe_float(plan_fallback.get("sl"))
+
+        if entry_fb is not None and sl_fb is not None:
+            zpad = max(1e-9, float(atr15 or 0.0) * 0.18)
+            zone = {
+                "ok": True,
+                "type": "SETUP_FALLBACK",
+                "priority": 99,
+                "strength": "LOW",
+                "side": _probe_pick_side(sig, bias_side),
+                "zone_low": min(entry_fb, sl_fb) - zpad,
+                "zone_high": max(entry_fb, sl_fb) + zpad,
+                "reason": ["class B fallback probe", "dùng setup plan khi chưa có probe zone chuẩn"],
+            }
+
     if not zone.get("ok"):
         base["summary"] = "Chưa có 1 trong 5 probe zone hợp lệ"
         return base
