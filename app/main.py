@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from app.data_source import get_candles, ingest_mt5_candles
-from app.pro_analysis import analyze_pro, format_signal, build_scale_plan_v2, format_scale_plan_v2, get_now_status, _setup_class_score_v3, _should_send_now_alert_v2
+from app.pro_analysis import analyze_pro, format_signal, build_scale_plan_v2, format_scale_plan_v2, get_now_status, _setup_class_score_v3
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
