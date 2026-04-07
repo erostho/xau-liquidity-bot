@@ -8373,7 +8373,17 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "M15_RANGE_HIGH": _range_levels(m15c, n=20)[1],
         "M15_LAST": float(m15c[-1].close) if m15c else None,
     }
-
+    try:
+        print(
+            f"[SMART_FILTER_DEBUG] {symbol} "
+            f"len_m15={len(m15c) if m15c else 0} "
+            f"len_closed15={len(closed15) if closed15 else 0} "
+            f"range_pos={range_pos} "
+            f"lo20={lo20} hi20={hi20} last20={last20} "
+            f"ema_pack_ok={bool(ema_pack)}"
+        )
+    except Exception:
+        pass
     fvg_range_plugin_v1 = _build_fvg_range_plugin_v1(
         m15c=m15c,
         bias_side=bias_side,
