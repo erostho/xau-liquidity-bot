@@ -17,6 +17,28 @@ def _c_val(c, key: str, default=None):
         return getattr(c, key, default)
     except Exception:
         return default
+
+def _as_float(x):
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+def add(buf, s):
+    if s is None:
+        return
+    s = str(s).strip()
+    if s:
+        buf.append(s)
+
+def _as_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
 def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
     """
     Logic cuối:
@@ -40,14 +62,6 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
     tg3 = meta.get("trigger_engine_v3") or {}
     sp = meta.get("scale_plan_v2") or {}
     playbook = meta.get("playbook_v2") or {}
-
-    def _as_float(x):
-        try:
-            if x is None:
-                return None
-            return float(x)
-        except Exception:
-            return None
 
     def _fmt(x):
         try:
@@ -253,46 +267,7 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         "entry_status": entry_status,
     }
 
-def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -> list[str]:
-    cls, setup_score, reasons = _setup_class_score_v3(sig)
-    plan = _build_setup_plan_v1(sig, cls)
 
-    score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
-
-    lines = []
-    lines.append("")
-    lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
-    lines.append("Lý do:")
-    for s in reasons:
-        lines.append(f"- {s}")
-
-    # D: không hiện plan
-    if not plan.get("show"):
-        return lines
-
-    lines.append("")
-    lines.append(f"🎯 Entry: {plan.get('entry', 'n/a')}")
-    lines.append(f"🎯 TP: {plan.get('tp', 'n/a')}")
-    lines.append(f"🛑 SL: {plan.get('sl', 'n/a')}")
-
-    # Chỉ hiện status khi thật sự có entry plan
-    entry_val = str(plan.get("entry") or "").strip().lower()
-    if cls in ("A", "B") and entry_val not in ("", "n/a", "wait_trigger"):
-        lines.append(f"📌 Entry status: {plan.get('entry_status', 'WAIT_CONFIRM')}")
-
-    return lines
-def add(buf, s):
-    if s is None:
-        return
-    s = str(s).strip()
-    if s:
-        buf.append(s)
-
-def _as_float(x):
-    try:
-        return float(x)
-    except Exception:
-        return None
 def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
     """
     Score riêng cho SETUP CLASS.
@@ -404,6 +379,37 @@ def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
 
     return cls, round(score, 1), out[:4]
 
+
+
+def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -> list[str]:
+    cls, setup_score, reasons = _setup_class_score_v3(sig)
+    plan = _build_setup_plan_v1(sig, cls)
+
+    score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
+
+    lines = []
+    lines.append("")
+    lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
+    lines.append("Lý do:")
+    for s in reasons:
+        lines.append(f"- {s}")
+
+    # D: không hiện plan
+    if not plan.get("show"):
+        return lines
+
+    lines.append("")
+    lines.append(f"🎯 Entry: {plan.get('entry', 'n/a')}")
+    lines.append(f"🎯 TP: {plan.get('tp', 'n/a')}")
+    lines.append(f"🛑 SL: {plan.get('sl', 'n/a')}")
+
+    # Chỉ hiện status khi thật sự có entry plan
+    entry_val = str(plan.get("entry") or "").strip().lower()
+    if cls in ("A", "B") and entry_val not in ("", "n/a", "wait_trigger"):
+        lines.append(f"📌 Entry status: {plan.get('entry_status', 'WAIT_CONFIRM')}")
+
+    return lines
+
 def should_send_now_alert_v2(sig: dict) -> tuple[bool, str]:
     """
     Gửi NOW khi:
@@ -420,77 +426,6 @@ def should_send_now_alert_v2(sig: dict) -> tuple[bool, str]:
         return True, f"{cls}/{int(score)}"
 
     return False, f"{cls}/{int(score)}"
-    
-def _extract_from_trade_method_lines_v1(method_pack: dict) -> dict:
-    """
-    Parse text từ _pick_trade_method_m30(...) để lấy Entry / SL / TP fallback.
-    """
-    out = {"entry": None, "sl": None, "tp": None}
-    if not isinstance(method_pack, dict):
-        return out
-
-    lines = method_pack.get("lines") or []
-    if not lines:
-        return out
-
-    text = "\n".join(str(x) for x in lines)
-
-    # Entry gợi ý: chờ RETEST về ~1234 rồi mới vào
-    m_entry = re.search(r"Entry gợi ý:.*?~([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
-    if m_entry:
-        try:
-            out["entry"] = nf(float(m_entry.group(1)))
-        except Exception:
-            pass
-
-    # SL gợi ý: 123 | TP1: 456 | TP2: 789
-    m_triplet = re.search(
-        r"SL gợi ý:\s*([0-9]+(?:\.[0-9]+)?)\s*\|\s*TP1:\s*([0-9]+(?:\.[0-9]+)?)\s*\|\s*TP2:\s*([0-9]+(?:\.[0-9]+)?)",
-        text,
-        re.IGNORECASE
-    )
-    if m_triplet:
-        try:
-            out["sl"] = nf(float(m_triplet.group(1)))
-            out["tp"] = f"{nf(float(m_triplet.group(2)))} / {nf(float(m_triplet.group(3)))}"
-            return out
-        except Exception:
-            pass
-
-    # Range style: BUY gần đáy range: ~123 | SL: 120 | TP: 130
-    m_range = re.search(
-        r"(BUY|SELL).*?:\s*~([0-9]+(?:\.[0-9]+)?)\s*\|\s*SL:\s*([0-9]+(?:\.[0-9]+)?)\s*\|\s*TP:\s*([0-9]+(?:\.[0-9]+)?)",
-        text,
-        re.IGNORECASE
-    )
-    if m_range:
-        try:
-            out["entry"] = nf(float(m_range.group(2)))
-            out["sl"] = nf(float(m_range.group(3)))
-            out["tp"] = nf(float(m_range.group(4)))
-        except Exception:
-            pass
-
-    return out
-
-
-def _render_setup_class_block_v3(sig: dict, final_score, tradeable_label: str) -> list[str]:
-    cls, setup_score, reasons = _setup_class_score_v3(sig)
-    levels = _setup_levels_v3(sig, cls)
-
-    score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
-
-    lines = []
-    lines.append("")
-    lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
-    lines.append("Lý do:")
-    for s in reasons:
-        lines.append(f"- {s}")
-    lines.append("")
-    lines.append(f"🎯 Entry: {levels.get('entry', 'n/a')}")
-    lines.append(f"🎯 TP: {levels.get('tp', 'n/a')}")
-    lines.append(f"🛑 SL: {levels.get('sl', 'n/a')}")
-    return lines
     
 def _series(candles, key: str):
     return [float(_c_val(c, key, 0.0) or 0.0) for c in (candles or [])]
