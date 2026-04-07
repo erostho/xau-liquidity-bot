@@ -17,6 +17,252 @@ def _c_val(c, key: str, default=None):
         return getattr(c, key, default)
     except Exception:
         return default
+
+def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
+    """
+    Logic cuối:
+    A/B:
+        - luôn có Entry / SL / TP
+        - có Entry status: READY / WAIT_CONFIRM / AGGRESSIVE
+    C:
+        - Entry: WAIT_TRIGGER
+        - SL/TP: n/a
+    D:
+        - không hiện plan
+    """
+    meta = (sig.get("meta") or {})
+    sce1 = meta.get("signal_consistency_v1") or {}
+    side = str(sce1.get("final_side") or sig.get("recommendation") or "NONE").upper()
+
+    pb1 = meta.get("pullback_engine_v1") or {}
+    fib1 = meta.get("fib_confluence_v1") or {}
+    cc1 = meta.get("close_confirm_v4") or {}
+    tg3 = meta.get("trigger_engine_v3") or {}
+    sp = meta.get("scale_plan_v2") or {}
+    playbook = meta.get("playbook_v2") or {}
+
+    def _fmt(x):
+        try:
+            if x is None:
+                return "n/a"
+            return nf(float(x))
+        except Exception:
+            return "n/a"
+
+    def _as_float(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    # ===== D: không hiện plan =====
+    if cls == "D":
+        return {
+            "show": False,
+            "entry": None,
+            "sl": None,
+            "tp": None,
+            "entry_status": None,
+        }
+
+    # ===== C: chỉ WAIT_TRIGGER =====
+    if cls == "C":
+        return {
+            "show": True,
+            "entry": "WAIT_TRIGGER",
+            "sl": "n/a",
+            "tp": "n/a",
+            "entry_status": "WAIT_CONFIRM",
+        }
+
+    # ======================================================
+    # A/B: PHẢI LUÔN CÓ PLAN
+    # ======================================================
+
+    entry = None
+    sl = None
+    tp1 = None
+    tp2 = None
+
+    # 1) Ưu tiên levels thật từ sig
+    entry = _as_float(sig.get("entry"))
+    sl = _as_float(sig.get("sl"))
+    tp1 = _as_float(sig.get("tp1"))
+    tp2 = _as_float(sig.get("tp2"))
+
+    # 2) playbook zone
+    if entry is None:
+        zlo = _as_float(playbook.get("zone_low"))
+        zhi = _as_float(playbook.get("zone_high"))
+        if zlo is not None and zhi is not None:
+            entry = (zlo + zhi) / 2.0
+
+    # 3) scale plan
+    if entry is None:
+        try:
+            orders = sp.get("orders") or []
+            if orders:
+                o1 = orders[0]
+                zlo = _as_float(o1.get("zone_lo"))
+                zhi = _as_float(o1.get("zone_hi"))
+                if zlo is not None and zhi is not None:
+                    entry = (zlo + zhi) / 2.0
+        except Exception:
+            pass
+
+    if sl is None:
+        invalid = _as_float(sp.get("invalid"))
+        if invalid is not None:
+            sl = invalid
+
+    if tp1 is None:
+        tp1 = _as_float(sp.get("tp1"))
+    if tp2 is None:
+        tp2 = _as_float(sp.get("tp2"))
+
+    # 4) fib zone
+    if entry is None:
+        fz_lo = _as_float(fib1.get("zone_low"))
+        fz_hi = _as_float(fib1.get("zone_high"))
+        if fz_lo is not None and fz_hi is not None:
+            entry = (fz_lo + fz_hi) / 2.0
+
+    # 5) pullback anchors => fallback cứng
+    a_lo = _as_float(pb1.get("anchor_low"))
+    a_hi = _as_float(pb1.get("anchor_high"))
+
+    if entry is None and a_lo is not None and a_hi is not None:
+        lo = min(a_lo, a_hi)
+        hi = max(a_lo, a_hi)
+        rng = max(1e-9, hi - lo)
+
+        if side == "BUY":
+            # vùng hồi đẹp 40%-62%
+            ez_lo = hi - 0.62 * rng
+            ez_hi = hi - 0.40 * rng
+            entry = (ez_lo + ez_hi) / 2.0
+        elif side == "SELL":
+            ez_lo = lo + 0.40 * rng
+            ez_hi = lo + 0.62 * rng
+            entry = (ez_lo + ez_hi) / 2.0
+        else:
+            entry = lo + 0.50 * rng
+
+    # 6) nếu vẫn thiếu sl/tp => dựng bằng anchor hoặc ATR
+    atr15 = _as_float(meta.get("atr15")) or 0.0
+
+    if entry is not None:
+        if side == "BUY":
+            if sl is None:
+                if a_lo is not None:
+                    sl = a_lo
+                elif atr15 > 0:
+                    sl = entry - atr15
+
+            if tp1 is None:
+                if a_hi is not None:
+                    tp1 = a_hi
+                elif atr15 > 0:
+                    tp1 = entry + atr15
+
+            if tp2 is None:
+                if a_hi is not None and entry is not None:
+                    rr = max(1e-9, entry - (sl if sl is not None else entry - atr15))
+                    tp2 = entry + 1.6 * rr
+                elif atr15 > 0:
+                    tp2 = entry + 1.6 * atr15
+
+        elif side == "SELL":
+            if sl is None:
+                if a_hi is not None:
+                    sl = a_hi
+                elif atr15 > 0:
+                    sl = entry + atr15
+
+            if tp1 is None:
+                if a_lo is not None:
+                    tp1 = a_lo
+                elif atr15 > 0:
+                    tp1 = entry - atr15
+
+            if tp2 is None:
+                if a_lo is not None and entry is not None:
+                    rr = max(1e-9, (sl if sl is not None else entry + atr15) - entry)
+                    tp2 = entry - 1.6 * rr
+                elif atr15 > 0:
+                    tp2 = entry - 1.6 * atr15
+
+    # normalize TP text
+    if tp1 is not None and tp2 is not None:
+        tp_text = f"{_fmt(tp1)} / {_fmt(tp2)}"
+    elif tp1 is not None:
+        tp_text = _fmt(tp1)
+    elif tp2 is not None:
+        tp_text = _fmt(tp2)
+    else:
+        tp_text = "n/a"
+
+    # entry status
+    cc_strength = str(cc1.get("strength") or "NO").upper()
+    tg_state = str(tg3.get("state") or "WAIT").upper()
+
+    if tg_state in ("TRIGGERED", "READY") and cc_strength in ("WEAK", "STRONG"):
+        entry_status = "READY"
+    elif cc_strength in ("WEAK", "STRONG"):
+        entry_status = "WAIT_CONFIRM"
+    else:
+        entry_status = "AGGRESSIVE"
+
+    # fallback cuối cùng: A/B thì không được n/a entry/sl/tp
+    # nếu cực xấu vẫn phải có plan tham khảo
+    if entry is None and a_lo is not None and a_hi is not None:
+        entry = (a_lo + a_hi) / 2.0
+
+    if sl is None and entry is not None and atr15 > 0:
+        sl = entry - atr15 if side != "SELL" else entry + atr15
+
+    if tp_text == "n/a" and entry is not None and atr15 > 0:
+        if side == "SELL":
+            tp_text = f"{_fmt(entry - atr15)} / {_fmt(entry - 1.6 * atr15)}"
+        else:
+            tp_text = f"{_fmt(entry + atr15)} / {_fmt(entry + 1.6 * atr15)}"
+
+    return {
+        "show": True,
+        "entry": _fmt(entry) if entry is not None else "WAIT_TRIGGER",
+        "sl": _fmt(sl) if sl is not None else "n/a",
+        "tp": tp_text,
+        "entry_status": entry_status,
+    }
+
+
+def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -> list[str]:
+    cls, setup_score, reasons = _setup_class_score_v3(sig)
+    plan = _build_setup_plan_v1(sig, cls)
+
+    score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
+
+    lines = []
+    lines.append("")
+    lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
+    lines.append("Lý do:")
+    for s in reasons:
+        lines.append(f"- {s}")
+
+    # D: không hiện plan
+    if not plan.get("show"):
+        return lines
+
+    lines.append("")
+    lines.append(f"🎯 Entry: {plan.get('entry', 'n/a')}")
+    lines.append(f"🎯 TP: {plan.get('tp', 'n/a')}")
+    lines.append(f"🛑 SL: {plan.get('sl', 'n/a')}")
+
+    if cls in ("A", "B"):
+        lines.append(f"📌 Entry status: {plan.get('entry_status', 'WAIT_CONFIRM')}")
+
+    return lines
+
 def add(buf, s):
     if s is None:
         return
@@ -10108,7 +10354,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
     # ===== SETUP CLASS BLOCK =====
-    for s in _render_setup_class_block_v3(sig, final_score, tradeable_label):
+    for s in _render_setup_class_block_v4(sig, final_score, tradeable_label):
         add(reason_lines, s)
         
     # ===== BUILD FINAL =====
