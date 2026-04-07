@@ -17,7 +17,6 @@ def _c_val(c, key: str, default=None):
         return getattr(c, key, default)
     except Exception:
         return default
-
 def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
     """
     Logic cuối:
@@ -29,6 +28,7 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         - SL/TP: n/a
     D:
         - không hiện plan
+    Giữ nguyên logic khác, chỉ làm plan builder fail-safe cho A/B.
     """
     meta = (sig.get("meta") or {})
     sce1 = meta.get("signal_consistency_v1") or {}
@@ -41,6 +41,14 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
     sp = meta.get("scale_plan_v2") or {}
     playbook = meta.get("playbook_v2") or {}
 
+    def _as_float(x):
+        try:
+            if x is None:
+                return None
+            return float(x)
+        except Exception:
+            return None
+
     def _fmt(x):
         try:
             if x is None:
@@ -49,13 +57,7 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         except Exception:
             return "n/a"
 
-    def _as_float(x):
-        try:
-            return float(x)
-        except Exception:
-            return None
-
-    # ===== D: không hiện plan =====
+    # ===== D =====
     if cls == "D":
         return {
             "show": False,
@@ -65,7 +67,7 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
             "entry_status": None,
         }
 
-    # ===== C: chỉ WAIT_TRIGGER =====
+    # ===== C =====
     if cls == "C":
         return {
             "show": True,
@@ -78,13 +80,38 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
     # ======================================================
     # A/B: PHẢI LUÔN CÓ PLAN
     # ======================================================
-
     entry = None
     sl = None
     tp1 = None
     tp2 = None
 
-    # 1) Ưu tiên levels thật từ sig
+    # current price fallback
+    current_price = (
+        _as_float(sig.get("current_price"))
+        or _as_float(sig.get("last_price"))
+        or _as_float(sig.get("price"))
+        or _as_float(sig.get("entry"))
+    )
+
+    m15_raw = meta.get("_m15_raw") or []
+    if current_price is None and m15_raw:
+        try:
+            current_price = float(_c_val(m15_raw[-1], "close", 0.0) or 0.0)
+        except Exception:
+            current_price = None
+
+    atr15 = _as_float(meta.get("atr15")) or 0.0
+    if atr15 <= 0 and m15_raw:
+        try:
+            atr15 = _atr(m15_raw, 14) or 0.0
+        except Exception:
+            atr15 = 0.0
+
+    # fallback ATR cứng nếu vẫn chưa có
+    if atr15 <= 0 and current_price:
+        atr15 = max(1e-9, abs(float(current_price)) * 0.003)
+
+    # 1) levels thật từ sig
     entry = _as_float(sig.get("entry"))
     sl = _as_float(sig.get("sl"))
     tp1 = _as_float(sig.get("tp1"))
@@ -127,7 +154,7 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         if fz_lo is not None and fz_hi is not None:
             entry = (fz_lo + fz_hi) / 2.0
 
-    # 5) pullback anchors => fallback cứng
+    # 5) pullback anchors
     a_lo = _as_float(pb1.get("anchor_low"))
     a_hi = _as_float(pb1.get("anchor_high"))
 
@@ -137,7 +164,6 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         rng = max(1e-9, hi - lo)
 
         if side == "BUY":
-            # vùng hồi đẹp 40%-62%
             ez_lo = hi - 0.62 * rng
             ez_hi = hi - 0.40 * rng
             entry = (ez_lo + ez_hi) / 2.0
@@ -146,51 +172,57 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
             ez_hi = lo + 0.62 * rng
             entry = (ez_lo + ez_hi) / 2.0
         else:
-            entry = lo + 0.50 * rng
+            entry = (lo + hi) / 2.0
 
-    # 6) nếu vẫn thiếu sl/tp => dựng bằng anchor hoặc ATR
-    atr15 = _as_float(meta.get("atr15")) or 0.0
+    # 6) HARD FALLBACK CHO A/B
+    # Nếu mọi source đều trống, vẫn phải có plan tham khảo
+    if entry is None:
+        if a_lo is not None and a_hi is not None:
+            entry = (a_lo + a_hi) / 2.0
+        elif current_price is not None:
+            entry = current_price
 
-    if entry is not None:
+    # side fallback
+    if side not in ("BUY", "SELL"):
+        side = "BUY" if str((sce1 or {}).get("final_side") or "").upper() == "BUY" else "SELL"
+
+    # SL fallback
+    if sl is None and entry is not None:
         if side == "BUY":
-            if sl is None:
-                if a_lo is not None:
-                    sl = a_lo
-                elif atr15 > 0:
-                    sl = entry - atr15
+            if a_lo is not None:
+                sl = a_lo
+            else:
+                sl = entry - atr15
+        else:
+            if a_hi is not None:
+                sl = a_hi
+            else:
+                sl = entry + atr15
 
-            if tp1 is None:
-                if a_hi is not None:
-                    tp1 = a_hi
-                elif atr15 > 0:
-                    tp1 = entry + atr15
+    # TP fallback
+    if tp1 is None and entry is not None:
+        if side == "BUY":
+            if a_hi is not None:
+                tp1 = a_hi
+            else:
+                tp1 = entry + atr15
+        else:
+            if a_lo is not None:
+                tp1 = a_lo
+            else:
+                tp1 = entry - atr15
 
-            if tp2 is None:
-                if a_hi is not None and entry is not None:
-                    rr = max(1e-9, entry - (sl if sl is not None else entry - atr15))
-                    tp2 = entry + 1.6 * rr
-                elif atr15 > 0:
-                    tp2 = entry + 1.6 * atr15
+    if tp2 is None and entry is not None:
+        rr = None
+        if sl is not None:
+            rr = abs(entry - sl)
+        if rr is None or rr <= 0:
+            rr = atr15
 
-        elif side == "SELL":
-            if sl is None:
-                if a_hi is not None:
-                    sl = a_hi
-                elif atr15 > 0:
-                    sl = entry + atr15
-
-            if tp1 is None:
-                if a_lo is not None:
-                    tp1 = a_lo
-                elif atr15 > 0:
-                    tp1 = entry - atr15
-
-            if tp2 is None:
-                if a_lo is not None and entry is not None:
-                    rr = max(1e-9, (sl if sl is not None else entry + atr15) - entry)
-                    tp2 = entry - 1.6 * rr
-                elif atr15 > 0:
-                    tp2 = entry - 1.6 * atr15
+        if side == "BUY":
+            tp2 = entry + 1.6 * rr
+        else:
+            tp2 = entry - 1.6 * rr
 
     # normalize TP text
     if tp1 is not None and tp2 is not None:
@@ -213,42 +245,13 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
     else:
         entry_status = "AGGRESSIVE"
 
-    # fallback cuối cùng: A/B thì không được n/a entry/sl/tp
-    # nếu cực xấu vẫn phải có plan tham khảo
-    if entry is None and a_lo is not None and a_hi is not None:
-        entry = (a_lo + a_hi) / 2.0
-
-    if sl is None and entry is not None and atr15 > 0:
-        sl = entry - atr15 if side != "SELL" else entry + atr15
-
-    if tp_text == "n/a" and entry is not None and atr15 > 0:
-        if side == "SELL":
-            tp_text = f"{_fmt(entry - atr15)} / {_fmt(entry - 1.6 * atr15)}"
-        else:
-            tp_text = f"{_fmt(entry + atr15)} / {_fmt(entry + 1.6 * atr15)}"
-    # --- HARD FALLBACK: đảm bảo luôn có plan nếu A/B ---
-    current_price = sig.get("price") or sig.get("close")
-    atr = sig.get("atr") or 3  # fallback cứng nếu thiếu ATR
-    if cls in ("A", "B"):
-        if entry is None:
-            entry = current_price  # hoặc close M15
-    
-        if sl is None:
-            sl = entry - atr if side == "BUY" else entry + atr
-    
-        if tp1 is None:
-            tp1 = entry + atr if side == "BUY" else entry - atr
-    
-        if tp2 is None:
-            tp2 = entry + atr * 2 if side == "BUY" else entry - atr * 2
     return {
         "show": True,
-        "entry": _fmt(entry) if entry is not None else "WAIT_TRIGGER",
+        "entry": _fmt(entry) if entry is not None else "n/a",
         "sl": _fmt(sl) if sl is not None else "n/a",
         "tp": tp_text,
         "entry_status": entry_status,
     }
-
 
 def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -> list[str]:
     cls, setup_score, reasons = _setup_class_score_v3(sig)
@@ -272,11 +275,12 @@ def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -
     lines.append(f"🎯 TP: {plan.get('tp', 'n/a')}")
     lines.append(f"🛑 SL: {plan.get('sl', 'n/a')}")
 
-    if cls in ("A", "B"):
+    # Chỉ hiện status khi thật sự có entry plan
+    entry_val = str(plan.get("entry") or "").strip().lower()
+    if cls in ("A", "B") and entry_val not in ("", "n/a", "wait_trigger"):
         lines.append(f"📌 Entry status: {plan.get('entry_status', 'WAIT_CONFIRM')}")
 
     return lines
-
 def add(buf, s):
     if s is None:
         return
