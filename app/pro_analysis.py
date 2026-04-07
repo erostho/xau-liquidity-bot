@@ -226,7 +226,21 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
             tp_text = f"{_fmt(entry - atr15)} / {_fmt(entry - 1.6 * atr15)}"
         else:
             tp_text = f"{_fmt(entry + atr15)} / {_fmt(entry + 1.6 * atr15)}"
-
+    # --- HARD FALLBACK: đảm bảo luôn có plan nếu A/B ---
+    current_price = sig.get("price") or sig.get("close")
+    atr = sig.get("atr") or 3  # fallback cứng nếu thiếu ATR
+    if cls in ("A", "B"):
+        if entry is None:
+            entry = current_price  # hoặc close M15
+    
+        if sl is None:
+            sl = entry - atr if side == "BUY" else entry + atr
+    
+        if tp1 is None:
+            tp1 = entry + atr if side == "BUY" else entry - atr
+    
+        if tp2 is None:
+            tp2 = entry + atr * 2 if side == "BUY" else entry - atr * 2
     return {
         "show": True,
         "entry": _fmt(entry) if entry is not None else "WAIT_TRIGGER",
