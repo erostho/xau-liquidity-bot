@@ -4190,7 +4190,625 @@ def _manual_guidance_v1(
         lines.append("Chưa có điểm nổ rõ.")
 
     return {"lines": lines[:6]}
-    
+# =========================
+# PROBE ENGINE V1 (append-only)
+# =========================
+
+def _probe_zone_strength_label(v: int) -> str:
+    if v >= 4:
+        return "HIGH"
+    if v >= 2:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _probe_pick_side(sig: dict, bias_side: str | None) -> str:
+    meta = (sig.get("meta") or {})
+    sce1 = meta.get("signal_consistency_v1") or {}
+    side = str(sce1.get("final_side") or bias_side or sig.get("recommendation") or "NONE").upper()
+    if side in ("BUY", "SELL"):
+        return side
+    return "NONE"
+
+
+def _probe_detect_zone_v1(
+    sig: dict,
+    bias_side: str | None,
+    current_price: float | None,
+    range_pos: float | None,
+    atr15: float | None,
+) -> dict:
+    """
+    Tìm 5 zone dò:
+    1) liquidity
+    2) break & retest
+    3) pullback
+    4) EMA cluster
+    5) range boundary
+
+    Trả về best zone duy nhất theo priority.
+    """
+    meta = (sig.get("meta") or {})
+    side = _probe_pick_side(sig, bias_side)
+    if side not in ("BUY", "SELL"):
+        return {"ok": False, "reason": "no_side"}
+
+    cp = _safe_float(current_price)
+    a = float(atr15 or 0.0)
+    if cp is None:
+        cp = _safe_float(sig.get("last_price")) or _safe_float(sig.get("current_price")) or _safe_float(sig.get("entry"))
+    if cp is None:
+        return {"ok": False, "reason": "no_price"}
+
+    liq = meta.get("liquidity_map_v1") or {}
+    pb1 = meta.get("pullback_engine_v1") or {}
+    ema = meta.get("ema") or {}
+    k = meta.get("key_levels") or {}
+    ccv4 = meta.get("close_confirm_v4") or {}
+    cont1 = meta.get("post_break_continuity_v1") or {}
+    fib1 = meta.get("fib_confluence_v1") or {}
+
+    candidates = []
+
+    # -------------------------
+    # 1) LIQUIDITY ZONE
+    # -------------------------
+    above_strength = str(liq.get("above_strength") or "LOW").upper()
+    below_strength = str(liq.get("below_strength") or "LOW").upper()
+    above_zone = liq.get("above_zone")
+    below_zone = liq.get("below_zone")
+    sweep_bias = str(liq.get("sweep_bias") or "").upper()
+
+    if side == "BUY":
+        z = below_zone if isinstance(below_zone, (list, tuple)) and len(below_zone) == 2 else None
+        strong_enough = below_strength in ("MEDIUM", "HIGH") or "DOWN → UP" in sweep_bias or bool(liq.get("equal_lows"))
+        if z and strong_enough:
+            zlo, zhi = float(z[0]), float(z[1])
+            candidates.append({
+                "ok": True,
+                "type": "LIQUIDITY",
+                "priority": 1,
+                "strength": below_strength,
+                "side": "BUY",
+                "zone_low": min(zlo, zhi),
+                "zone_high": max(zlo, zhi),
+                "reason": ["liquidity pool phía dưới", "equal lows / sweep bias hỗ trợ BUY"],
+            })
+    elif side == "SELL":
+        z = above_zone if isinstance(above_zone, (list, tuple)) and len(above_zone) == 2 else None
+        strong_enough = above_strength in ("MEDIUM", "HIGH") or "UP → DOWN" in sweep_bias or bool(liq.get("equal_highs"))
+        if z and strong_enough:
+            zlo, zhi = float(z[0]), float(z[1])
+            candidates.append({
+                "ok": True,
+                "type": "LIQUIDITY",
+                "priority": 1,
+                "strength": above_strength,
+                "side": "SELL",
+                "zone_low": min(zlo, zhi),
+                "zone_high": max(zlo, zhi),
+                "reason": ["liquidity pool phía trên", "equal highs / sweep bias hỗ trợ SELL"],
+            })
+
+    # -------------------------
+    # 2) BREAK & RETEST
+    # -------------------------
+    bos = _safe_float(k.get("M15_BOS"))
+    hold = str(ccv4.get("hold") or "NO").upper()
+    cont_state = str(cont1.get("state") or "").upper()
+    if bos is not None and a > 0:
+        near_bos = abs(cp - bos) <= max(1e-9, 0.22 * a)
+        if near_bos:
+            if side == "BUY" and cont_state in ("POST_BREAK_HOLD", "POST_BREAK_CHOP", "POST_BREAK_FAIL", "NONE"):
+                candidates.append({
+                    "ok": True,
+                    "type": "BREAK_RETEST",
+                    "priority": 2,
+                    "strength": "MEDIUM" if hold == "YES" else "LOW",
+                    "side": "BUY",
+                    "zone_low": bos - 0.18 * a,
+                    "zone_high": bos + 0.18 * a,
+                    "reason": ["đang retest BOS", "chờ xem giữ được mốc hay không"],
+                })
+            if side == "SELL" and cont_state in ("POST_BREAK_HOLD", "POST_BREAK_CHOP", "POST_BREAK_FAIL", "NONE"):
+                candidates.append({
+                    "ok": True,
+                    "type": "BREAK_RETEST",
+                    "priority": 2,
+                    "strength": "MEDIUM" if hold == "YES" else "LOW",
+                    "side": "SELL",
+                    "zone_low": bos - 0.18 * a,
+                    "zone_high": bos + 0.18 * a,
+                    "reason": ["đang retest BOS", "chờ xem mất mốc hay không"],
+                })
+
+    # -------------------------
+    # 3) PULLBACK ZONE
+    # -------------------------
+    if pb1.get("ok"):
+        pct = _safe_float(pb1.get("pullback_pct")) or 0.0
+        a_lo = _safe_float(pb1.get("anchor_low"))
+        a_hi = _safe_float(pb1.get("anchor_high"))
+        if a_lo is not None and a_hi is not None and 0.25 <= pct <= 0.78:
+            lo = min(a_lo, a_hi)
+            hi = max(a_lo, a_hi)
+            rng = max(1e-9, hi - lo)
+            if side == "BUY":
+                zlo = hi - 0.62 * rng
+                zhi = hi - 0.40 * rng
+            else:
+                zlo = lo + 0.40 * rng
+                zhi = lo + 0.62 * rng
+            candidates.append({
+                "ok": True,
+                "type": "PULLBACK",
+                "priority": 3,
+                "strength": "HIGH" if 0.40 <= pct <= 0.62 else "MEDIUM",
+                "side": side,
+                "zone_low": min(zlo, zhi),
+                "zone_high": max(zlo, zhi),
+                "reason": [f"pullback {pb1.get('pullback_pct_text', 'n/a')}", pb1.get("label", "pullback")],
+            })
+
+    # -------------------------
+    # 4) EMA CLUSTER
+    # -------------------------
+    e34 = _safe_float(ema.get("ema34"))
+    e89 = _safe_float(ema.get("ema89"))
+    e200 = _safe_float(ema.get("ema200"))
+    if a > 0:
+        ema_candidates = [x for x in [e34, e89] if x is not None]
+        if len(ema_candidates) >= 2:
+            zlo = min(ema_candidates) - 0.10 * a
+            zhi = max(ema_candidates) + 0.10 * a
+            if zlo <= cp <= zhi or abs(cp - zlo) <= 0.20 * a or abs(cp - zhi) <= 0.20 * a:
+                candidates.append({
+                    "ok": True,
+                    "type": "EMA_CLUSTER",
+                    "priority": 4,
+                    "strength": "MEDIUM",
+                    "side": side,
+                    "zone_low": zlo,
+                    "zone_high": zhi,
+                    "reason": ["giá đang gần EMA34/89", "cụm EMA có thể là vùng phản ứng"],
+                })
+        elif e200 is not None and abs(cp - e200) <= 0.20 * a:
+            candidates.append({
+                "ok": True,
+                "type": "EMA_CLUSTER",
+                "priority": 4,
+                "strength": "LOW",
+                "side": side,
+                "zone_low": e200 - 0.10 * a,
+                "zone_high": e200 + 0.10 * a,
+                "reason": ["giá đang touch EMA200", "case đặc biệt"],
+            })
+
+    # -------------------------
+    # 5) RANGE BOUNDARY
+    # -------------------------
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+
+    rlo = _safe_float(k.get("M15_RANGE_LOW"))
+    rhi = _safe_float(k.get("M15_RANGE_HIGH"))
+    if rp is not None and rlo is not None and rhi is not None and a > 0:
+        if rp <= 0.15 and side == "BUY":
+            candidates.append({
+                "ok": True,
+                "type": "RANGE_BOUNDARY",
+                "priority": 5,
+                "strength": "MEDIUM",
+                "side": "BUY",
+                "zone_low": rlo - 0.08 * a,
+                "zone_high": rlo + 0.12 * a,
+                "reason": ["giá đang sát biên dưới range", "probe BUY tại low boundary"],
+            })
+        elif rp >= 0.85 and side == "SELL":
+            candidates.append({
+                "ok": True,
+                "type": "RANGE_BOUNDARY",
+                "priority": 5,
+                "strength": "MEDIUM",
+                "side": "SELL",
+                "zone_low": rhi - 0.12 * a,
+                "zone_high": rhi + 0.08 * a,
+                "reason": ["giá đang sát biên trên range", "probe SELL tại high boundary"],
+            })
+
+    # pick best by priority first, then strength
+    if not candidates:
+        return {"ok": False, "reason": "no_probe_zone"}
+
+    strength_rank = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+    best = sorted(
+        candidates,
+        key=lambda x: (int(x.get("priority", 99)), -strength_rank.get(str(x.get("strength", "LOW")).upper(), 1))
+    )[0]
+    return best
+
+
+def _build_probe_plan_v1(
+    sig: dict,
+    zone: dict,
+    atr15: float | None,
+    current_price: float | None,
+) -> dict:
+    meta = (sig.get("meta") or {})
+    pb1 = meta.get("pullback_engine_v1") or {}
+    side = str(zone.get("side") or "NONE").upper()
+    a = float(atr15 or 0.0)
+    if a <= 0:
+        cp = _safe_float(current_price) or _safe_float(sig.get("last_price")) or _safe_float(sig.get("current_price")) or 1.0
+        a = max(1e-9, abs(cp) * 0.003)
+
+    zlo = _safe_float(zone.get("zone_low"))
+    zhi = _safe_float(zone.get("zone_high"))
+    if zlo is None or zhi is None:
+        return {"active": False, "reason": ["zone invalid"]}
+
+    lo = min(zlo, zhi)
+    hi = max(zlo, zhi)
+    entry = (lo + hi) / 2.0
+
+    a_lo = _safe_float(pb1.get("anchor_low"))
+    a_hi = _safe_float(pb1.get("anchor_high"))
+
+    # invalidation ưu tiên theo anchor, nếu không có dùng zone +/- ATR
+    if side == "BUY":
+        sl = a_lo if a_lo is not None else (lo - 0.30 * a)
+        if sl >= entry:
+            sl = entry - a
+        risk = max(1e-9, entry - sl)
+        tp1 = entry + 1.0 * risk
+        tp2 = entry + 1.6 * risk
+    else:
+        sl = a_hi if a_hi is not None else (hi + 0.30 * a)
+        if sl <= entry:
+            sl = entry + a
+        risk = max(1e-9, sl - entry)
+        tp1 = entry - 1.0 * risk
+        tp2 = entry - 1.6 * risk
+
+    ccv4 = meta.get("close_confirm_v4") or {}
+    tg3 = meta.get("trigger_engine_v3") or {}
+    cc_strength = str(ccv4.get("strength") or "NO").upper()
+    tg_state = str(tg3.get("state") or "WAIT").upper()
+
+    if tg_state in ("READY", "TRIGGERED") and cc_strength in ("WEAK", "STRONG"):
+        entry_status = "READY"
+    elif cc_strength in ("WEAK", "STRONG"):
+        entry_status = "WAIT_CONFIRM"
+    else:
+        entry_status = "AGGRESSIVE"
+
+    # created_ts = last closed M15 ts nếu có
+    created_ts = None
+    m15_raw = meta.get("_m15_raw") or []
+    try:
+        if m15_raw:
+            c = m15_raw[-2] if len(m15_raw) > 1 else m15_raw[-1]
+            created_ts = _c_val(c, "ts", None) or _c_val(c, "time", None)
+    except Exception:
+        created_ts = None
+
+    return {
+        "active": True,
+        "probe_side": side,
+        "probe_entry": float(entry),
+        "probe_sl": float(sl),
+        "probe_tp1": float(tp1),
+        "probe_tp2": float(tp2),
+        "probe_zone_type": str(zone.get("type") or "UNKNOWN"),
+        "probe_zone_low": float(lo),
+        "probe_zone_high": float(hi),
+        "probe_zone_strength": str(zone.get("strength") or "LOW"),
+        "probe_created_tf": "M15",
+        "probe_created_ts": created_ts,
+        "entry_status": entry_status,
+        "reason": zone.get("reason") or [],
+    }
+
+
+def _probe_review_tf_v1(candles, side: str, entry: float, sl: float, zone_low: float, zone_high: float) -> dict:
+    """
+    Đọc phản ứng trên 1 TF (M15/M30/H1) bằng 3 nến đã đóng gần nhất.
+    """
+    out = {
+        "hold_zone": "NO",
+        "reaction_speed": "SLOW",
+        "close_confirm": "NO",
+        "follow_through": "NO",
+        "fav_excursion": 0.0,
+        "adv_excursion": 0.0,
+    }
+    if not candles or len(candles) < 4:
+        return out
+
+    closed = list(candles[:-1] if len(candles) > 1 else candles)
+    use = closed[-3:]
+    highs = [float(_c_val(x, "high", 0.0) or 0.0) for x in use]
+    lows = [float(_c_val(x, "low", 0.0) or 0.0) for x in use]
+    closes = [float(_c_val(x, "close", 0.0) or 0.0) for x in use]
+
+    if side == "BUY":
+        hold_zone = min(lows) >= min(zone_low, zone_high) - 1e-9
+        fav = max(highs) - entry
+        adv = max(0.0, entry - min(lows))
+        close_confirm = "STRONG" if closes[-1] > max(zone_low, zone_high) else ("WEAK" if closes[-1] >= entry else "NO")
+        follow = "YES" if closes[-1] >= closes[0] and fav > adv else "NO"
+    else:
+        hold_zone = max(highs) <= max(zone_low, zone_high) + 1e-9
+        fav = entry - min(lows)
+        adv = max(0.0, max(highs) - entry)
+        close_confirm = "STRONG" if closes[-1] < min(zone_low, zone_high) else ("WEAK" if closes[-1] <= entry else "NO")
+        follow = "YES" if closes[-1] <= closes[0] and fav > adv else "NO"
+
+    rr = max(1e-9, abs(entry - sl))
+    speed = "FAST" if fav >= 0.8 * rr else ("NORMAL" if fav >= 0.35 * rr else "SLOW")
+
+    out.update({
+        "hold_zone": "YES" if hold_zone else "NO",
+        "reaction_speed": speed,
+        "close_confirm": close_confirm,
+        "follow_through": follow,
+        "fav_excursion": fav,
+        "adv_excursion": adv,
+    })
+    return out
+
+
+def _finalize_probe_v1(plan: dict, review_m15: dict, review_m30: dict, review_h1: dict) -> dict:
+    """
+    SUCCESS / WAIT_CONFIRM / FAILED / TIMEOUT
+    Timeout = 4 nến M15 gần nhất không follow-through đủ
+    """
+    if not plan.get("active"):
+        return {"result": "INACTIVE", "main_entry_ok": False, "summary": "Chưa có probe active"}
+
+    side = str(plan.get("probe_side") or "NONE").upper()
+
+    m15_hold = str(review_m15.get("hold_zone") or "NO").upper()
+    m15_cc = str(review_m15.get("close_confirm") or "NO").upper()
+    m15_ft = str(review_m15.get("follow_through") or "NO").upper()
+
+    fav = float(review_m15.get("fav_excursion") or 0.0)
+    adv = float(review_m15.get("adv_excursion") or 0.0)
+
+    # fail nhanh
+    if m15_hold != "YES":
+        return {
+            "result": "FAILED",
+            "main_entry_ok": False,
+            "summary": "Probe sai: vùng không giữ được",
+            "market_read": "thị trường không bảo vệ vùng dò",
+            "upgrade": "KHÔNG vào lệnh chính",
+        }
+
+    if adv > fav * 1.2 and adv > 0:
+        return {
+            "result": "FAILED",
+            "main_entry_ok": False,
+            "summary": "Probe sai: phản ứng ngược lấn át",
+            "market_read": "thị trường chưa chấp nhận hướng dò",
+            "upgrade": "KHÔNG vào lệnh chính",
+        }
+
+    # success
+    if m15_hold == "YES" and m15_cc in ("WEAK", "STRONG") and m15_ft == "YES" and fav > adv:
+        ready = (m15_cc == "STRONG") or (str(review_m30.get("close_confirm") or "NO").upper() in ("WEAK", "STRONG"))
+        return {
+            "result": "SUCCESS" if ready else "WAIT_CONFIRM",
+            "main_entry_ok": bool(ready),
+            "summary": "Probe đúng hướng, vùng đang được bảo vệ",
+            "market_read": "thị trường phản ứng đúng vùng và có follow-through",
+            "upgrade": "CÓ THỂ vào lệnh chính" if ready else "Chưa vào lệnh chính, chờ thêm close confirm",
+        }
+
+    # timeout / neutral
+    if m15_hold == "YES" and m15_ft == "NO" and str(review_m15.get("reaction_speed") or "SLOW").upper() == "SLOW":
+        return {
+            "result": "TIMEOUT",
+            "main_entry_ok": False,
+            "summary": "Probe đứng im quá lâu",
+            "market_read": "thị trường chưa cho follow-through trong khung 1h",
+            "upgrade": "Thoát lệnh dò, chờ probe mới",
+        }
+
+    return {
+        "result": "WAIT_CONFIRM",
+        "main_entry_ok": False,
+        "summary": "Probe tạm đúng nhưng chưa đủ mạnh",
+        "market_read": "có phản ứng nhưng xác nhận còn yếu",
+        "upgrade": "Chưa vào lệnh chính",
+    }
+
+
+def _build_probe_engine_v1(
+    sig: dict,
+    symbol: str,
+    bias_side: str | None,
+    m15c,
+    m30c,
+    h1c,
+    atr15: float | None,
+    range_pos: float | None,
+) -> dict:
+    """
+    Stateless probe engine:
+    - A/B + có probe zone => sinh probe
+    - review ngay bằng M15 / M30 / H1 đã đóng
+    """
+    meta = (sig.get("meta") or {})
+    cls, setup_score, _ = _setup_class_score_v3(sig)
+
+    current_price = (
+        _safe_float(sig.get("last_price"))
+        or _safe_float(sig.get("current_price"))
+        or _safe_float(sig.get("entry"))
+    )
+
+    base = {
+        "active": False,
+        "class": cls,
+        "setup_score": setup_score,
+        "zone_type": None,
+        "zone_strength": None,
+        "side": None,
+        "entry": None,
+        "sl": None,
+        "tp1": None,
+        "tp2": None,
+        "entry_status": None,
+        "created_tf": None,
+        "created_ts": None,
+        "review_m15": {},
+        "review_m30": {},
+        "review_h1": {},
+        "result": "INACTIVE",
+        "main_entry_ok": False,
+        "summary": "Chưa có probe zone hợp lệ",
+        "market_read": "",
+        "upgrade": "",
+        "reason": [],
+    }
+
+    if cls not in ("A", "B"):
+        base["summary"] = "Chỉ tạo probe khi setup class là A/B"
+        return base
+
+    zone = _probe_detect_zone_v1(
+        sig=sig,
+        bias_side=bias_side,
+        current_price=current_price,
+        range_pos=range_pos,
+        atr15=atr15,
+    )
+    if not zone.get("ok"):
+        base["summary"] = "Chưa có 1 trong 5 probe zone hợp lệ"
+        return base
+
+    plan = _build_probe_plan_v1(sig=sig, zone=zone, atr15=atr15, current_price=current_price)
+    if not plan.get("active"):
+        base["summary"] = "Không dựng được plan dò"
+        return base
+
+    review_m15 = _probe_review_tf_v1(
+        m15c,
+        side=plan["probe_side"],
+        entry=plan["probe_entry"],
+        sl=plan["probe_sl"],
+        zone_low=plan["probe_zone_low"],
+        zone_high=plan["probe_zone_high"],
+    )
+    review_m30 = _probe_review_tf_v1(
+        m30c,
+        side=plan["probe_side"],
+        entry=plan["probe_entry"],
+        sl=plan["probe_sl"],
+        zone_low=plan["probe_zone_low"],
+        zone_high=plan["probe_zone_high"],
+    )
+    review_h1 = _probe_review_tf_v1(
+        h1c,
+        side=plan["probe_side"],
+        entry=plan["probe_entry"],
+        sl=plan["probe_sl"],
+        zone_low=plan["probe_zone_low"],
+        zone_high=plan["probe_zone_high"],
+    )
+
+    final = _finalize_probe_v1(plan, review_m15, review_m30, review_h1)
+
+    base.update({
+        "active": final.get("result") not in ("INACTIVE",),
+        "zone_type": plan.get("probe_zone_type"),
+        "zone_strength": plan.get("probe_zone_strength"),
+        "side": plan.get("probe_side"),
+        "entry": plan.get("probe_entry"),
+        "sl": plan.get("probe_sl"),
+        "tp1": plan.get("probe_tp1"),
+        "tp2": plan.get("probe_tp2"),
+        "entry_status": plan.get("entry_status"),
+        "created_tf": plan.get("probe_created_tf"),
+        "created_ts": plan.get("probe_created_ts"),
+        "review_m15": review_m15,
+        "review_m30": review_m30,
+        "review_h1": review_h1,
+        "result": final.get("result"),
+        "main_entry_ok": bool(final.get("main_entry_ok")),
+        "summary": final.get("summary"),
+        "market_read": final.get("market_read"),
+        "upgrade": final.get("upgrade"),
+        "reason": plan.get("reason") or [],
+    })
+    return base
+
+
+def _render_probe_block_v1(sig: dict) -> list[str]:
+    meta = (sig.get("meta") or {})
+    pe = meta.get("probe_engine_v1") or {}
+
+    lines = []
+    lines.append("")
+    lines.append("🧪 PROBE ENGINE")
+
+    if not pe:
+        lines.append("- Trạng thái: INACTIVE")
+        lines.append("- Lý do: chưa có dữ liệu probe")
+        return lines
+
+    result = str(pe.get("result") or "INACTIVE").upper()
+    side = str(pe.get("side") or "NONE").upper()
+
+    if result == "INACTIVE":
+        lines.append("- Trạng thái: INACTIVE")
+        lines.append(f"- Lý do: {pe.get('summary', 'chưa có probe zone hợp lệ')}")
+        return lines
+
+    lines.append(f"- Trạng thái: {result}")
+    lines.append(f"- Zone: {pe.get('zone_type', 'UNKNOWN')} ({pe.get('zone_strength', 'LOW')})")
+    lines.append(f"- Side: {side}")
+    lines.append(f"- Entry: {nf(pe.get('entry')) if pe.get('entry') is not None else 'n/a'}")
+    tp1 = pe.get("tp1")
+    tp2 = pe.get("tp2")
+    if tp1 is not None and tp2 is not None:
+        lines.append(f"- TP: {nf(tp1)} / {nf(tp2)}")
+    else:
+        lines.append("- TP: n/a")
+    lines.append(f"- SL: {nf(pe.get('sl')) if pe.get('sl') is not None else 'n/a'}")
+    lines.append(f"- Entry status: {pe.get('entry_status', 'AGGRESSIVE')}")
+
+    r15 = pe.get("review_m15") or {}
+    r30 = pe.get("review_m30") or {}
+    rh1 = pe.get("review_h1") or {}
+
+    lines.append("- Review M15: "
+                 f"Hold={r15.get('hold_zone', 'NO')} | "
+                 f"Speed={r15.get('reaction_speed', 'SLOW')} | "
+                 f"Confirm={r15.get('close_confirm', 'NO')} | "
+                 f"FT={r15.get('follow_through', 'NO')}")
+    lines.append("- Review M30: "
+                 f"Hold={r30.get('hold_zone', 'NO')} | "
+                 f"Confirm={r30.get('close_confirm', 'NO')} | "
+                 f"FT={r30.get('follow_through', 'NO')}")
+    lines.append("- Review H1: "
+                 f"Hold={rh1.get('hold_zone', 'NO')} | "
+                 f"Confirm={rh1.get('close_confirm', 'NO')} | "
+                 f"FT={rh1.get('follow_through', 'NO')}")
+
+    if pe.get("reason"):
+        lines.append("- Lý do tạo probe: " + ", ".join([str(x) for x in (pe.get("reason") or [])[:3]]))
+
+    lines.append(f"- Kết luận: {pe.get('summary', '')}")
+    if pe.get("market_read"):
+        lines.append(f"- Thị trường: {pe.get('market_read')}")
+    if pe.get("upgrade"):
+        lines.append(f"- Lệnh chính: {pe.get('upgrade')}")
+
+    return lines    
 def _attach_vnext_meta(
     base: dict,
     *,
@@ -4317,6 +4935,26 @@ def _attach_vnext_meta(
         meta["manual_guidance_v1"] = manual_guidance_v1
         meta["pullback_engine_v1"] = pullback_engine_v1
 
+        #PROBE_ENGINE
+        try:
+            probe_engine_v1 = _build_probe_engine_v1(
+                sig=base,
+                symbol=symbol,
+                bias_side=bias_side,
+                m15c=m15c,
+                m30c=(meta.get("_m30_raw") or []),
+                h1c=(meta.get("_h1_raw") or []),
+                atr15=atr15,
+                range_pos=range_pos,
+            )
+        except Exception as e:
+            probe_engine_v1 = {
+                "active": False,
+                "result": "INACTIVE",
+                "summary": f"probe error: {e}",
+            }
+
+        meta["probe_engine_v1"] = probe_engine_v1
         # ===== PRO DESK =====
         m15_tag = str((m15_struct or {}).get("tag") or "n/a").upper()
 
@@ -8283,6 +8921,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     })
     _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
     base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
+    base.setdefault("meta", {})["_m15_raw"] = m15c
+    base["meta"]["_m30_raw"] = m30c
+    base["meta"]["_h1_raw"] = h1c
+    base["meta"]["atr15"] = atr15
     base["last_price"] = float(last_close_15)
     base["current_price"] = float(last_close_15)
     _attach_vnext_meta(
@@ -10017,6 +10659,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Current move: {sce1.get('current_move', 'CHOP')}")
         push_reason(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
+
+    # ===== PROBE ENGINE BLOCK =====
+    for s in _render_probe_block_v1(sig):
+        add(reason_lines, s)
     # ===== SETUP CLASS BLOCK =====
     for s in _render_setup_class_block_v4(sig, final_score, tradeable_label):
         add(reason_lines, s)
