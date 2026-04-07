@@ -68,13 +68,14 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
     if cls == "C":
         return {"show": True, "entry": "WAIT_TRIGGER", "sl": "n/a", "tp": "n/a", "entry_status": "WAIT_CONFIRM"}
 
+    # ===== A/B bắt buộc có plan =====
     playbook = meta.get("playbook_v2") or {}
     fib1 = meta.get("fib_confluence_v1") or {}
     pb1 = meta.get("pullback_engine_v1") or {}
     sp = meta.get("scale_plan_v2") or {}
     cc1 = meta.get("close_confirm_v4") or {}
     tg3 = meta.get("trigger_engine_v3") or {}
-    k = meta.get("key_levels") or {}
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
 
     entry = _as_float(sig.get("entry"))
     sl = _as_float(sig.get("sl"))
@@ -87,6 +88,16 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         or _as_float(sig.get("price"))
     )
 
+    # plug-in ưu tiên FVG limit plan nếu có
+    if entry is None:
+        entry = _as_float((fvgp or {}).get("entry"))
+    if sl is None:
+        sl = _as_float((fvgp or {}).get("sl"))
+    if tp1 is None:
+        tp1 = _as_float((fvgp or {}).get("tp1"))
+    if tp2 is None:
+        tp2 = _as_float((fvgp or {}).get("tp2"))
+
     m15_raw = meta.get("_m15_raw") or []
     if current_price is None and m15_raw:
         try:
@@ -94,25 +105,14 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         except Exception:
             current_price = None
 
-    # fallback thêm từ key_levels
-    if current_price is None:
-        rlo = _as_float(k.get("M15_RANGE_LOW"))
-        rhi = _as_float(k.get("M15_RANGE_HIGH"))
-        if rlo is not None and rhi is not None:
-            current_price = (rlo + rhi) / 2.0
-
     atr15 = _as_float(meta.get("atr15"))
     if atr15 is None or atr15 <= 0:
         try:
             atr15 = _atr(m15_raw, 14) if m15_raw else None
         except Exception:
             atr15 = None
-
     if atr15 is None or atr15 <= 0:
-        if current_price is not None:
-            atr15 = max(1e-9, abs(float(current_price)) * 0.003)
-        else:
-            atr15 = 1.0
+        atr15 = max(1e-9, abs(float(current_price or 1.0)) * 0.003)
 
     # 1) playbook zone
     if entry is None:
@@ -154,25 +154,9 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         rng = max(1e-9, hi - lo)
         entry = hi - 0.50 * rng if side == "BUY" else lo + 0.50 * rng
 
-    # 5) fallback range mid
-    if entry is None:
-        rlo = _as_float(k.get("M15_RANGE_LOW"))
-        rhi = _as_float(k.get("M15_RANGE_HIGH"))
-        if rlo is not None and rhi is not None:
-            entry = (rlo + rhi) / 2.0
-
-    # 6) hard fallback cuối
+    # 5) HARD FALLBACK CUỐI CÙNG
     if entry is None:
         entry = current_price
-
-    if entry is None:
-        return {
-            "show": True,
-            "entry": "n/a",
-            "sl": "n/a",
-            "tp": "n/a / n/a",
-            "entry_status": "WAIT_CONFIRM",
-        }
 
     if sl is None:
         if side == "BUY":
@@ -1616,6 +1600,194 @@ def _range_levels(candles: Sequence[Any], n: int = 20) -> Tuple[Optional[float],
     lo = min(float(_c_val(x, "low", 0.0) or 0.0) for x in c)
     last = float(_c_val(c[-1], "close", 0.0) or 0.0)
     return lo, hi, last
+
+
+def _detect_fvg_v1(m15c: Sequence[Any], side: str, atr15: float | None = None) -> Dict[str, Any]:
+    """Plug-in FVG detector for continuation entry.
+    - Uses last closed candles only
+    - Requires an impulse candle strong enough to avoid random micro gaps
+    - Returns most recent active FVG aligned with side
+    """
+    out = {
+        "ok": False,
+        "side": str(side or "NONE").upper(),
+        "entry": None,
+        "zone_low": None,
+        "zone_high": None,
+        "sl": None,
+        "tp1": None,
+        "tp2": None,
+        "impulse_index": None,
+        "mitigated": False,
+        "reason": [],
+    }
+
+    side = str(side or "NONE").upper()
+    if side not in ("BUY", "SELL"):
+        out["reason"] = ["no_side"]
+        return out
+    if not m15c or len(m15c) < 8:
+        out["reason"] = ["not_enough_candles"]
+        return out
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    if len(closed) < 5:
+        out["reason"] = ["not_enough_closed_candles"]
+        return out
+
+    a = float(atr15 or 0.0)
+    if a <= 0:
+        try:
+            a = float(_atr(closed, 14) or 0.0)
+        except Exception:
+            a = 0.0
+
+    candidates = []
+    start_i = max(2, len(closed) - 18)
+    for i in range(start_i, len(closed)):
+        c1 = closed[i - 2]
+        c2 = closed[i - 1]
+        c3 = closed[i]
+
+        rng2 = max(1e-9, float(c2.high) - float(c2.low))
+        body2 = abs(float(c2.close) - float(c2.open))
+        impulse_ok = body2 >= 0.55 * rng2
+        if a > 0:
+            impulse_ok = impulse_ok and (body2 >= 0.60 * a)
+
+        if side == "BUY":
+            gap_ok = float(c1.high) < float(c3.low)
+            dir_ok = float(c2.close) > float(c2.open)
+            if not (gap_ok and dir_ok and impulse_ok):
+                continue
+            zlo = float(c1.high)
+            zhi = float(c3.low)
+            post = closed[i + 1:]
+            mitigated = any(float(x.low) <= zhi for x in post)
+            entry = (zlo + zhi) / 2.0
+            sl = min(float(c1.low), float(c2.low), float(c3.low))
+            if a > 0:
+                sl -= 0.10 * a
+            risk = max(1e-9, entry - sl)
+            tp1 = entry + 1.0 * risk
+            tp2 = entry + 1.6 * risk
+            candidates.append({
+                "ok": True, "side": side, "entry": entry,
+                "zone_low": zlo, "zone_high": zhi,
+                "sl": sl, "tp1": tp1, "tp2": tp2,
+                "impulse_index": i - 1,
+                "mitigated": mitigated,
+                "reason": ["bullish impulse tạo FVG", "ưu tiên limit tại FVG"],
+            })
+        else:
+            gap_ok = float(c1.low) > float(c3.high)
+            dir_ok = float(c2.close) < float(c2.open)
+            if not (gap_ok and dir_ok and impulse_ok):
+                continue
+            zlo = float(c3.high)
+            zhi = float(c1.low)
+            post = closed[i + 1:]
+            mitigated = any(float(x.high) >= zlo for x in post)
+            entry = (zlo + zhi) / 2.0
+            sl = max(float(c1.high), float(c2.high), float(c3.high))
+            if a > 0:
+                sl += 0.10 * a
+            risk = max(1e-9, sl - entry)
+            tp1 = entry - 1.0 * risk
+            tp2 = entry - 1.6 * risk
+            candidates.append({
+                "ok": True, "side": side, "entry": entry,
+                "zone_low": zlo, "zone_high": zhi,
+                "sl": sl, "tp1": tp1, "tp2": tp2,
+                "impulse_index": i - 1,
+                "mitigated": mitigated,
+                "reason": ["bearish impulse tạo FVG", "ưu tiên limit tại FVG"],
+            })
+
+    if not candidates:
+        out["reason"] = ["no_fvg"]
+        return out
+
+    active = [x for x in candidates if not x.get("mitigated")]
+    best = active[-1] if active else candidates[-1]
+    return best
+
+
+def _range_filter_v1(range_pos: Optional[float], bias_side: str | None) -> Dict[str, Any]:
+    """Simple anti-chase plug-in.
+    BUY blocked near the top of range, SELL blocked near the bottom.
+    """
+    side = str(bias_side or "NONE").upper()
+    out = {
+        "ok": True,
+        "side": side,
+        "range_pos": range_pos,
+        "state": "OK",
+        "label": "IN_RANGE",
+        "reason": [],
+    }
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+    if rp is None:
+        out.update({"ok": True, "state": "N/A", "label": "NO_RANGE_POS", "reason": ["không tính được range_pos"]})
+        return out
+
+    if side == "BUY":
+        if rp >= 0.90:
+            out.update({"ok": False, "state": "BLOCK", "label": "BUY_TOO_HIGH", "reason": ["sát đỉnh range → không BUY đuổi"]})
+        elif rp >= 0.80:
+            out.update({"ok": True, "state": "WARN", "label": "BUY_HIGH", "reason": ["BUY vùng cao → cần chờ hồi/FVG"]})
+    elif side == "SELL":
+        if rp <= 0.10:
+            out.update({"ok": False, "state": "BLOCK", "label": "SELL_TOO_LOW", "reason": ["sát đáy range → không SELL đuổi"]})
+        elif rp <= 0.20:
+            out.update({"ok": True, "state": "WARN", "label": "SELL_LOW", "reason": ["SELL vùng thấp → cần chờ hồi/FVG"]})
+    else:
+        out.update({"ok": True, "state": "N/A", "label": "NO_SIDE", "reason": ["chưa có bias rõ"]})
+    return out
+
+
+def _build_fvg_range_plugin_v1(
+    m15c: Sequence[Any],
+    bias_side: str | None,
+    range_pos: Optional[float],
+    atr15: float | None,
+) -> Dict[str, Any]:
+    side = str(bias_side or "NONE").upper()
+    rf = _range_filter_v1(range_pos, side)
+    fvg = _detect_fvg_v1(m15c, side, atr15=atr15) if side in ("BUY", "SELL") else {"ok": False, "reason": ["no_side"]}
+    out = {
+        "side": side,
+        "range_filter": rf,
+        "fvg": fvg,
+        "entry_mode": "MARKET",
+        "entry": None,
+        "sl": None,
+        "tp1": None,
+        "tp2": None,
+        "notes": [],
+    }
+    if rf.get("state") == "BLOCK":
+        out["notes"].extend(rf.get("reason") or [])
+    elif rf.get("state") == "WARN":
+        out["notes"].extend(rf.get("reason") or [])
+
+    if fvg.get("ok"):
+        out.update({
+            "entry_mode": "FVG_LIMIT",
+            "entry": fvg.get("entry"),
+            "sl": fvg.get("sl"),
+            "tp1": fvg.get("tp1"),
+            "tp2": fvg.get("tp2"),
+        })
+        out["notes"].extend(fvg.get("reason") or [])
+        if fvg.get("mitigated"):
+            out["notes"].append("FVG đã được chạm một phần")
+    else:
+        out["notes"].append("chưa có FVG rõ")
+    return out
 
 
 def _detect_liquidation_v2(
@@ -4714,27 +4886,6 @@ def _build_probe_engine_v1(
         range_pos=range_pos,
         atr15=atr15,
     )
-
-    # fallback: CLASS B vẫn cho probe mềm theo setup plan
-    if not zone.get("ok") and cls == "B":
-        plan_fallback = _build_setup_plan_v1(sig, cls)
-
-        entry_fb = _safe_float(plan_fallback.get("entry"))
-        sl_fb = _safe_float(plan_fallback.get("sl"))
-
-        if entry_fb is not None and sl_fb is not None:
-            zpad = max(1e-9, float(atr15 or 0.0) * 0.18)
-            zone = {
-                "ok": True,
-                "type": "SETUP_FALLBACK",
-                "priority": 99,
-                "strength": "LOW",
-                "side": _probe_pick_side(sig, bias_side),
-                "zone_low": min(entry_fb, sl_fb) - zpad,
-                "zone_high": max(entry_fb, sl_fb) + zpad,
-                "reason": ["class B fallback probe", "dùng setup plan khi chưa có probe zone chuẩn"],
-            }
-
     if not zone.get("ok"):
         base["summary"] = "Chưa có 1 trong 5 probe zone hợp lệ"
         return base
@@ -8154,6 +8305,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         "M15_RANGE_HIGH": _range_levels(m15c, n=20)[1],
         "M15_LAST": float(m15c[-1].close) if m15c else None,
     }
+
+    fvg_range_plugin_v1 = _build_fvg_range_plugin_v1(
+        m15c=m15c,
+        bias_side=bias_side,
+        range_pos=range_pos,
+        atr15=atr15,
+    )
+    base.setdefault("meta", {})["fvg_range_plugin_v1"] = fvg_range_plugin_v1
+    rf1 = (fvg_range_plugin_v1 or {}).get("range_filter") or {}
+    if rf1.get("state") == "BLOCK":
+        notes.append("⛔ Range filter: " + "; ".join(rf1.get("reason") or ["không trade đuổi giá"]))
+    elif rf1.get("state") == "WARN":
+        notes.append("⚠️ Range filter: " + "; ".join(rf1.get("reason") or ["vùng vào chưa đẹp"]))
+
     ez_low_v6, ez_high_v6 = _entry_zone_v6(bias_side, base["meta"]["key_levels"], atr15)
     base["meta"]["entry_zone_v6"] = {
         "low": ez_low_v6,
@@ -8388,6 +8553,11 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     if liq_warn and trade_mode == "FULL":
         trade_mode = "HALF"
         stars = min(stars, 3)
+
+    rf1 = ((base.get("meta") or {}).get("fvg_range_plugin_v1") or {}).get("range_filter") or {}
+    if rf1.get("state") == "BLOCK":
+        trade_mode = "WAIT"
+        stars = min(stars, 1)
 
     # ---- Spread filter (NORMAL: không bóp nghẹt cơ hội) ----
     # MT5 bars có thể có field 'spread' (points). Nếu không có, bỏ qua.
@@ -8957,6 +9127,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         sweep_grade_v6 = spring_sell.get("grade") if spring_sell.get("ok") else sweep_sell.get("grade")
     base.setdefault("meta", {})["grade_v6"] = _grade_v6(base.get("meta", {}), trade_mode, sweep_grade_v6, close_confirm_v4)
     base["meta"]["sweep_grade_v6"] = sweep_grade_v6
+
+    fvgp = (base.get("meta") or {}).get("fvg_range_plugin_v1") or {}
+    if trade_mode in ("FULL", "HALF") and str(fvgp.get("entry_mode") or "").upper() == "FVG_LIMIT":
+        try:
+            entry = float(fvgp.get("entry"))
+            sl = float(fvgp.get("sl"))
+            tp1 = float(fvgp.get("tp1"))
+            tp2 = float(fvgp.get("tp2"))
+            notes.append("🎯 Entry plug-in: ưu tiên limit tại FVG, không đuổi giá.")
+        except Exception:
+            pass
+
     base.update({
         "context_lines": context_lines,
         "position_lines": position_lines,
@@ -10656,6 +10838,24 @@ def format_signal(sig: Dict[str, Any]) -> str:
             push_action(f"- Break low {_fmt(range_lo_v)} với follow-through → xét SELL")
         if range_hi_v is not None:
             push_action(f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
+
+    # ===== ACTION/REASON: FVG + RANGE FILTER =====
+    fvgp = ((sig.get("meta") or {}).get("fvg_range_plugin_v1") or {})
+    rf1 = (fvgp.get("range_filter") or {})
+    fvg1 = (fvgp.get("fvg") or {})
+
+    push_action("")
+    push_action("🧩 FVG + RANGE FILTER:")
+    push_action(f"- Range filter: {rf1.get('state', 'N/A')} | {rf1.get('label', 'N/A')}")
+    if rf1.get("reason"):
+        for s in (rf1.get("reason") or [])[:2]:
+            push_action(f"- {s}")
+    if fvg1.get("ok"):
+        push_action(f"- FVG: {fvg1.get('side', 'NONE')} | {nf(fvg1.get('zone_low'))} – {nf(fvg1.get('zone_high'))}")
+        push_action(f"- Limit: {nf(fvg1.get('entry'))} | SL: {nf(fvg1.get('sl'))}")
+        push_action(f"- TP: {nf(fvg1.get('tp1'))} / {nf(fvg1.get('tp2'))}")
+    else:
+        push_action("- FVG: chưa có vùng rõ")
 
     # ===== ACTION: Trigger Engine V3 =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
