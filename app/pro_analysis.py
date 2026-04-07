@@ -23,8 +23,12 @@ def add(buf, s):
     s = str(s).strip()
     if s:
         buf.append(s)
-import re
 
+def _as_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
 def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
     """
     Score riêng cho SETUP CLASS.
