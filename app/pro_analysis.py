@@ -4635,6 +4635,8 @@ def _build_probe_engine_v1(
     h1c,
     atr15: float | None,
     range_pos: float | None,
+    cls: str,
+    setup_score: float,
 ) -> dict:
     """
     Stateless probe engine:
@@ -4642,7 +4644,6 @@ def _build_probe_engine_v1(
     - review ngay bằng M15 / M30 / H1 đã đóng
     """
     meta = (sig.get("meta") or {})
-    cls, setup_score, _ = _setup_class_score_v3(sig)
 
     current_price = (
         _safe_float(sig.get("last_price"))
@@ -4936,6 +4937,7 @@ def _attach_vnext_meta(
         meta["pullback_engine_v1"] = pullback_engine_v1
 
         #PROBE_ENGINE
+        setup_cls, setup_score, _ = _setup_class_score_v3(base)
         try:
             probe_engine_v1 = _build_probe_engine_v1(
                 sig=base,
@@ -4946,6 +4948,8 @@ def _attach_vnext_meta(
                 h1c=(meta.get("_h1_raw") or []),
                 atr15=atr15,
                 range_pos=range_pos,
+                cls=setup_cls,
+                setup_score=setup_score,
             )
         except Exception as e:
             probe_engine_v1 = {
