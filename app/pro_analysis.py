@@ -348,7 +348,48 @@ def _setup_levels_v3(sig: dict, cls: str) -> dict:
                     tp_text = nf(lo)
     except Exception:
         pass
+    # 6) nếu vẫn thiếu sl/tp => dựng bằng anchor hoặc ATR
+    atr15 = _as_float(meta.get("atr15")) or 0.0
+    if entry is not None:
+        if side == "BUY":
+            if sl is None:
+                if a_lo is not None:
+                    sl = a_lo
+                elif atr15 > 0:
+                    sl = entry - atr15
 
+            if tp1 is None:
+                if a_hi is not None:
+                    tp1 = a_hi
+                elif atr15 > 0:
+                    tp1 = entry + atr15
+
+            if tp2 is None:
+                if a_hi is not None and entry is not None:
+                    rr = max(1e-9, entry - (sl if sl is not None else entry - atr15))
+                    tp2 = entry + 1.6 * rr
+                elif atr15 > 0:
+                    tp2 = entry + 1.6 * atr15
+
+        elif side == "SELL":
+            if sl is None:
+                if a_hi is not None:
+                    sl = a_hi
+                elif atr15 > 0:
+                    sl = entry + atr15
+
+            if tp1 is None:
+                if a_lo is not None:
+                    tp1 = a_lo
+                elif atr15 > 0:
+                    tp1 = entry - atr15
+
+            if tp2 is None:
+                if a_lo is not None and entry is not None:
+                    rr = max(1e-9, (sl if sl is not None else entry + atr15) - entry)
+                    tp2 = entry - 1.6 * rr
+                elif atr15 > 0:
+                    tp2 = entry - 1.6 * atr15
     # ===== final normalize =====
     if entry_text is None:
         entry_text = "WAIT_TRIGGER" if cls in ("A", "B", "C") else "n/a"
