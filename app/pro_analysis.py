@@ -11008,27 +11008,31 @@ def format_signal(sig: Dict[str, Any]) -> str:
             push_action(f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
 
     # ===== ACTION/REASON: SMART ENTRY FILTER =====
-    rf1 = (_build_fvg_range_plugin_v1 or {}).get("range_filter") or {}
-    ema1 = (_build_fvg_range_plugin_v1 or {}).get("ema") or {}
-    fvg1 = (_build_fvg_range_plugin_v1 or {}).get("fvg") or {}
+    fvgp = (meta.get("fvg_range_plugin_v1") or {})
+    rf = fvgp.get("range_filter") or {}
+    ema1 = fvgp.get("ema") or {}
+    fvg1 = fvgp.get("fvg") or {}
     
+    push_action("")
     push_action("🧩 SMART ENTRY FILTER:")
     
-    pos = rf1.get("position")
-    tag = rf1.get("tag", "N/A")
-    state = rf1.get("state", "UNKNOWN")
-    
+    pos = rf.get("position")
     if pos is None:
-        push_action(f"- Range: {state} | N/A")
+        push_action(f"- Range: {rf.get('status', 'UNKNOWN')} | N/A")
     else:
-        push_action(f"- Range: {state} | {float(pos):.1f}% | {tag}")
+        push_action(f"- Range: {rf.get('status', 'UNKNOWN')} | {float(pos):.1f}% | {rf.get('tag', 'N/A')}")
     
-    push_action(
-        f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}"
-    )
+    if rf.get("warning"):
+        push_action(f"- {rf.get('warning')}")
     
-    push_action(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
-    push_action(f"- Filter state: {(fvg_range_plugin_v1 or {}).get('smart_state', 'NEUTRAL')}")
+    push_action(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
+    
+    if fvg1.get("ok"):
+        push_action(f"- FVG: {fvg1.get('text', 'OK')}")
+    else:
+        push_action(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
+    
+    push_action(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
 
     # ===== ACTION: Trigger Engine V3 =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
