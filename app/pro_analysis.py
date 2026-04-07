@@ -1716,6 +1716,7 @@ def _detect_fvg_v1(m15c: Sequence[Any], side: str, atr15: float | None = None) -
 def _range_filter_v1(range_pos: Optional[float], bias_side: str | None) -> Dict[str, Any]:
     """Simple anti-chase plug-in.
     BUY blocked near the top of range, SELL blocked near the bottom.
+    range_pos is expected in 0..1.
     """
     side = str(bias_side or "NONE").upper()
     out = {
@@ -1724,6 +1725,7 @@ def _range_filter_v1(range_pos: Optional[float], bias_side: str | None) -> Dict[
         "range_pos": range_pos,
         "state": "OK",
         "label": "IN_RANGE",
+        "warning": None,
         "reason": [],
     }
     try:
@@ -1731,21 +1733,57 @@ def _range_filter_v1(range_pos: Optional[float], bias_side: str | None) -> Dict[
     except Exception:
         rp = None
     if rp is None:
-        out.update({"ok": True, "state": "N/A", "label": "NO_RANGE_POS", "reason": ["không tính được range_pos"]})
+        out.update({
+            "ok": True,
+            "state": "UNKNOWN",
+            "label": "NO_RANGE_POS",
+            "warning": "⚠️ Không tính được vị trí trong range",
+            "reason": ["không tính được range_pos"],
+        })
         return out
 
     if side == "BUY":
         if rp >= 0.90:
-            out.update({"ok": False, "state": "BLOCK", "label": "BUY_TOO_HIGH", "reason": ["sát đỉnh range → không BUY đuổi"]})
+            out.update({
+                "ok": False,
+                "state": "BLOCK",
+                "label": "BUY_TOO_HIGH",
+                "warning": "⚠️ Đang sát đỉnh range → cấm BUY",
+                "reason": ["sát đỉnh range → không BUY đuổi"],
+            })
         elif rp >= 0.80:
-            out.update({"ok": True, "state": "WARN", "label": "BUY_HIGH", "reason": ["BUY vùng cao → cần chờ hồi/FVG"]})
+            out.update({
+                "ok": True,
+                "state": "WARN",
+                "label": "BUY_HIGH",
+                "warning": "⚠️ BUY đang ở vùng cao → ưu tiên chờ hồi/FVG",
+                "reason": ["BUY vùng cao → cần chờ hồi/FVG"],
+            })
     elif side == "SELL":
         if rp <= 0.10:
-            out.update({"ok": False, "state": "BLOCK", "label": "SELL_TOO_LOW", "reason": ["sát đáy range → không SELL đuổi"]})
+            out.update({
+                "ok": False,
+                "state": "BLOCK",
+                "label": "SELL_TOO_LOW",
+                "warning": "⚠️ Đang sát đáy range → cấm SELL",
+                "reason": ["sát đáy range → không SELL đuổi"],
+            })
         elif rp <= 0.20:
-            out.update({"ok": True, "state": "WARN", "label": "SELL_LOW", "reason": ["SELL vùng thấp → cần chờ hồi/FVG"]})
+            out.update({
+                "ok": True,
+                "state": "WARN",
+                "label": "SELL_LOW",
+                "warning": "⚠️ SELL đang ở vùng thấp → ưu tiên chờ hồi/FVG",
+                "reason": ["SELL vùng thấp → cần chờ hồi/FVG"],
+            })
     else:
-        out.update({"ok": True, "state": "N/A", "label": "NO_SIDE", "reason": ["chưa có bias rõ"]})
+        out.update({
+            "ok": True,
+            "state": "UNKNOWN",
+            "label": "NO_SIDE",
+            "warning": "⚠️ Chưa có bias rõ để áp range filter",
+            "reason": ["chưa có bias rõ"],
+        })
     return out
 
 
@@ -1754,14 +1792,44 @@ def _build_fvg_range_plugin_v1(
     bias_side: str | None,
     range_pos: Optional[float],
     atr15: float | None,
+    ema_pack: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     side = str(bias_side or "NONE").upper()
-    rf = _range_filter_v1(range_pos, side)
+
+    # fallback tự tính range_pos từ 20 nến M15 gần nhất nếu upstream chưa truyền xuống
+    rp = None
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+    if rp is None and m15c:
+        try:
+            lo20, hi20, last20 = _range_levels(m15c[:-1] if len(m15c) > 1 else m15c, n=20)
+            if lo20 is not None and hi20 is not None and hi20 > lo20 and last20 is not None:
+                rp = (float(last20) - float(lo20)) / max(1e-9, float(hi20) - float(lo20))
+        except Exception:
+            rp = None
+
+    rf = _range_filter_v1(rp, side)
     fvg = _detect_fvg_v1(m15c, side, atr15=atr15) if side in ("BUY", "SELL") else {"ok": False, "reason": ["no_side"]}
+    ema = ema_pack or {}
+
+    smart_state = "NEUTRAL"
+    if rf.get("state") == "BLOCK":
+        smart_state = "BLOCK"
+    elif fvg.get("ok") and rf.get("state") in ("OK", "WARN"):
+        smart_state = "READY"
+    elif rf.get("state") == "WARN":
+        smart_state = "WAIT"
+    elif rf.get("state") == "UNKNOWN":
+        smart_state = "UNKNOWN"
+
     out = {
         "side": side,
         "range_filter": rf,
         "fvg": fvg,
+        "ema": ema,
+        "smart_state": smart_state,
         "entry_mode": "MARKET",
         "entry": None,
         "sl": None,
@@ -1769,9 +1837,9 @@ def _build_fvg_range_plugin_v1(
         "tp2": None,
         "notes": [],
     }
-    if rf.get("state") == "BLOCK":
-        out["notes"].extend(rf.get("reason") or [])
-    elif rf.get("state") == "WARN":
+    if rf.get("warning"):
+        out["notes"].append(rf.get("warning"))
+    elif rf.get("state") in ("BLOCK", "WARN"):
         out["notes"].extend(rf.get("reason") or [])
 
     if fvg.get("ok"):
