@@ -5281,7 +5281,114 @@ def _attach_vnext_meta(
             entry_sniper=entry_sniper or {"trigger": "NONE"},
             playbook_v2=playbook_v2 or {},
         )
+        # ===== SMART ENTRY FILTER (FORCE FROM CURRENT FLOW) =====
+        try:
+            rp = None
+            if range_pos is not None:
+                rp = float(range_pos)
+                if 0.0 <= rp <= 1.0:
+                    rp = rp * 100.0
 
+            rf = {
+                "state": "UNKNOWN",
+                "position": None,
+                "tag": "N/A",
+                "reason": [],
+            }
+
+            if rp is None:
+                rf = {
+                    "state": "UNKNOWN",
+                    "position": None,
+                    "tag": "N/A",
+                    "reason": ["không có range_pos"],
+                }
+            elif rp >= 90:
+                rf = {
+                    "state": "BLOCK",
+                    "position": rp,
+                    "tag": "BUY_TOO_HIGH",
+                    "reason": ["⚠️ Đang sát đỉnh range → cấm BUY"],
+                }
+            elif rp <= 10:
+                rf = {
+                    "state": "BLOCK",
+                    "position": rp,
+                    "tag": "SELL_TOO_LOW",
+                    "reason": ["⚠️ Đang sát đáy range → cấm SELL"],
+                }
+            elif rp >= 80:
+                rf = {
+                    "state": "WARN",
+                    "position": rp,
+                    "tag": "HIGH_RANGE",
+                    "reason": ["đang ở vùng cao của range"],
+                }
+            elif rp <= 20:
+                rf = {
+                    "state": "WARN",
+                    "position": rp,
+                    "tag": "LOW_RANGE",
+                    "reason": ["đang ở vùng thấp của range"],
+                }
+            else:
+                rf = {
+                    "state": "OK",
+                    "position": rp,
+                    "tag": "IN_RANGE",
+                    "reason": [],
+                }
+
+            ep = ema_pack if isinstance(ema_pack, dict) else {}
+            ema_block = {
+                "trend": str(ep.get("trend") or "N/A"),
+                "alignment": str(ep.get("alignment") or "NO"),
+                "zone": str(ep.get("zone") or "N/A"),
+                "ema34": ep.get("ema34"),
+                "ema89": ep.get("ema89"),
+                "ema200": ep.get("ema200"),
+            }
+
+            fvg_block = {
+                "ok": False,
+                "text": "chưa có vùng rõ",
+            }
+
+            smart_state = "NEUTRAL"
+            if rf["state"] == "BLOCK":
+                smart_state = "BLOCK"
+            elif fvg_block["ok"] and ema_block["alignment"] == "YES":
+                smart_state = "READY"
+            elif fvg_block["ok"]:
+                smart_state = "WAIT"
+
+            meta["fvg_range_plugin_v1"] = {
+                "range_filter": rf,
+                "ema": ema_block,
+                "fvg": fvg_block,
+                "smart_state": smart_state,
+            }
+        except Exception as e:
+            meta["fvg_range_plugin_v1"] = {
+                "range_filter": {
+                    "state": "UNKNOWN",
+                    "position": None,
+                    "tag": "N/A",
+                    "reason": [f"smart filter error: {e}"],
+                },
+                "ema": {
+                    "trend": "N/A",
+                    "alignment": "NO",
+                    "zone": "N/A",
+                },
+                "fvg": {
+                    "ok": False,
+                    "text": "chưa có vùng rõ",
+                },
+                "smart_state": "NEUTRAL",
+            }
+
+        
         meta = base.setdefault("meta", {})
         meta["context_verdict_v1"] = context_verdict_v1
         meta["rsi_context_v1"] = rsi_context_v1
@@ -11009,29 +11116,30 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # ===== ACTION/REASON: SMART ENTRY FILTER =====
     fvgp = (meta.get("fvg_range_plugin_v1") or {})
-    rf = fvgp.get("range_filter") or {}
-    ema1 = fvgp.get("ema") or {}
-    fvg1 = fvgp.get("fvg") or {}
-    
+    rf1 = (fvgp.get("range_filter") or {})
+    ema1 = (fvgp.get("ema") or {})
+    fvg1 = (fvgp.get("fvg") or {})
+
     push_action("")
     push_action("🧩 SMART ENTRY FILTER:")
-    
-    pos = rf.get("position")
+
+    pos = rf1.get("position")
+    state = rf1.get("state", "UNKNOWN")
+    tag = rf1.get("tag", "N/A")
+
     if pos is None:
-        push_action(f"- Range: {rf.get('status', 'UNKNOWN')} | N/A")
+        push_action(f"- Range: {state} | N/A")
     else:
-        push_action(f"- Range: {rf.get('status', 'UNKNOWN')} | {float(pos):.1f}% | {rf.get('tag', 'N/A')}")
-    
-    if rf.get("warning"):
-        push_action(f"- {rf.get('warning')}")
-    
-    push_action(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
-    
-    if fvg1.get("ok"):
-        push_action(f"- FVG: {fvg1.get('text', 'OK')}")
-    else:
-        push_action(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
-    
+        push_action(f"- Range: {state} | {float(pos):.1f}% | {tag}")
+
+    reasons = rf1.get("reason") or []
+    for s in reasons[:2]:
+        push_action(f"- {s}")
+
+    push_action(
+        f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}"
+    )
+    push_action(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
     push_action(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
 
     # ===== ACTION: Trigger Engine V3 =====
