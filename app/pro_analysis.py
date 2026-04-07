@@ -1787,75 +1787,141 @@ def _range_filter_v1(range_pos: Optional[float], bias_side: str | None) -> Dict[
     return out
 
 
-def _build_fvg_range_plugin_v1(
-    m15c: Sequence[Any],
-    bias_side: str | None,
-    range_pos: Optional[float],
-    atr15: float | None,
-    ema_pack: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    side = str(bias_side or "NONE").upper()
+def _build_fvg_range_plugin_v1(sig: dict) -> dict:
+    meta = sig.get("meta") or {}
 
-    # fallback tự tính range_pos từ 20 nến M15 gần nhất nếu upstream chưa truyền xuống
-    rp = None
+    # =========================
+    # RANGE: ưu tiên đọc từ luồng chính đã tính sẵn
+    # =========================
+    range_pos = None
+    range_low = None
+    range_high = None
+
+    # 1) ưu tiên range_v1 nếu có
+    rv1 = meta.get("range_v1") or {}
+    range_pos = rv1.get("position")
+    range_low = rv1.get("low")
+    range_high = rv1.get("high")
+
+    # 2) fallback từ key_levels
+    if range_low is None or range_high is None:
+        kl = meta.get("key_levels") or {}
+        range_low = kl.get("M15_RANGE_LOW", range_low)
+        range_high = kl.get("M15_RANGE_HIGH", range_high)
+
+    # 3) fallback từ sig nếu có truyền sẵn
+    if range_pos is None:
+        range_pos = sig.get("range_pos")
+
+    # 4) nếu vẫn chưa có range_pos nhưng có low/high/current_price thì tự suy ra
+    current_price = (
+        sig.get("current_price")
+        or sig.get("last_price")
+        or sig.get("price")
+        or sig.get("entry")
+    )
+
     try:
-        rp = float(range_pos) if range_pos is not None else None
+        if range_pos is None and range_low is not None and range_high is not None and current_price is not None:
+            lo = float(range_low)
+            hi = float(range_high)
+            cp = float(current_price)
+            if hi > lo:
+                range_pos = ((cp - lo) / (hi - lo)) * 100.0
     except Exception:
-        rp = None
-    if rp is None and m15c:
-        try:
-            lo20, hi20, last20 = _range_levels(m15c[:-1] if len(m15c) > 1 else m15c, n=20)
-            if lo20 is not None and hi20 is not None and hi20 > lo20 and last20 is not None:
-                rp = (float(last20) - float(lo20)) / max(1e-9, float(hi20) - float(lo20))
-        except Exception:
-            rp = None
+        range_pos = None
 
-    rf = _range_filter_v1(rp, side)
-    fvg = _detect_fvg_v1(m15c, side, atr15=atr15) if side in ("BUY", "SELL") else {"ok": False, "reason": ["no_side"]}
-    ema = ema_pack or {}
+    # normalize
+    try:
+        if range_pos is not None:
+            range_pos = float(range_pos)
+    except Exception:
+        range_pos = None
 
-    smart_state = "NEUTRAL"
-    if rf.get("state") == "BLOCK":
-        smart_state = "BLOCK"
-    elif fvg.get("ok") and rf.get("state") in ("OK", "WARN"):
-        smart_state = "READY"
-    elif rf.get("state") == "WARN":
-        smart_state = "WAIT"
-    elif rf.get("state") == "UNKNOWN":
-        smart_state = "UNKNOWN"
-
-    out = {
-        "side": side,
-        "range_filter": rf,
-        "fvg": fvg,
-        "ema": ema,
-        "smart_state": smart_state,
-        "entry_mode": "MARKET",
-        "entry": None,
-        "sl": None,
-        "tp1": None,
-        "tp2": None,
-        "notes": [],
-    }
-    if rf.get("warning"):
-        out["notes"].append(rf.get("warning"))
-    elif rf.get("state") in ("BLOCK", "WARN"):
-        out["notes"].extend(rf.get("reason") or [])
-
-    if fvg.get("ok"):
-        out.update({
-            "entry_mode": "FVG_LIMIT",
-            "entry": fvg.get("entry"),
-            "sl": fvg.get("sl"),
-            "tp1": fvg.get("tp1"),
-            "tp2": fvg.get("tp2"),
-        })
-        out["notes"].extend(fvg.get("reason") or [])
-        if fvg.get("mitigated"):
-            out["notes"].append("FVG đã được chạm một phần")
+    # =========================
+    # RANGE FILTER
+    # =========================
+    if range_pos is None:
+        range_filter = {
+            "status": "UNKNOWN",
+            "position": None,
+            "tag": "N/A",
+            "warning": None,
+            "allow_buy": True,
+            "allow_sell": True,
+        }
+    elif range_pos >= 90:
+        range_filter = {
+            "status": "BLOCK",
+            "position": range_pos,
+            "tag": "BUY_TOO_HIGH",
+            "warning": "⚠️ Đang sát đỉnh range → cấm BUY",
+            "allow_buy": False,
+            "allow_sell": True,
+        }
+    elif range_pos <= 10:
+        range_filter = {
+            "status": "BLOCK",
+            "position": range_pos,
+            "tag": "SELL_TOO_LOW",
+            "warning": "⚠️ Đang sát đáy range → cấm SELL",
+            "allow_buy": True,
+            "allow_sell": False,
+        }
     else:
-        out["notes"].append("chưa có FVG rõ")
-    return out
+        range_filter = {
+            "status": "OK",
+            "position": range_pos,
+            "tag": "IN_RANGE",
+            "warning": None,
+            "allow_buy": True,
+            "allow_sell": True,
+        }
+
+    # =========================
+    # EMA: đọc từ luồng chính đã có sẵn
+    # =========================
+    ema_src = (
+        meta.get("ema_filter")
+        or meta.get("ema")
+        or {}
+    )
+
+    ema = {
+        "trend": ema_src.get("trend", "N/A"),
+        "alignment": ema_src.get("alignment", "NO"),
+        "zone": ema_src.get("zone") or ema_src.get("price_position") or "N/A",
+        "ema34": ema_src.get("ema34"),
+        "ema89": ema_src.get("ema89"),
+        "ema200": ema_src.get("ema200"),
+    }
+
+    # =========================
+    # FVG: nếu file bạn đã có detect riêng thì giữ nguyên
+    # ở đây chỉ đọc lại nếu đã build sẵn từ trước
+    # =========================
+    fvg = meta.get("fvg_v1") or {}
+    if not fvg:
+        fvg = {"ok": False, "text": "chưa có vùng rõ"}
+
+    # =========================
+    # SMART STATE
+    # =========================
+    smart_state = "NEUTRAL"
+
+    if range_filter["status"] == "BLOCK":
+        smart_state = "BLOCK"
+    elif fvg.get("ok") and ema.get("alignment") == "YES":
+        smart_state = "READY"
+    elif fvg.get("ok"):
+        smart_state = "WAIT"
+
+    return {
+        "range_filter": range_filter,
+        "ema": ema,
+        "fvg": fvg,
+        "smart_state": smart_state,
+    }
 
 
 def _detect_liquidation_v2(
@@ -10919,37 +10985,33 @@ def format_signal(sig: Dict[str, Any]) -> str:
             push_action(f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
 
     # ===== ACTION/REASON: SMART ENTRY FILTER =====
-    fvgp = ((sig.get("meta") or {}).get("fvg_range_plugin_v1") or {})
-    rf1 = (fvgp.get("range_filter") or {})
-    fvg1 = (fvgp.get("fvg") or {})
-    ema1 = (fvgp.get("ema") or {})
-
-    push_action("")
-    push_action("🧩 SMART ENTRY FILTER:")
-    rp = rf1.get("range_pos")
-    if rp is not None:
-        try:
-            push_action(f"- Range: {rf1.get('state', 'UNKNOWN')} | {float(rp)*100:.1f}% | {rf1.get('label', 'N/A')}")
-        except Exception:
-            push_action(f"- Range: {rf1.get('state', 'UNKNOWN')} | {rf1.get('label', 'N/A')}")
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
+    rf = fvgp.get("range_filter") or {}
+    ema1 = fvgp.get("ema") or {}
+    fvg1 = fvgp.get("fvg") or {}
+    
+    lines.append("")
+    lines.append("🧩 SMART ENTRY FILTER:")
+    
+    pos = rf.get("position")
+    if pos is None:
+        lines.append(f"- Range: {rf.get('status', 'UNKNOWN')} | N/A")
     else:
-        push_action(f"- Range: {rf1.get('state', 'UNKNOWN')} | {rf1.get('label', 'N/A')}")
-    if rf1.get("warning"):
-        push_action(f"- {rf1.get('warning')}")
-    elif rf1.get("reason"):
-        for s in (rf1.get("reason") or [])[:1]:
-            push_action(f"- {s}")
-
-    push_action(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
-
+        lines.append(f"- Range: {rf.get('status', 'UNKNOWN')} | {float(pos):.1f}% | {rf.get('tag', 'N/A')}")
+    
+    if rf.get("warning"):
+        lines.append(f"- {rf.get('warning')}")
+    
+    lines.append(
+        f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}"
+    )
+    
     if fvg1.get("ok"):
-        push_action(f"- FVG: {fvg1.get('side', 'NONE')} | {nf(fvg1.get('zone_low'))} – {nf(fvg1.get('zone_high'))}")
-        push_action(f"- Limit: {nf(fvg1.get('entry'))} | SL: {nf(fvg1.get('sl'))}")
-        push_action(f"- TP: {nf(fvg1.get('tp1'))} / {nf(fvg1.get('tp2'))}")
+        lines.append(f"- FVG: {fvg1.get('text', 'OK')}")
     else:
-        push_action("- FVG: chưa có vùng rõ")
-
-    push_action(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
+        lines.append(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
+    
+    lines.append(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
 
     # ===== ACTION: Trigger Engine V3 =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
