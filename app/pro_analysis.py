@@ -8311,6 +8311,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         bias_side=bias_side,
         range_pos=range_pos,
         atr15=atr15,
+        ema_pack=ema_pack,
     )
     base.setdefault("meta", {})["fvg_range_plugin_v1"] = fvg_range_plugin_v1
     rf1 = (fvg_range_plugin_v1 or {}).get("range_filter") or {}
@@ -10839,23 +10840,38 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if range_hi_v is not None:
             push_action(f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
 
-    # ===== ACTION/REASON: FVG + RANGE FILTER =====
+    # ===== ACTION/REASON: SMART ENTRY FILTER =====
     fvgp = ((sig.get("meta") or {}).get("fvg_range_plugin_v1") or {})
     rf1 = (fvgp.get("range_filter") or {})
     fvg1 = (fvgp.get("fvg") or {})
+    ema1 = (fvgp.get("ema") or {})
 
     push_action("")
-    push_action("🧩 FVG + RANGE FILTER:")
-    push_action(f"- Range filter: {rf1.get('state', 'N/A')} | {rf1.get('label', 'N/A')}")
-    if rf1.get("reason"):
-        for s in (rf1.get("reason") or [])[:2]:
+    push_action("🧩 SMART ENTRY FILTER:")
+    rp = rf1.get("range_pos")
+    if rp is not None:
+        try:
+            push_action(f"- Range: {rf1.get('state', 'UNKNOWN')} | {float(rp)*100:.1f}% | {rf1.get('label', 'N/A')}")
+        except Exception:
+            push_action(f"- Range: {rf1.get('state', 'UNKNOWN')} | {rf1.get('label', 'N/A')}")
+    else:
+        push_action(f"- Range: {rf1.get('state', 'UNKNOWN')} | {rf1.get('label', 'N/A')}")
+    if rf1.get("warning"):
+        push_action(f"- {rf1.get('warning')}")
+    elif rf1.get("reason"):
+        for s in (rf1.get("reason") or [])[:1]:
             push_action(f"- {s}")
+
+    push_action(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
+
     if fvg1.get("ok"):
         push_action(f"- FVG: {fvg1.get('side', 'NONE')} | {nf(fvg1.get('zone_low'))} – {nf(fvg1.get('zone_high'))}")
         push_action(f"- Limit: {nf(fvg1.get('entry'))} | SL: {nf(fvg1.get('sl'))}")
         push_action(f"- TP: {nf(fvg1.get('tp1'))} / {nf(fvg1.get('tp2'))}")
     else:
         push_action("- FVG: chưa có vùng rõ")
+
+    push_action(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
 
     # ===== ACTION: Trigger Engine V3 =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
