@@ -5004,14 +5004,19 @@ def _build_probe_engine_v1(
         range_pos=range_pos,
         atr15=atr15,
     )
-    if not zone.get("ok"):
-        zone = _probe_fallback_zone_v1(
-            sig=sig,
-            bias_side=bias_side,
-            current_price=current_price,
-            range_pos=range_pos,
-            atr15=atr15,
-        )
+    # 🔥 FIX: fallback từ pullback nếu detector fail
+    if not zone:
+        pb = sig.get("pullback_engine_v1", {})
+        pb_pct = pb.get("pullback_pct", 0)
+    
+        if 30 <= pb_pct <= 60:
+            zone = {
+                "type": "pullback",
+                "entry": pb.get("entry"),
+                "sl": pb.get("sl"),
+                "tp": pb.get("tp"),
+                "reason": f"Pullback đẹp {pb_pct:.0f}%"
+            }
 
     if not zone.get("ok"):
         base["summary"] = "Chưa có probe zone hợp lệ"
