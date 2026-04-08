@@ -4958,19 +4958,33 @@ def _build_probe_engine_v1(
 
     # ===== DEBUG PROBE START =====
     try:
-        meta = sig.get("meta", {})
-
         print("\n========== PROBE DEBUG ==========")
-        print(f"symbol = {sig.get('symbol')}")
-        print(f"setup_class_v2 = {meta.get('setup_class_v2')}")
-        print(f"setup_class (old) = {meta.get('setup_class')}")
+        print(f"symbol = {symbol}")
+        print(f"cls(arg) = {cls}")
+        print(f"setup_score(arg) = {setup_score}")
+        
+        meta = sig.get("meta") or {}
+        print(f"meta.pullback_engine_v1 = {meta.get('pullback_engine_v1')}")
+        print(f"meta.key_levels = {meta.get('key_levels')}")
+        print(f"meta.liquidity_map_v1 = {meta.get('liquidity_map_v1')}")
+        print(f"range_pos(arg) = {range_pos}")
+        print(f"atr15(arg) = {atr15}")
+        
+        zone = _probe_detect_zone_v1(
+            sig=sig,
+            bias_side=bias_side,
+            current_price=current_price,
+            range_pos=range_pos,
+            atr15=atr15,
+        )
+        print(f"zone_detect = {zone}")
 
         sc = meta.get("setup_class_v2") or meta.get("setup_class") or {}
         cls_debug = sc.get("class") or sc.get("grade") or sc.get("rank")
 
         print(f"👉 cls_used = {cls_debug}")
 
-        pb = sig.get("pullback_engine_v1", {})
+        pb = (sig.get("meta") or {}).get("pullback_engine_v1", {})
         print(f"pullback_engine = {pb}")
         print(f"pullback_pct = {pb.get('pullback_pct')}")
 
