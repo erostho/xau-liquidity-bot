@@ -294,9 +294,20 @@ def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
     return cls, round(score, 1), out[:4]
 
 def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -> list[str]:
-    cls, setup_score, reasons = _setup_class_score_v3(sig)
-    plan = _build_setup_plan_v1(sig, cls)
+    meta = (sig.get("meta") or {})
+    sc3 = meta.get("setup_class_v3") or {}
 
+    if sc3:
+        cls = str(sc3.get("class") or "D").upper()
+        try:
+            setup_score = float(sc3.get("score") or 0.0)
+        except Exception:
+            setup_score = 0.0
+        reasons = list(sc3.get("reasons") or [])
+    else:
+        cls, setup_score, reasons = _setup_class_score_v3(sig)
+
+    plan = _build_setup_plan_v1(sig, cls)
     score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
 
     lines = []
@@ -4955,10 +4966,16 @@ def _build_probe_engine_v1(
     5) range boundary
     Nếu vẫn chưa đủ thì fallback từ playbook/fib/FVG/entry_zone/setup plan.
     """
-
     meta = sig.get("meta") or {}
+    sc3 = meta.get("setup_class_v3") or {}
+    
+    if sc3:
+        cls = str(sc3.get("class") or cls or "D").upper()
+        try:
+            setup_score = float(sc3.get("score") or setup_score or 0.0)
+        except Exception:
+            setup_score = float(setup_score or 0.0)
     side = _probe_pick_side(sig, bias_side)
-
     current_price = (
         _safe_float(sig.get("current_price"))
         or _safe_float(sig.get("last_price"))
@@ -5550,7 +5567,12 @@ def _attach_vnext_meta(
         meta["pullback_engine_v1"] = pullback_engine_v1
 
         #PROBE_ENGINE
-        setup_cls, setup_score, _ = _setup_class_score_v3(base)
+        setup_cls, setup_score, setup_reasons = _setup_class_score_v3(base)
+        meta["setup_class_v3"] = {
+            "class": setup_cls,
+            "score": float(setup_score or 0.0),
+            "reasons": list(setup_reasons or []),
+        }
         try:
             probe_engine_v1 = _build_probe_engine_v1(
                 sig=base,
