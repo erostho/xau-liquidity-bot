@@ -4955,13 +4955,28 @@ def _build_probe_engine_v1(
     5) range boundary
     Nếu vẫn chưa đủ thì fallback từ playbook/fib/FVG/entry_zone/setup plan.
     """
-    meta = (sig.get("meta") or {})
 
+    # ===== DEBUG PROBE START =====
     try:
-        recomputed_cls, recomputed_score, _ = _setup_class_score_v3(sig)
-        cls = recomputed_cls or cls
-        setup_score = float(recomputed_score or setup_score or 0.0)
-    except Exception:
+        meta = sig.get("meta", {})
+
+        print("\n========== PROBE DEBUG ==========")
+        print(f"symbol = {sig.get('symbol')}")
+        print(f"setup_class_v2 = {meta.get('setup_class_v2')}")
+        print(f"setup_class (old) = {meta.get('setup_class')}")
+
+        sc = meta.get("setup_class_v2") or meta.get("setup_class") or {}
+        cls_debug = sc.get("class") or sc.get("grade") or sc.get("rank")
+
+        print(f"👉 cls_used = {cls_debug}")
+
+        pb = sig.get("pullback_engine_v1", {})
+        print(f"pullback_engine = {pb}")
+        print(f"pullback_pct = {pb.get('pullback_pct')}")
+
+    except Exception as e:
+        print(f"[PROBE_DEBUG_ERROR] {e}")
+    # ===== DEBUG PROBE END =====
         pass
 
     current_price = (
