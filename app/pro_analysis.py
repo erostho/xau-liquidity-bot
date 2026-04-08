@@ -10806,33 +10806,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if range_hi_v is not None:
             push_action(f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
 
-    # ===== ACTION/REASON: SMART ENTRY FILTER =====
-    fvgp = (meta.get("fvg_range_plugin_v1") or {})
-    rf1 = (fvgp.get("range_filter") or {})
-    ema1 = (fvgp.get("ema") or {})
-    fvg1 = (fvgp.get("fvg") or {})
 
-    push_action("")
-    push_action("🧩 SMART ENTRY FILTER:")
-
-    pos = rf1.get("position")
-    state = rf1.get("state", "UNKNOWN")
-    tag = rf1.get("tag", "N/A")
-
-    if pos is None:
-        push_action(f"- Range: {state} | N/A")
-    else:
-        push_action(f"- Range: {state} | {float(pos):.1f}% | {tag}")
-
-    reasons = rf1.get("reason") or []
-    for s in reasons[:2]:
-        push_action(f"- {s}")
-
-    push_action(
-        f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}"
-    )
-    push_action(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
-    push_action(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
     # ===== ACTION: Trigger Engine V3 =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
     lr1 = (sig.get("meta") or {}).get("liquidity_reaction_v1") or {}
@@ -10887,7 +10861,34 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Current move: {sce1.get('current_move', 'CHOP')}")
         push_reason(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
+    # ===== ACTION/REASON: SMART ENTRY FILTER =====
+    fvgp = (meta.get("fvg_range_plugin_v1") or {})
+    rf1 = (fvgp.get("range_filter") or {})
+    ema1 = (fvgp.get("ema") or {})
+    fvg1 = (fvgp.get("fvg") or {})
 
+    push_action("")
+    push_action("🧩 SMART ENTRY FILTER:")
+
+    pos = rf1.get("position")
+    state = rf1.get("state", "UNKNOWN")
+    tag = rf1.get("tag", "N/A")
+
+    if pos is None:
+        push_action(f"- Range: {state} | N/A")
+    else:
+        push_action(f"- Range: {state} | {float(pos):.1f}% | {tag}")
+
+    reasons = rf1.get("reason") or []
+    for s in reasons[:2]:
+        push_action(f"- {s}")
+
+    push_action(
+        f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}"
+    )
+    push_action(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
+    push_action(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
+    
     # ===== PROBE ENGINE BLOCK =====
     for s in _render_probe_block_v1(sig):
         add(reason_lines, s)
