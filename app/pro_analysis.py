@@ -4944,18 +4944,32 @@ def _build_probe_engine_v1(
     setup_score: float,
 ) -> dict:
     """
-    Stateless probe engine:
-    - A/B + có probe zone => sinh probe
-    - review ngay bằng M15 / M30 / H1 đã đóng
-    - có fallback zone để không bị INACTIVE oan khi setup class thực tế là A/B
+    Probe V2:
+    - Ưu tiên detector 5-zone gốc
+    - Nếu miss thì fallback từ playbook / fib / pullback / FVG / entry_zone_v6 / range
+    - Class A/B mặc định phải cố tạo probe nếu có ít nhất 1 vùng logic để dò
+    - Không để case pullback đẹp nhưng probe vẫn INACTIVE vô lý
     """
     meta = (sig.get("meta") or {})
+
+    # Recompute class from the same sig to avoid display mismatch
+    try:
+        recomputed_cls, recomputed_score, _ = _setup_class_score_v3(sig)
+        cls = recomputed_cls or cls
+        setup_score = float(recomputed_score or setup_score or 0.0)
+    except Exception:
+        pass
 
     current_price = (
         _safe_float(sig.get("last_price"))
         or _safe_float(sig.get("current_price"))
         or _safe_float(sig.get("entry"))
     )
+    if current_price is None:
+        try:
+            current_price = float(_c_val((m15c or [])[-1], "close", 0.0) or 0.0)
+        except Exception:
+            current_price = None
 
     base = {
         "active": False,
@@ -4980,18 +4994,8 @@ def _build_probe_engine_v1(
         "market_read": "",
         "upgrade": "",
         "reason": [],
+        "detector": "NONE",
     }
-
-    # Recompute once from current sig to avoid stale cls mismatch in renderer.
-    try:
-        live_cls, live_score, _ = _setup_class_score_v3(sig)
-        if live_cls in ("A", "B"):
-            cls = live_cls
-            setup_score = live_score
-            base["class"] = cls
-            base["setup_score"] = setup_score
-    except Exception:
-        pass
 
     if cls not in ("A", "B"):
         base["summary"] = "Chỉ tạo probe khi setup class là A/B"
@@ -5004,27 +5008,55 @@ def _build_probe_engine_v1(
         range_pos=range_pos,
         atr15=atr15,
     )
-    # 🔥 FIX: fallback từ pullback nếu detector fail
-    if not zone:
-        pb = sig.get("pullback_engine_v1", {})
-        pb_pct = pb.get("pullback_pct", 0)
-    
-        if 30 <= pb_pct <= 60:
-            zone = {
-                "type": "pullback",
-                "entry": pb.get("entry"),
-                "sl": pb.get("sl"),
-                "tp": pb.get("tp"),
-                "reason": f"Pullback đẹp {pb_pct:.0f}%"
-            }
+    detector = "STRICT_5_ZONE"
 
     if not zone.get("ok"):
-        base["summary"] = "Chưa có probe zone hợp lệ"
+        zone = _probe_fallback_zone_v1(
+            sig=sig,
+            bias_side=bias_side,
+            current_price=current_price,
+            range_pos=range_pos,
+            atr15=atr15,
+        )
+        detector = "FALLBACK_ZONE"
+
+    if not zone.get("ok"):
+        # Last-resort soft fallback for A/B when setup already has concrete plan info
+        try:
+            plan0 = _build_setup_plan_v1(sig, cls)
+        except Exception:
+            plan0 = {}
+
+        entry0 = _safe_float(plan0.get("entry"))
+        sl0 = _safe_float(plan0.get("sl"))
+        if entry0 is not None and sl0 is not None:
+            a = float(atr15 or 0.0)
+            if a <= 0:
+                a = max(1e-9, abs(entry0) * 0.003)
+            pad = max(1e-9, 0.18 * a)
+            lo = min(entry0, sl0) - pad
+            hi = max(entry0, sl0) + pad
+            zone = {
+                "ok": True,
+                "type": "SETUP_PLAN_FALLBACK",
+                "priority": 999,
+                "strength": "LOW",
+                "side": _probe_pick_side(sig, bias_side),
+                "zone_low": lo,
+                "zone_high": hi,
+                "reason": ["fallback từ setup plan A/B"],
+            }
+            detector = "SETUP_PLAN_FALLBACK"
+
+    if not zone.get("ok"):
+        base["summary"] = "Class A/B nhưng chưa gom được vùng dò từ strict zone / fallback / setup plan"
         return base
 
     plan = _build_probe_plan_v1(sig=sig, zone=zone, atr15=atr15, current_price=current_price)
     if not plan.get("active"):
-        base["summary"] = "Không dựng được plan dò"
+        base["summary"] = "Có zone nhưng không dựng được plan dò"
+        base["reason"] = zone.get("reason") or []
+        base["detector"] = detector
         return base
 
     review_m15 = _probe_review_tf_v1(
@@ -5054,10 +5086,17 @@ def _build_probe_engine_v1(
 
     final = _finalize_probe_v1(plan, review_m15, review_m30, review_h1)
 
+    # Probe should be considered active whenever a valid plan exists, even if current result is WAIT/FAILED.
+    # Otherwise Telegram shows INACTIVE too often for perfectly valid Class A/B probe candidates.
+    active_flag = bool(plan.get("active"))
+
+    summary = final.get("summary") or "Probe đã được tạo"
+    reason_lines = list(plan.get("reason") or [])
+    if detector != "STRICT_5_ZONE":
+        reason_lines = [f"detector={detector}"] + reason_lines
+
     base.update({
-        "active": True,
-        "class": cls,
-        "setup_score": setup_score,
+        "active": active_flag,
         "zone_type": plan.get("probe_zone_type"),
         "zone_strength": plan.get("probe_zone_strength"),
         "side": plan.get("probe_side"),
@@ -5071,12 +5110,13 @@ def _build_probe_engine_v1(
         "review_m15": review_m15,
         "review_m30": review_m30,
         "review_h1": review_h1,
-        "result": final.get("result"),
+        "result": final.get("result") if final.get("result") not in (None, "INACTIVE") else "WAIT_CONFIRM",
         "main_entry_ok": bool(final.get("main_entry_ok")),
-        "summary": final.get("summary"),
+        "summary": summary,
         "market_read": final.get("market_read"),
         "upgrade": final.get("upgrade"),
-        "reason": plan.get("reason") or [],
+        "reason": reason_lines,
+        "detector": detector,
     })
     return base
 
