@@ -5070,8 +5070,8 @@ def _build_probe_engine_v1(
         "detector": "NONE",
     }
 
-    if cls not in ("A", "B"):
-        base["summary"] = "Chỉ tạo probe khi setup class là A/B"
+    if cls not in ("A", "B", "C"):
+        base["summary"] = "Chỉ tạo probe khi setup class là A/B/C"
         return base
 
     side = _probe_pick_side(sig, bias_side)
