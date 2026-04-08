@@ -4577,6 +4577,164 @@ def _probe_detect_zone_v1(
     return best
 
 
+
+
+def _probe_fallback_zone_v1(
+    sig: dict,
+    bias_side: str | None,
+    current_price: float | None,
+    range_pos: float | None,
+    atr15: float | None,
+) -> dict:
+    """
+    Fallback probe zone when strict 5-zone detector misses.
+    Keep probe usable for class A/B setups by reusing zones already computed elsewhere.
+    Priority:
+    1) playbook zone
+    2) fib zone
+    3) pullback healthy/deep zone
+    4) smart-entry FVG zone
+    5) entry_zone_v6
+    6) range boundary
+    """
+    meta = (sig.get("meta") or {})
+    side = _probe_pick_side(sig, bias_side)
+    if side not in ("BUY", "SELL"):
+        return {"ok": False, "reason": "no_side"}
+
+    cp = _safe_float(current_price)
+    a = float(atr15 or 0.0)
+    if cp is None:
+        cp = _safe_float(sig.get("last_price")) or _safe_float(sig.get("current_price")) or _safe_float(sig.get("entry"))
+    if cp is None:
+        return {"ok": False, "reason": "no_price"}
+    if a <= 0:
+        a = max(1e-9, abs(cp) * 0.003)
+
+    def _mk(zlo, zhi, ztype, strength="MEDIUM", reason=None):
+        zlo = _safe_float(zlo)
+        zhi = _safe_float(zhi)
+        if zlo is None or zhi is None:
+            return None
+        lo = min(zlo, zhi)
+        hi = max(zlo, zhi)
+        return {
+            "ok": True,
+            "type": ztype,
+            "priority": 99,
+            "strength": strength,
+            "side": side,
+            "zone_low": lo,
+            "zone_high": hi,
+            "reason": reason or [],
+        }
+
+    playbook = meta.get("playbook_v2") or {}
+    z = _mk(
+        playbook.get("zone_low"),
+        playbook.get("zone_high"),
+        "PLAYBOOK_ZONE",
+        "MEDIUM",
+        ["fallback từ playbook zone"],
+    )
+    if z:
+        return z
+
+    fib1 = meta.get("fib_confluence_v1") or {}
+    if fib1.get("ok"):
+        z = _mk(
+            fib1.get("zone_low"),
+            fib1.get("zone_high"),
+            "FIB_ZONE",
+            "MEDIUM" if int(fib1.get("score") or 0) < 3 else "HIGH",
+            ["fallback từ fib confluence zone"],
+        )
+        if z:
+            return z
+
+    pb1 = meta.get("pullback_engine_v1") or {}
+    pct = _safe_float(pb1.get("pullback_pct"))
+    a_lo = _safe_float(pb1.get("anchor_low"))
+    a_hi = _safe_float(pb1.get("anchor_high"))
+    if pct is not None and a_lo is not None and a_hi is not None and 0.25 <= pct <= 0.78:
+        lo = min(a_lo, a_hi)
+        hi = max(a_lo, a_hi)
+        rng = max(1e-9, hi - lo)
+        if side == "BUY":
+            zlo = hi - 0.62 * rng
+            zhi = hi - 0.40 * rng
+        else:
+            zlo = lo + 0.40 * rng
+            zhi = lo + 0.62 * rng
+        z = _mk(
+            zlo, zhi,
+            "PULLBACK_ZONE",
+            "HIGH" if 0.40 <= pct <= 0.62 else "MEDIUM",
+            [f"fallback từ pullback {pb1.get('pullback_pct_text', 'n/a')}"],
+        )
+        if z:
+            return z
+
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
+    fvg = fvgp.get("fvg") or {}
+    if fvg.get("ok"):
+        z = _mk(
+            fvg.get("low"),
+            fvg.get("high"),
+            "FVG_ZONE",
+            "MEDIUM",
+            ["fallback từ SMART ENTRY FILTER / FVG"],
+        )
+        if z:
+            return z
+
+    ez = meta.get("entry_zone_v6") or {}
+    if str(ez.get("side") or "").upper() == side:
+        z = _mk(
+            ez.get("low"),
+            ez.get("high"),
+            "ENTRY_ZONE_V6",
+            "LOW",
+            ["fallback từ entry_zone_v6"],
+        )
+        if z:
+            return z
+
+    k = meta.get("key_levels") or {}
+    rlo = _safe_float(k.get("M15_RANGE_LOW"))
+    rhi = _safe_float(k.get("M15_RANGE_HIGH"))
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+    if rlo is not None and rhi is not None:
+        if side == "BUY":
+            if rp is None or rp <= 0.55:
+                return {
+                    "ok": True,
+                    "type": "RANGE_LOW_FALLBACK",
+                    "priority": 100,
+                    "strength": "LOW",
+                    "side": side,
+                    "zone_low": rlo - 0.10 * a,
+                    "zone_high": rlo + 0.15 * a,
+                    "reason": ["fallback từ biên dưới range M15"],
+                }
+        else:
+            if rp is None or rp >= 0.45:
+                return {
+                    "ok": True,
+                    "type": "RANGE_HIGH_FALLBACK",
+                    "priority": 100,
+                    "strength": "LOW",
+                    "side": side,
+                    "zone_low": rhi - 0.15 * a,
+                    "zone_high": rhi + 0.10 * a,
+                    "reason": ["fallback từ biên trên range M15"],
+                }
+
+    return {"ok": False, "reason": "no_fallback_probe_zone"}
+
 def _build_probe_plan_v1(
     sig: dict,
     zone: dict,
@@ -4789,6 +4947,7 @@ def _build_probe_engine_v1(
     Stateless probe engine:
     - A/B + có probe zone => sinh probe
     - review ngay bằng M15 / M30 / H1 đã đóng
+    - có fallback zone để không bị INACTIVE oan khi setup class thực tế là A/B
     """
     meta = (sig.get("meta") or {})
 
@@ -4823,6 +4982,17 @@ def _build_probe_engine_v1(
         "reason": [],
     }
 
+    # Recompute once from current sig to avoid stale cls mismatch in renderer.
+    try:
+        live_cls, live_score, _ = _setup_class_score_v3(sig)
+        if live_cls in ("A", "B"):
+            cls = live_cls
+            setup_score = live_score
+            base["class"] = cls
+            base["setup_score"] = setup_score
+    except Exception:
+        pass
+
     if cls not in ("A", "B"):
         base["summary"] = "Chỉ tạo probe khi setup class là A/B"
         return base
@@ -4835,7 +5005,16 @@ def _build_probe_engine_v1(
         atr15=atr15,
     )
     if not zone.get("ok"):
-        base["summary"] = "Chưa có 1 trong 5 probe zone hợp lệ"
+        zone = _probe_fallback_zone_v1(
+            sig=sig,
+            bias_side=bias_side,
+            current_price=current_price,
+            range_pos=range_pos,
+            atr15=atr15,
+        )
+
+    if not zone.get("ok"):
+        base["summary"] = "Chưa có probe zone hợp lệ"
         return base
 
     plan = _build_probe_plan_v1(sig=sig, zone=zone, atr15=atr15, current_price=current_price)
@@ -4871,7 +5050,9 @@ def _build_probe_engine_v1(
     final = _finalize_probe_v1(plan, review_m15, review_m30, review_h1)
 
     base.update({
-        "active": final.get("result") not in ("INACTIVE",),
+        "active": True,
+        "class": cls,
+        "setup_score": setup_score,
         "zone_type": plan.get("probe_zone_type"),
         "zone_strength": plan.get("probe_zone_strength"),
         "side": plan.get("probe_side"),
@@ -4893,7 +5074,6 @@ def _build_probe_engine_v1(
         "reason": plan.get("reason") or [],
     })
     return base
-
 
 def _render_probe_block_v1(sig: dict) -> list[str]:
     meta = (sig.get("meta") or {})
