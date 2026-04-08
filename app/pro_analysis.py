@@ -1589,6 +1589,153 @@ def _range_levels(candles: Sequence[Any], n: int = 20) -> Tuple[Optional[float],
     lo = min(float(_c_val(x, "low", 0.0) or 0.0) for x in c)
     last = float(_c_val(c[-1], "close", 0.0) or 0.0)
     return lo, hi, last
+def _build_fvg_range_plugin_v1(
+    m15c,
+    bias_side: str | None,
+    range_pos,
+    atr15,
+    ema_pack=None,
+) -> dict:
+    """
+    SMART ENTRY FILTER plug-in.
+    Always returns a stable payload so renderer never falls back to UNKNOWN/N/A
+    just because meta was attached from a different code path.
+    """
+    side = str(bias_side or "NONE").upper()
+    ep = ema_pack if isinstance(ema_pack, dict) else {}
+
+    # ---------- normalize range_pos ----------
+    rp = None
+    try:
+        if range_pos is not None:
+            rp = float(range_pos)
+            # internal engine usually uses 0..1, renderer wants %
+            if 0.0 <= rp <= 1.0:
+                rp = rp * 100.0
+    except Exception:
+        rp = None
+
+    range_filter = {
+        "state": "UNKNOWN",
+        "position": None,
+        "tag": "N/A",
+        "reason": ["không có range_pos"],
+    }
+
+    if rp is not None:
+        if side == "BUY":
+            if rp >= 90.0:
+                range_filter = {
+                    "state": "BLOCK",
+                    "position": rp,
+                    "tag": "BUY_TOO_HIGH",
+                    "reason": ["⚠️ Đang sát đỉnh range → cấm BUY"],
+                }
+            elif rp >= 80.0:
+                range_filter = {
+                    "state": "WARN",
+                    "position": rp,
+                    "tag": "BUY_HIGH",
+                    "reason": ["BUY đang ở vùng cao → ưu tiên chờ hồi/FVG"],
+                }
+            else:
+                range_filter = {
+                    "state": "OK",
+                    "position": rp,
+                    "tag": "IN_RANGE",
+                    "reason": [],
+                }
+        elif side == "SELL":
+            if rp <= 10.0:
+                range_filter = {
+                    "state": "BLOCK",
+                    "position": rp,
+                    "tag": "SELL_TOO_LOW",
+                    "reason": ["⚠️ Đang sát đáy range → cấm SELL"],
+                }
+            elif rp <= 20.0:
+                range_filter = {
+                    "state": "WARN",
+                    "position": rp,
+                    "tag": "SELL_LOW",
+                    "reason": ["SELL đang ở vùng thấp → ưu tiên chờ hồi/FVG"],
+                }
+            else:
+                range_filter = {
+                    "state": "OK",
+                    "position": rp,
+                    "tag": "IN_RANGE",
+                    "reason": [],
+                }
+        else:
+            range_filter = {
+                "state": "UNKNOWN",
+                "position": rp,
+                "tag": "NO_SIDE",
+                "reason": ["chưa có bias rõ cho range filter"],
+            }
+
+    # ---------- EMA ----------
+    ema_block = {
+        "trend": str(ep.get("trend") or "N/A"),
+        "alignment": str(ep.get("alignment") or "NO"),
+        "zone": str(ep.get("zone") or "N/A"),
+        "ema34": ep.get("ema34"),
+        "ema89": ep.get("ema89"),
+        "ema200": ep.get("ema200"),
+    }
+
+    # ---------- FVG ----------
+    fvg_payload = {
+        "ok": False,
+        "type": side if side in ("BUY", "SELL") else "NONE",
+        "low": None,
+        "high": None,
+        "text": "chưa có vùng rõ",
+    }
+    entry = sl = tp1 = tp2 = None
+    entry_mode = None
+    try:
+        fvg = _detect_fvg_v1(m15c=m15c, side=side, atr15=atr15)
+        if isinstance(fvg, dict) and fvg.get("ok"):
+            zl = _safe_float(fvg.get("zone_low"))
+            zh = _safe_float(fvg.get("zone_high"))
+            entry = _safe_float(fvg.get("entry"))
+            sl = _safe_float(fvg.get("sl"))
+            tp1 = _safe_float(fvg.get("tp1"))
+            tp2 = _safe_float(fvg.get("tp2"))
+            entry_mode = "FVG_LIMIT"
+            fvg_payload = {
+                "ok": True,
+                "type": str(fvg.get("side") or side or "NONE").upper(),
+                "low": zl,
+                "high": zh,
+                "text": f"{str(fvg.get('side') or side).upper()} FVG: {_fmt(zl)} – {_fmt(zh)}" if zl is not None and zh is not None else "FVG hợp lệ",
+            }
+    except Exception:
+        pass
+
+    smart_state = "NEUTRAL"
+    if range_filter.get("state") == "BLOCK":
+        smart_state = "BLOCK"
+    elif fvg_payload.get("ok") and ema_block.get("alignment") == "YES":
+        smart_state = "READY"
+    elif fvg_payload.get("ok"):
+        smart_state = "WAIT"
+
+    return {
+        "range_filter": range_filter,
+        "ema": ema_block,
+        "fvg": fvg_payload,
+        "smart_state": smart_state,
+        # keep plan fields for setup-plan fallback
+        "entry_mode": entry_mode,
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+    }
+
 
 
 def _detect_liquidation_v2(
@@ -4430,6 +4577,164 @@ def _probe_detect_zone_v1(
     return best
 
 
+
+
+def _probe_fallback_zone_v1(
+    sig: dict,
+    bias_side: str | None,
+    current_price: float | None,
+    range_pos: float | None,
+    atr15: float | None,
+) -> dict:
+    """
+    Fallback probe zone when strict 5-zone detector misses.
+    Keep probe usable for class A/B setups by reusing zones already computed elsewhere.
+    Priority:
+    1) playbook zone
+    2) fib zone
+    3) pullback healthy/deep zone
+    4) smart-entry FVG zone
+    5) entry_zone_v6
+    6) range boundary
+    """
+    meta = (sig.get("meta") or {})
+    side = _probe_pick_side(sig, bias_side)
+    if side not in ("BUY", "SELL"):
+        return {"ok": False, "reason": "no_side"}
+
+    cp = _safe_float(current_price)
+    a = float(atr15 or 0.0)
+    if cp is None:
+        cp = _safe_float(sig.get("last_price")) or _safe_float(sig.get("current_price")) or _safe_float(sig.get("entry"))
+    if cp is None:
+        return {"ok": False, "reason": "no_price"}
+    if a <= 0:
+        a = max(1e-9, abs(cp) * 0.003)
+
+    def _mk(zlo, zhi, ztype, strength="MEDIUM", reason=None):
+        zlo = _safe_float(zlo)
+        zhi = _safe_float(zhi)
+        if zlo is None or zhi is None:
+            return None
+        lo = min(zlo, zhi)
+        hi = max(zlo, zhi)
+        return {
+            "ok": True,
+            "type": ztype,
+            "priority": 99,
+            "strength": strength,
+            "side": side,
+            "zone_low": lo,
+            "zone_high": hi,
+            "reason": reason or [],
+        }
+
+    playbook = meta.get("playbook_v2") or {}
+    z = _mk(
+        playbook.get("zone_low"),
+        playbook.get("zone_high"),
+        "PLAYBOOK_ZONE",
+        "MEDIUM",
+        ["fallback từ playbook zone"],
+    )
+    if z:
+        return z
+
+    fib1 = meta.get("fib_confluence_v1") or {}
+    if fib1.get("ok"):
+        z = _mk(
+            fib1.get("zone_low"),
+            fib1.get("zone_high"),
+            "FIB_ZONE",
+            "MEDIUM" if int(fib1.get("score") or 0) < 3 else "HIGH",
+            ["fallback từ fib confluence zone"],
+        )
+        if z:
+            return z
+
+    pb1 = meta.get("pullback_engine_v1") or {}
+    pct = _safe_float(pb1.get("pullback_pct"))
+    a_lo = _safe_float(pb1.get("anchor_low"))
+    a_hi = _safe_float(pb1.get("anchor_high"))
+    if pct is not None and a_lo is not None and a_hi is not None and 0.25 <= pct <= 0.78:
+        lo = min(a_lo, a_hi)
+        hi = max(a_lo, a_hi)
+        rng = max(1e-9, hi - lo)
+        if side == "BUY":
+            zlo = hi - 0.62 * rng
+            zhi = hi - 0.40 * rng
+        else:
+            zlo = lo + 0.40 * rng
+            zhi = lo + 0.62 * rng
+        z = _mk(
+            zlo, zhi,
+            "PULLBACK_ZONE",
+            "HIGH" if 0.40 <= pct <= 0.62 else "MEDIUM",
+            [f"fallback từ pullback {pb1.get('pullback_pct_text', 'n/a')}"],
+        )
+        if z:
+            return z
+
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
+    fvg = fvgp.get("fvg") or {}
+    if fvg.get("ok"):
+        z = _mk(
+            fvg.get("low"),
+            fvg.get("high"),
+            "FVG_ZONE",
+            "MEDIUM",
+            ["fallback từ SMART ENTRY FILTER / FVG"],
+        )
+        if z:
+            return z
+
+    ez = meta.get("entry_zone_v6") or {}
+    if str(ez.get("side") or "").upper() == side:
+        z = _mk(
+            ez.get("low"),
+            ez.get("high"),
+            "ENTRY_ZONE_V6",
+            "LOW",
+            ["fallback từ entry_zone_v6"],
+        )
+        if z:
+            return z
+
+    k = meta.get("key_levels") or {}
+    rlo = _safe_float(k.get("M15_RANGE_LOW"))
+    rhi = _safe_float(k.get("M15_RANGE_HIGH"))
+    try:
+        rp = float(range_pos) if range_pos is not None else None
+    except Exception:
+        rp = None
+    if rlo is not None and rhi is not None:
+        if side == "BUY":
+            if rp is None or rp <= 0.55:
+                return {
+                    "ok": True,
+                    "type": "RANGE_LOW_FALLBACK",
+                    "priority": 100,
+                    "strength": "LOW",
+                    "side": side,
+                    "zone_low": rlo - 0.10 * a,
+                    "zone_high": rlo + 0.15 * a,
+                    "reason": ["fallback từ biên dưới range M15"],
+                }
+        else:
+            if rp is None or rp >= 0.45:
+                return {
+                    "ok": True,
+                    "type": "RANGE_HIGH_FALLBACK",
+                    "priority": 100,
+                    "strength": "LOW",
+                    "side": side,
+                    "zone_low": rhi - 0.15 * a,
+                    "zone_high": rhi + 0.10 * a,
+                    "reason": ["fallback từ biên trên range M15"],
+                }
+
+    return {"ok": False, "reason": "no_fallback_probe_zone"}
+
 def _build_probe_plan_v1(
     sig: dict,
     zone: dict,
@@ -4639,15 +4944,19 @@ def _build_probe_engine_v1(
     setup_score: float,
 ) -> dict:
     """
-    Probe V2:
-    - Ưu tiên detector 5-zone gốc
-    - Nếu miss thì fallback từ playbook / fib / pullback / FVG / entry_zone_v6 / range
-    - Class A/B mặc định phải cố tạo probe nếu có ít nhất 1 vùng logic để dò
-    - Không để case pullback đẹp nhưng probe vẫn INACTIVE vô lý
+    Probe V3 (direct 5-condition engine)
+    Mục tiêu: Class A/B thì probe KHÔNG bị INACTIVE vô lý.
+    Ưu tiên dùng trực tiếp 5 điều kiện thay vì phụ thuộc hoàn toàn vào detector strict.
+    5 điều kiện:
+    1) liquidity zone
+    2) break & retest
+    3) pullback zone
+    4) EMA cluster
+    5) range boundary
+    Nếu vẫn chưa đủ thì fallback từ playbook/fib/FVG/entry_zone/setup plan.
     """
     meta = (sig.get("meta") or {})
 
-    # Recompute class from the same sig to avoid display mismatch
     try:
         recomputed_cls, recomputed_score, _ = _setup_class_score_v3(sig)
         cls = recomputed_cls or cls
@@ -4696,61 +5005,197 @@ def _build_probe_engine_v1(
         base["summary"] = "Chỉ tạo probe khi setup class là A/B"
         return base
 
-    zone = _probe_detect_zone_v1(
-        sig=sig,
-        bias_side=bias_side,
-        current_price=current_price,
-        range_pos=range_pos,
-        atr15=atr15,
-    )
-    detector = "STRICT_5_ZONE"
+    side = _probe_pick_side(sig, bias_side)
+    if side not in ("BUY", "SELL"):
+        base["summary"] = "Chưa xác định được side cho probe"
+        return base
 
-    if not zone.get("ok"):
-        zone = _probe_fallback_zone_v1(
-            sig=sig,
-            bias_side=bias_side,
-            current_price=current_price,
-            range_pos=range_pos,
-            atr15=atr15,
-        )
-        detector = "FALLBACK_ZONE"
+    cp = _safe_float(current_price)
+    if cp is None:
+        base["summary"] = "Không có current price để dựng probe"
+        return base
 
-    if not zone.get("ok"):
-        # Last-resort soft fallback for A/B when setup already has concrete plan info
+    a = float(atr15 or 0.0)
+    if a <= 0:
+        a = max(1e-9, abs(cp) * 0.003)
+
+    liq = meta.get("liquidity_map_v1") or {}
+    pb1 = meta.get("pullback_engine_v1") or {}
+    ema = meta.get("ema") or {}
+    k = meta.get("key_levels") or {}
+    ccv4 = meta.get("close_confirm_v4") or {}
+    cont1 = meta.get("post_break_continuity_v1") or {}
+    fib1 = meta.get("fib_confluence_v1") or {}
+    playbook = meta.get("playbook_v2") or {}
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
+    fvg = fvgp.get("fvg") or {}
+    ez = meta.get("entry_zone_v6") or {}
+
+    def _mk_zone(ztype, zlo, zhi, strength="MEDIUM", reason=None, priority=99):
+        zlo = _safe_float(zlo)
+        zhi = _safe_float(zhi)
+        if zlo is None or zhi is None:
+            return None
+        return {
+            "ok": True,
+            "type": ztype,
+            "priority": priority,
+            "strength": strength,
+            "side": side,
+            "zone_low": min(zlo, zhi),
+            "zone_high": max(zlo, zhi),
+            "reason": list(reason or []),
+        }
+
+    zone = None
+    detector = "NONE"
+
+    # =====================================================
+    # DIRECT 5 CONDITIONS (ưu tiên đúng theo yêu cầu user)
+    # =====================================================
+
+    # 1) LIQUIDITY
+    if zone is None:
+        if side == "BUY":
+            z = liq.get("below_zone") if isinstance(liq.get("below_zone"), (list, tuple)) and len(liq.get("below_zone")) == 2 else None
+            if z is not None and (str(liq.get("below_strength") or "LOW").upper() in ("MEDIUM", "HIGH") or bool(liq.get("equal_lows"))):
+                zone = _mk_zone("LIQUIDITY", z[0], z[1], str(liq.get("below_strength") or "MEDIUM").upper(), ["điều kiện 1: liquidity phía dưới"], 1)
+                detector = "DIRECT_LIQUIDITY"
+        else:
+            z = liq.get("above_zone") if isinstance(liq.get("above_zone"), (list, tuple)) and len(liq.get("above_zone")) == 2 else None
+            if z is not None and (str(liq.get("above_strength") or "LOW").upper() in ("MEDIUM", "HIGH") or bool(liq.get("equal_highs"))):
+                zone = _mk_zone("LIQUIDITY", z[0], z[1], str(liq.get("above_strength") or "MEDIUM").upper(), ["điều kiện 1: liquidity phía trên"], 1)
+                detector = "DIRECT_LIQUIDITY"
+
+    # 2) BREAK & RETEST (nới lỏng hơn bản strict)
+    if zone is None:
+        bos = _safe_float(k.get("M15_BOS") or k.get("M15_BOS_LEVEL"))
+        hold = str(ccv4.get("hold") or "NO").upper()
+        cc_strength = str(ccv4.get("strength") or "NO").upper()
+        cont_state = str(cont1.get("state") or "NONE").upper()
+        if bos is not None:
+            near_bos = abs(cp - bos) <= max(1e-9, 0.40 * a)
+            if near_bos or hold == "YES" or cc_strength in ("WEAK", "STRONG") or cont_state.startswith("POST_BREAK"):
+                zone = _mk_zone("BREAK_RETEST", bos - 0.22 * a, bos + 0.22 * a, "MEDIUM", ["điều kiện 2: đang quanh BOS / retest"], 2)
+                detector = "DIRECT_BREAK_RETEST"
+
+    # 3) PULLBACK (ưu tiên rất mạnh cho case 45%)
+    if zone is None:
+        pct = _safe_float(pb1.get("pullback_pct"))
+        a_lo = _safe_float(pb1.get("anchor_low"))
+        a_hi = _safe_float(pb1.get("anchor_high"))
+        if bool(pb1.get("ok")) and pct is not None and a_lo is not None and a_hi is not None and 0.25 <= pct <= 0.78:
+            lo = min(a_lo, a_hi)
+            hi = max(a_lo, a_hi)
+            rng = max(1e-9, hi - lo)
+            if side == "BUY":
+                zlo = hi - 0.62 * rng
+                zhi = hi - 0.40 * rng
+            else:
+                zlo = lo + 0.40 * rng
+                zhi = lo + 0.62 * rng
+            zone = _mk_zone(
+                "PULLBACK",
+                zlo,
+                zhi,
+                "HIGH" if 0.40 <= pct <= 0.62 else "MEDIUM",
+                [f"điều kiện 3: pullback đẹp {pb1.get('pullback_pct_text', 'n/a')}", str(pb1.get("label") or "pullback")],
+                3,
+            )
+            detector = "DIRECT_PULLBACK"
+
+    # 4) EMA CLUSTER (nới lỏng: chỉ cần EMA34/89 hoặc EMA200 gần giá)
+    if zone is None:
+        e34 = _safe_float(ema.get("ema34"))
+        e89 = _safe_float(ema.get("ema89"))
+        e200 = _safe_float(ema.get("ema200"))
+        ema_candidates = [x for x in [e34, e89] if x is not None]
+        if len(ema_candidates) >= 2:
+            zlo = min(ema_candidates) - 0.12 * a
+            zhi = max(ema_candidates) + 0.12 * a
+            if abs(cp - zlo) <= 0.45 * a or abs(cp - zhi) <= 0.45 * a or (zlo <= cp <= zhi):
+                zone = _mk_zone("EMA_CLUSTER", zlo, zhi, "MEDIUM", ["điều kiện 4: giá đang gần EMA34/89"], 4)
+                detector = "DIRECT_EMA_CLUSTER"
+        elif e200 is not None and abs(cp - e200) <= 0.45 * a:
+            zone = _mk_zone("EMA_CLUSTER", e200 - 0.12 * a, e200 + 0.12 * a, "LOW", ["điều kiện 4: giá đang gần EMA200"], 4)
+            detector = "DIRECT_EMA_CLUSTER"
+
+    # 5) RANGE BOUNDARY (nới lỏng: có thể dùng low/high boundary theo side)
+    if zone is None:
+        rlo = _safe_float(k.get("M15_RANGE_LOW"))
+        rhi = _safe_float(k.get("M15_RANGE_HIGH"))
+        try:
+            rp = float(range_pos) if range_pos is not None else None
+        except Exception:
+            rp = None
+        if rlo is not None and rhi is not None:
+            if side == "BUY" and (rp is None or rp <= 0.30):
+                zone = _mk_zone("RANGE_BOUNDARY", rlo - 0.10 * a, rlo + 0.15 * a, "MEDIUM" if rp is not None and rp <= 0.20 else "LOW", ["điều kiện 5: giá gần biên dưới range"], 5)
+                detector = "DIRECT_RANGE_BOUNDARY"
+            elif side == "SELL" and (rp is None or rp >= 0.70):
+                zone = _mk_zone("RANGE_BOUNDARY", rhi - 0.15 * a, rhi + 0.10 * a, "MEDIUM" if rp is not None and rp >= 0.80 else "LOW", ["điều kiện 5: giá gần biên trên range"], 5)
+                detector = "DIRECT_RANGE_BOUNDARY"
+
+    # =====================================================
+    # FALLBACKS
+    # =====================================================
+    if zone is None:
+        z = _mk_zone(playbook.get("zone_low"), playbook.get("zone_high"), None)
+        if z is None:
+            z = _mk_zone("PLAYBOOK_ZONE", playbook.get("zone_low"), playbook.get("zone_high"), "MEDIUM", ["fallback từ playbook zone"], 90)
+        zone = z
+        if zone is not None:
+            detector = "FALLBACK_PLAYBOOK"
+
+    if zone is None and fib1.get("ok"):
+        zone = _mk_zone("FIB_ZONE", fib1.get("zone_low"), fib1.get("zone_high"), "MEDIUM" if int(fib1.get("score") or 0) < 3 else "HIGH", ["fallback từ fib zone"], 91)
+        if zone is not None:
+            detector = "FALLBACK_FIB"
+
+    if zone is None and fvg.get("ok"):
+        zone = _mk_zone("FVG_ZONE", fvg.get("low"), fvg.get("high"), "MEDIUM", ["fallback từ FVG"], 92)
+        if zone is not None:
+            detector = "FALLBACK_FVG"
+
+    if zone is None and str(ez.get("side") or "").upper() == side:
+        zone = _mk_zone("ENTRY_ZONE_V6", ez.get("low"), ez.get("high"), "LOW", ["fallback từ entry_zone_v6"], 93)
+        if zone is not None:
+            detector = "FALLBACK_ENTRY_ZONE_V6"
+
+    if zone is None:
         try:
             plan0 = _build_setup_plan_v1(sig, cls)
         except Exception:
             plan0 = {}
-
         entry0 = _safe_float(plan0.get("entry"))
         sl0 = _safe_float(plan0.get("sl"))
         if entry0 is not None and sl0 is not None:
-            a = float(atr15 or 0.0)
-            if a <= 0:
-                a = max(1e-9, abs(entry0) * 0.003)
             pad = max(1e-9, 0.18 * a)
-            lo = min(entry0, sl0) - pad
-            hi = max(entry0, sl0) + pad
             zone = {
                 "ok": True,
                 "type": "SETUP_PLAN_FALLBACK",
                 "priority": 999,
                 "strength": "LOW",
-                "side": _probe_pick_side(sig, bias_side),
-                "zone_low": lo,
-                "zone_high": hi,
+                "side": side,
+                "zone_low": min(entry0, sl0) - pad,
+                "zone_high": max(entry0, sl0) + pad,
                 "reason": ["fallback từ setup plan A/B"],
             }
             detector = "SETUP_PLAN_FALLBACK"
 
-    if not zone.get("ok"):
-        base["summary"] = "Class A/B nhưng chưa gom được vùng dò từ strict zone / fallback / setup plan"
+    if not zone or not zone.get("ok"):
+        base["summary"] = "Class A/B nhưng chưa gom được vùng dò từ 5 điều kiện trực tiếp + fallback"
+        base["reason"] = [
+            f"side={side}",
+            f"pullback_ok={bool(pb1.get('ok'))}",
+            f"pullback_pct={pb1.get('pullback_pct_text', 'n/a')}",
+        ]
         return base
 
     plan = _build_probe_plan_v1(sig=sig, zone=zone, atr15=atr15, current_price=current_price)
     if not plan.get("active"):
         base["summary"] = "Có zone nhưng không dựng được plan dò"
-        base["reason"] = zone.get("reason") or []
+        base["reason"] = [f"detector={detector}"] + list(zone.get("reason") or [])
         base["detector"] = detector
         return base
 
@@ -4780,15 +5225,13 @@ def _build_probe_engine_v1(
     )
 
     final = _finalize_probe_v1(plan, review_m15, review_m30, review_h1)
-
-    # Probe should be considered active whenever a valid plan exists, even if current result is WAIT/FAILED.
-    # Otherwise Telegram shows INACTIVE too often for perfectly valid Class A/B probe candidates.
     active_flag = bool(plan.get("active"))
+    result = final.get("result")
+    if result in (None, "INACTIVE"):
+        result = "WAIT_CONFIRM"
 
     summary = final.get("summary") or "Probe đã được tạo"
-    reason_lines = list(plan.get("reason") or [])
-    if detector != "STRICT_5_ZONE":
-        reason_lines = [f"detector={detector}"] + reason_lines
+    reason_lines = [f"detector={detector}"] + list(plan.get("reason") or [])
 
     base.update({
         "active": active_flag,
@@ -4805,15 +5248,16 @@ def _build_probe_engine_v1(
         "review_m15": review_m15,
         "review_m30": review_m30,
         "review_h1": review_h1,
-        "result": final.get("result") if final.get("result") not in (None, "INACTIVE") else "WAIT_CONFIRM",
+        "result": result,
         "main_entry_ok": bool(final.get("main_entry_ok")),
         "summary": summary,
         "market_read": final.get("market_read"),
         "upgrade": final.get("upgrade"),
-        "reason": reason_lines,
+        "reason": reason_lines[:5],
         "detector": detector,
     })
     return base
+
 
 def _render_probe_block_v1(sig: dict) -> list[str]:
     meta = (sig.get("meta") or {})
@@ -4971,6 +5415,56 @@ def _attach_vnext_meta(
             trap_warning_v1=trap_warning_v1 or {"active": False},
             atr15=atr15,
         )
+
+        # ===== SMART ENTRY FILTER / EMA snapshot =====
+        meta = base.setdefault("meta", {})
+        if isinstance(ema_pack, dict) and ema_pack:
+            meta["ema"] = ema_pack
+        if m15c:
+            meta.setdefault("_m15_raw", m15c)
+        if atr15 is not None:
+            meta["atr15"] = atr15
+
+        rp_for_filter = range_pos
+        try:
+            if rp_for_filter is None:
+                k_meta = meta.get("key_levels") or {}
+                lo_rf = _safe_float(k_meta.get("M15_RANGE_LOW"))
+                hi_rf = _safe_float(k_meta.get("M15_RANGE_HIGH"))
+                cp_rf = None
+                try:
+                    cp_rf = float(m15c[-1].close) if m15c else None
+                except Exception:
+                    cp_rf = None
+                if lo_rf is not None and hi_rf is not None and cp_rf is not None and hi_rf > lo_rf:
+                    rp_for_filter = (cp_rf - lo_rf) / max(1e-9, hi_rf - lo_rf)
+            if rp_for_filter is None and m15c:
+                lo_rf2, hi_rf2, last_rf2 = _range_levels(m15c[:-1] if len(m15c) > 1 else m15c, n=20)
+                if lo_rf2 is not None and hi_rf2 is not None and last_rf2 is not None and hi_rf2 > lo_rf2:
+                    rp_for_filter = (last_rf2 - lo_rf2) / max(1e-9, hi_rf2 - lo_rf2)
+        except Exception:
+            pass
+
+        try:
+            meta["fvg_range_plugin_v1"] = _build_fvg_range_plugin_v1(
+                m15c=m15c,
+                bias_side=bias_side,
+                range_pos=rp_for_filter,
+                atr15=atr15,
+                ema_pack=(ema_pack if isinstance(ema_pack, dict) else {}),
+            )
+        except Exception as _smart_e:
+            meta["fvg_range_plugin_v1"] = {
+                "range_filter": {"state": "UNKNOWN", "position": None, "tag": "N/A", "reason": [f"smart-filter-error: {_smart_e}"]},
+                "ema": {"trend": "N/A", "alignment": "NO", "zone": "N/A", "ema34": None, "ema89": None, "ema200": None},
+                "fvg": {"ok": False, "type": "NONE", "low": None, "high": None, "text": "chưa có vùng rõ"},
+                "smart_state": "NEUTRAL",
+                "entry_mode": None,
+                "entry": None,
+                "sl": None,
+                "tp1": None,
+                "tp2": None,
+            }
         
         manual_likelihood_v1 = _manual_likelihood_v1(
             bias_side=bias_side,
@@ -10676,6 +11170,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         if range_hi_v is not None:
             push_action(f"- Hoặc sweep low / giữ đáy rồi reclaim lại từ {_fmt(range_lo_v)} → xét BUY")
 
+
     # ===== ACTION: Trigger Engine V3 =====
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
     lr1 = (sig.get("meta") or {}).get("liquidity_reaction_v1") or {}
@@ -10730,7 +11225,35 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Current move: {sce1.get('current_move', 'CHOP')}")
         push_reason(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
+    
+    # ===== ACTION/REASON: SMART ENTRY FILTER =====
+    fvgp = (meta.get("fvg_range_plugin_v1") or {})
+    rf1 = (fvgp.get("range_filter") or {})
+    ema1 = (fvgp.get("ema") or {})
+    fvg1 = (fvgp.get("fvg") or {})
 
+    push_reason("")
+    push_reason("🧩 SMART ENTRY FILTER:")
+
+    pos = rf1.get("position")
+    state = rf1.get("state", "UNKNOWN")
+    tag = rf1.get("tag", "N/A")
+
+    if pos is None:
+        push_reason(f"- Range: {state} | N/A")
+    else:
+        push_reason(f"- Range: {state} | {float(pos):.1f}% | {tag}")
+
+    reasons = rf1.get("reason") or []
+    for s in reasons[:2]:
+        push_reason(f"- {s}")
+
+    push_reason(
+        f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}"
+    )
+    push_reason(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
+    push_reason(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
+    
     # ===== PROBE ENGINE BLOCK =====
     for s in _render_probe_block_v1(sig):
         add(reason_lines, s)
