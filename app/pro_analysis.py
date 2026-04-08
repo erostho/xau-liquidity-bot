@@ -4956,20 +4956,53 @@ def _build_probe_engine_v1(
     Nếu vẫn chưa đủ thì fallback từ playbook/fib/FVG/entry_zone/setup plan.
     """
 
+    meta = sig.get("meta") or {}
+    side = _probe_pick_side(sig, bias_side)
+
+    current_price = (
+        _safe_float(sig.get("current_price"))
+        or _safe_float(sig.get("last_price"))
+        or _safe_float(sig.get("price"))
+        or _safe_float(sig.get("entry"))
+    )
+    if current_price is None:
+        try:
+            if m15c:
+                last_c = m15c[-1]
+                current_price = _safe_float(_c_val(last_c, "close", None))
+        except Exception:
+            current_price = None
+
     # ===== DEBUG PROBE START =====
     try:
         print("\n========== PROBE DEBUG ==========")
         print(f"symbol = {symbol}")
+        print(f"bias_side(arg) = {bias_side}")
+        print(f"side_used = {side}")
         print(f"cls(arg) = {cls}")
         print(f"setup_score(arg) = {setup_score}")
-        
-        meta = sig.get("meta") or {}
+        print(f"current_price = {current_price}")
+        print(f"range_pos(arg) = {range_pos}")
+        print(f"atr15(arg) = {atr15}")
+
         print(f"meta.pullback_engine_v1 = {meta.get('pullback_engine_v1')}")
         print(f"meta.key_levels = {meta.get('key_levels')}")
         print(f"meta.liquidity_map_v1 = {meta.get('liquidity_map_v1')}")
-        print(f"range_pos(arg) = {range_pos}")
-        print(f"atr15(arg) = {atr15}")
-        
+        print(f"meta.ema = {meta.get('ema')}")
+        print(f"meta.close_confirm_v4 = {meta.get('close_confirm_v4')}")
+        print(f"meta.playbook_v2 = {meta.get('playbook_v2')}")
+        print(f"meta.fib_confluence_v1 = {meta.get('fib_confluence_v1')}")
+        print(f"meta.fvg_range_plugin_v1 = {meta.get('fvg_range_plugin_v1')}")
+
+        pb = meta.get("pullback_engine_v1") or {}
+        print(f"pullback_engine = {pb}")
+        print(f"pullback_ok = {pb.get('ok')}")
+        print(f"pullback_pct = {pb.get('pullback_pct')}")
+        print(f"pullback_pct_text = {pb.get('pullback_pct_text')}")
+        print(f"pullback_label = {pb.get('label')}")
+        print(f"pullback_anchor_low = {pb.get('anchor_low')}")
+        print(f"pullback_anchor_high = {pb.get('anchor_high')}")
+
         zone = _probe_detect_zone_v1(
             sig=sig,
             bias_side=bias_side,
@@ -4979,19 +5012,9 @@ def _build_probe_engine_v1(
         )
         print(f"zone_detect = {zone}")
 
-        sc = meta.get("setup_class_v2") or meta.get("setup_class") or {}
-        cls_debug = sc.get("class") or sc.get("grade") or sc.get("rank")
-
-        print(f"👉 cls_used = {cls_debug}")
-
-        pb = (sig.get("meta") or {}).get("pullback_engine_v1", {})
-        print(f"pullback_engine = {pb}")
-        print(f"pullback_pct = {pb.get('pullback_pct')}")
-
     except Exception as e:
         print(f"[PROBE_DEBUG_ERROR] {e}")
     # ===== DEBUG PROBE END =====
-        pass
 
     current_price = (
         _safe_float(sig.get("last_price"))
