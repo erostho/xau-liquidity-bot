@@ -17,7 +17,12 @@ def _c_val(c, key: str, default=None):
         return getattr(c, key, default)
     except Exception:
         return default
-
+def nf(x):
+    try:
+        return f"{float(x):.2f}"
+    except Exception:
+        return "n/a"
+        
 def _as_float(x):
     try:
         if x is None:
