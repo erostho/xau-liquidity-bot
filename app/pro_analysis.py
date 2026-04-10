@@ -1773,6 +1773,7 @@ def _path_forecast_v1(
     playbook_v2: dict | None,
     liquidity_map_v1: dict | None,
     ema_pack: dict | None,
+    smart_filter_v1: dict | None,
     m15c,
 ) -> dict:
     out = {
@@ -1783,10 +1784,14 @@ def _path_forecast_v1(
         "res_far": None,
         "sup_near": None,
         "sup_far": None,
-        "priority_action": "CHỜ",
+        "priority_action": "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ",
+        "action_note": "",
         "reason": [],
     }
-
+    smart_filter_v1 = smart_filter_v1 or {}
+    sf_range = smart_filter_v1.get("range_filter") or {}
+    sf_state = str(sf_range.get("state") or smart_filter_v1.get("smart_state") or "").upper()
+    sf_tag = str(sf_range.get("tag") or "").upper()
     cp = _safe_float(current_price)
     a = _safe_float(atr15)
     
@@ -1990,27 +1995,54 @@ def _path_forecast_v1(
     dist_res = _dist(out["res_near"])
     dist_sup = _dist(out["sup_near"])
 
-    if down_score >= up_score + 2:
-        out["priority_action"] = "ƯU TIÊN canh SELL theo nến M15"
-    elif up_score >= down_score + 2:
-        out["priority_action"] = "ƯU TIÊN canh BUY theo nến M15"
-    else:
-        # nếu 2 hướng không chênh nhiều thì xét gần zone nào hơn
-        if dist_res < dist_sup:
-            out["priority_action"] = "ƯU TIÊN canh SELL theo nến M15"
-        elif dist_sup < dist_res:
-            out["priority_action"] = "ƯU TIÊN canh BUY theo nến M15"
-        else:
-            # tie-break theo H1 / EMA
-            if h1 == "bullish" or ema_trend == "BULLISH":
-                out["priority_action"] = "ƯU TIÊN canh BUY theo nến M15"
-            elif h1 == "bearish" or ema_trend == "BEARISH":
-                out["priority_action"] = "ƯU TIÊN canh SELL theo nến M15"
-            else:
-                out["priority_action"] = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
+    # ===== action base theo bias tổng =====
+    base_action = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
 
-    out["reason"] = reasons[:4]
-    return out
+    if down_score >= up_score + 2:
+        base_action = "ƯU TIÊN canh SELL theo nến M15"
+    elif up_score >= down_score + 2:
+        base_action = "ƯU TIÊN canh BUY theo nến M15"
+    else:
+        if dist_res < dist_sup:
+            base_action = "ƯU TIÊN canh SELL theo nến M15"
+        elif dist_sup < dist_res:
+            base_action = "ƯU TIÊN canh BUY theo nến M15"
+        else:
+            if h1 == "bullish" or ema_trend == "BULLISH":
+                base_action = "ƯU TIÊN canh BUY theo nến M15"
+            elif h1 == "bearish" or ema_trend == "BEARISH":
+                base_action = "ƯU TIÊN canh SELL theo nến M15"
+
+    # ===== override theo vị trí hiện tại =====
+    near_res = dist_res <= 0.35 * a
+    near_sup = dist_sup <= 0.35 * a
+
+    buy_blocked = ("BUY_TOO_HIGH" in sf_tag) or (sf_state == "BLOCK" and near_res)
+    sell_blocked = ("SELL_TOO_LOW" in sf_tag) or (sf_state == "BLOCK" and near_sup)
+
+    if buy_blocked and "BUY" in base_action:
+        if down_score >= up_score:
+            out["priority_action"] = "CHỜ FAIL BREAK tại kháng cự hoặc BREAK hẳn rồi mới BUY"
+            out["action_note"] = "SMART FILTER đang chặn BUY vì giá ở quá cao / sát kháng cự."
+        else:
+            out["priority_action"] = "CHỜ BREAK kháng cự rồi retest để BUY"
+            out["action_note"] = "Bias lớn vẫn BUY nhưng SMART FILTER đang chặn BUY tại vị trí hiện tại."
+    elif sell_blocked and "SELL" in base_action:
+        if up_score >= down_score:
+            out["priority_action"] = "CHỜ GIỮ HỖ TRỢ hoặc SWEEP LOW rồi mới BUY"
+            out["action_note"] = "SMART FILTER đang chặn SELL vì giá ở quá thấp / sát hỗ trợ."
+        else:
+            out["priority_action"] = "CHỜ BREAK xuống rõ rồi retest để SELL"
+            out["action_note"] = "Bias lớn vẫn SELL nhưng SMART FILTER đang chặn SELL tại vị trí hiện tại."
+    elif near_res and "BUY" in base_action:
+        out["priority_action"] = "CHỜ BREAK kháng cự rồi retest để BUY"
+        out["action_note"] = "Đang sát kháng cự → không BUY đuổi."
+    elif near_sup and "SELL" in base_action:
+        out["priority_action"] = "CHỜ BREAK hỗ trợ rồi retest để SELL"
+        out["action_note"] = "Đang sát hỗ trợ → không SELL đuổi."
+    else:
+        out["priority_action"] = base_action
+        out["action_note"] = ""
 
 def _detect_liquidation_v2(
     m15c: Sequence[Any],
@@ -5790,6 +5822,7 @@ def _attach_vnext_meta(
                 playbook_v2=playbook_v2,
                 liquidity_map_v1=liquidity_map_v1,
                 ema_pack=ema_pack,
+                smart_filter_v1=(base.get("meta", {}) or {}).get("fvg_range_plugin_v1") or {},
                 m15c=m15c,
             )
             print(f"pf1 = {pf1}")
@@ -11244,18 +11277,22 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # PATH FORECAST
     pf1 = (meta.get("path_forecast_v1") or {})
-    push_conclusion("🔮 PATH FORECAST:")
-    push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
-    push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
-    push_conclusion(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
-    push_conclusion("📍 Vùng kháng cự M15:")
-    push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
-    push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
-    push_conclusion("📍 Vùng hỗ trợ M15:")
-    push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('sup_near'))}")
-    push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('sup_far'))}")
-    push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
-    push_conclusion("")
+    push_action("🔮 PATH FORECAST:")
+    push_action(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
+    push_action(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
+    push_action(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
+    
+    push_action("📍 Vùng kháng cự M15:")
+    push_action(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
+    push_action(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
+    
+    push_action("📍 Vùng hỗ trợ M15:")
+    push_action(f"- Gần: {_pf_zone_text(pf1.get('sup_near'))}")
+    push_action(f"- Xa: {_pf_zone_text(pf1.get('sup_far'))}")
+    
+    push_action(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
+    if pf1.get("action_note"):
+        push_action(f"- {pf1.get('action_note')}")
 
     # SMART ENTRY FILTER
     fvgp = (meta.get("fvg_range_plugin_v1") or {})
