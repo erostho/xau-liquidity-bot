@@ -11290,7 +11290,32 @@ def format_signal(sig: Dict[str, Any]) -> str:
         add(conclusion_lines, s)
     for s in _render_setup_class_block_v4(sig, final_score, tradeable_label):
         add(conclusion_lines, s)
+    # ===== SCORE LOGIC COPY FROM OLD OUTPUT =====
+    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
+        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
+    )
+    grade = _score_to_grade_v2(final_score)
 
+    fd1 = meta.get("final_decision_engine_v1") or {}
+    me1 = meta.get("master_engine_v1") or {}
+    sce1 = meta.get("signal_consistency_v1") or {}
+
+    fd_decision = str(fd1.get("decision") or "").upper()
+    master_state = str(me1.get("state") or "").upper()
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+
+    if (
+        fd_decision == "NO_TRADE"
+        or master_state == "NO_TRADE"
+        or final_side == "NONE"
+    ):
+        try:
+            final_score = min(float(final_score or 0), 35.0)
+        except Exception:
+            final_score = 35.0
+
+        tradeable_label = "NO"
+        grade = _score_to_grade_v2(final_score)
     push_conclusion("")
     push_conclusion(f"📊 Chất lượng cơ hội: {grade}")
     push_conclusion(f"🔥 Final Score: {final_score}/100")
