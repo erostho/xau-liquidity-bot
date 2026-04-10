@@ -1789,6 +1789,7 @@ def _path_forecast_v1(
 
     cp = _safe_float(current_price)
     a = _safe_float(atr15)
+    
     if cp is None:
         return out
     if a is None or a <= 0:
@@ -5758,6 +5759,19 @@ def _attach_vnext_meta(
                 "tp2": None,
             }
         try:
+            print("\n========== PATH FORECAST DEBUG ==========")
+            print(f"current_price = {current_price}")
+            print(f"atr15 = {atr15}")
+            print(f"h1_trend = {h1_trend}")
+            print(f"h4_trend = {h4_trend}")
+            print(f"m15_struct_tag = {(m15_struct or {}).get('tag')}")
+            print(f"range_low = {(key_levels or {}).get('M15_RANGE_LOW')}")
+            print(f"range_high = {(key_levels or {}).get('M15_RANGE_HIGH')}")
+            print(f"playbook_v2 = {playbook_v2}")
+            print(f"liquidity_map_v1 = {liquidity_map_v1}")
+            print(f"ema_pack = {ema_pack}")
+            print(f"len_m15c = {len(m15c) if m15c else 0}")
+    
             pf1 = _path_forecast_v1(
                 current_price=current_price,
                 atr15=atr15,
@@ -5771,7 +5785,10 @@ def _attach_vnext_meta(
                 ema_pack=ema_pack,
                 m15c=m15c,
             )
+            print(f"pf1 = {pf1}")
+    
         except Exception as e:
+            print(f"[PATH_FORECAST_ERROR] {e}")
             pf1 = {
                 "down_bias": "KHÔNG RÕ",
                 "up_bias": "KHÔNG RÕ",
@@ -5780,12 +5797,12 @@ def _attach_vnext_meta(
                 "res_far": None,
                 "sup_near": None,
                 "sup_far": None,
-                "sell_action": "canh SELL theo nến M15",
-                "buy_action": "canh BUY theo nến M15",
+                "priority_action": "ƯU TIÊN ĐỨNG NGOÀI",
                 "reason": [f"path_forecast_error: {e}"],
             }
     
         base.setdefault("meta", {})["path_forecast_v1"] = pf1
+        
         
         manual_likelihood_v1 = _manual_likelihood_v1(
             bias_side=bias_side,
