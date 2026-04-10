@@ -325,7 +325,6 @@ def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -
     if not plan.get("show"):
         return lines
 
-    lines.append("")
     lines.append(f"🎯 Entry: {plan.get('entry', 'n/a')}")
     lines.append(f"🎯 TP: {plan.get('tp', 'n/a')}")
     lines.append(f"🛑 SL: {plan.get('sl', 'n/a')}")
@@ -11441,7 +11440,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         tradeable_label = "NO"
         grade = _score_to_grade_v2(final_score)
     push_conclusion("")
-    push_conclusion(f"📊 Chất lượng cơ hội: {grade}")
+    push_conclusion(f"📊 Chất lượng cơ hội:{symbol} | {grade}")
     push_conclusion(f"🔥 Final Score: {final_score}/100")
     push_conclusion(f"→ Tradeable: {tradeable_label}")
 
