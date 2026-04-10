@@ -11285,7 +11285,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # PATH FORECAST
     meta = meta or {}
     sig = sig or {}
-    m15c = m15c or []
+    m15c0 = []
+    try:
+        if 'm15c' in locals() and m15c is not None:
+            m15c0 = m15c
+    except Exception:
+        m15c0 = []
     
     pf1 = (meta.get("path_forecast_v1") or {})
     if not pf1 or (pf1.get("res_near") is None and pf1.get("sup_near") is None):
@@ -11308,8 +11313,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
         if cp0 is None:
             try:
-                if m15c:
-                    cp0 = _safe_float(_c_val(m15c[-1], "close", None))
+                if m15c0:
+                    cp0 = _safe_float(_c_val(m15c0[-1], "close", None))
             except Exception:
                 cp0 = None
     
@@ -11326,7 +11331,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 liquidity_map_v1=liq0,
                 ema_pack=ema0,
                 smart_filter_v1=sf0,
-                m15c=m15c,
+                m15c=m15c0,
             )
             meta["path_forecast_v1"] = pf1 or {}
         except Exception as e:
