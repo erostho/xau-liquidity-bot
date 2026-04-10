@@ -10879,6 +10879,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # OUTPUT V3 - 3 BLOCK
     # Replace from: head = f"{symbol} NOW ...
     # ====== ADD HELPER ======
+    action_lines = []
+    reason_lines = []
+    info_lines = []
+    conclusion_lines = []
     def push_action(s=""):
         add(action_lines, s)
 
@@ -11194,20 +11198,20 @@ def format_signal(sig: Dict[str, Any]) -> str:
     pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
     pbc_state = str(pbc1.get("state") or "NONE").upper()
     if pbc1 and pbc_state not in ("NONE", ""):
-        push_action("")
-        push_action("🔁 POST-BREAK CONTINUITY:")
-        push_action(f"- State: {pbc1.get('state')}")
+        push_conclusion("")
+        push_conclusion("🔁 POST-BREAK CONTINUITY:")
+        push_conclusion(f"- State: {pbc1.get('state')}")
         if pbc1.get("reference_level") is not None:
-            push_action(f"- Mốc đang theo dõi: {nf(pbc1.get('reference_level'))} ({pbc1.get('reference_type')})")
-        push_action(f"- Vai trò mới của mốc: {pbc1.get('role_shift')}")
-        push_action(f"- Hướng sau break: {pbc1.get('side_after_break')}")
-        push_action(f"- Hành động: {pbc1.get('action')}")
+            push_conclusion(f"- Mốc đang theo dõi: {nf(pbc1.get('reference_level'))} ({pbc1.get('reference_type')})")
+        push_conclusion(f"- Vai trò mới của mốc: {pbc1.get('role_shift')}")
+        push_conclusion(f"- Hướng sau break: {pbc1.get('side_after_break')}")
+        push_conclusion(f"- Hành động: {pbc1.get('action')}")
         if pbc1.get("message"):
-            push_action(f"- {pbc1.get('message')}")
+            push_conclusion(f"- {pbc1.get('message')}")
         if pbc1.get("narrative"):
-            push_action(f"- Câu chuyện tiếp diễn: {pbc1.get('narrative')}")
+            push_conclusion(f"- Câu chuyện tiếp diễn: {pbc1.get('narrative')}")
         for s in (pbc1.get("reasons") or [])[:3]:
-            push_action(f"- {s}")
+            push_conclusion(f"- {s}")
 
     push_conclusion("🧯 Điểm sai kịch bản:")
     push_conclusion(f"- {scenario.get('invalid_if', 'Nếu break sai hướng và giữ được → bỏ kịch bản hiện tại')}")
