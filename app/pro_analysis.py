@@ -10796,7 +10796,53 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if trade_mode == "WAIT":
         verdict_quick = f"{verdict_quick}; {reason_text}"
 
+    
     # =========================
+    # ===== FINAL SCORE FALLBACK =====
+    try:
+        final_score = float(
+            sig.get("final_score")
+            if sig.get("final_score") is not None
+            else sig.get("score")
+        )
+    except Exception:
+        final_score = 0.0
+
+    try:
+        tradeable_raw = sig.get("tradeable")
+        if tradeable_raw is None:
+            tradeable_raw = (meta.get("master_engine_v1") or {}).get("tradeable_final")
+        tradeable_label = "YES" if bool(tradeable_raw) else "NO"
+    except Exception:
+        tradeable_label = "NO"
+
+    try:
+        grade = _score_to_grade_v2(final_score)
+    except Exception:
+        if final_score >= 80:
+            grade = "A"
+        elif final_score >= 65:
+            grade = "B"
+        elif final_score >= 50:
+            grade = "C"
+        else:
+            grade = "D"
+
+    final_note = ""
+    try:
+        summary_line = _market_summary_line(
+            final_score,
+            tradeable_label,
+            session_v4 if 'session_v4' in locals() else {},
+            htf_pressure_v4 if 'htf_pressure_v4' in locals() else {},
+        )
+        final_note = summary_line or ""
+    except Exception:
+        final_note = ""
+
+    score_reasons = score_reasons if 'score_reasons' in locals() else []
+    tradeable_reasons = tradeable_reasons if 'tradeable_reasons' in locals() else []
+    
     # OUTPUT V3 - 3 BLOCK
     # Replace from: head = f"{symbol} NOW ...
     # ====== ADD HELPER ======
