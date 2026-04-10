@@ -5758,29 +5758,48 @@ def _attach_vnext_meta(
                 "tp1": None,
                 "tp2": None,
             }
+            
+        kl0 = (base.get("meta", {}) or {}).get("key_levels", {}) or {}
+        cp0 = None
+        try:
+            cp0 = (
+                _safe_float(sig.get("current_price"))
+                or _safe_float(sig.get("last_price"))
+                or _safe_float(sig.get("price"))
+                or _safe_float(sig.get("entry"))
+            )
+        except Exception:
+            cp0 = None
+    
+        if cp0 is None:
+            try:
+                if m15c:
+                    cp0 = _safe_float(_c_val(m15c[-1], "close", None))
+            except Exception:
+                cp0 = None
+    
         try:
             print("\n========== PATH FORECAST DEBUG ==========")
-            print(f"current_price = {current_price}")
+            print(f"cp0 = {cp0}")
             print(f"atr15 = {atr15}")
             print(f"h1_trend = {h1_trend}")
             print(f"h4_trend = {h4_trend}")
             print(f"m15_struct_tag = {(m15_struct or {}).get('tag')}")
-            print(f"range_low = {(key_levels or {}).get('M15_RANGE_LOW')}")
-            print(f"range_high = {(key_levels or {}).get('M15_RANGE_HIGH')}")
+            print(f"range_low = {kl0.get('M15_RANGE_LOW')}")
+            print(f"range_high = {kl0.get('M15_RANGE_HIGH')}")
             print(f"playbook_v2 = {playbook_v2}")
             print(f"liquidity_map_v1 = {liquidity_map_v1}")
             print(f"ema_pack = {ema_pack}")
             print(f"len_m15c = {len(m15c) if m15c else 0}")
-            current_price = sig.get("price") or sig.get("entry") or sig.get("close")
-
+    
             pf1 = _path_forecast_v1(
-                current_price=current_price,
+                current_price=cp0,
                 atr15=atr15,
                 h1_trend=h1_trend,
                 h4_trend=h4_trend,
                 m15_struct_tag=(m15_struct or {}).get("tag"),
-                range_low=(key_levels or {}).get("M15_RANGE_LOW"),
-                range_high=(key_levels or {}).get("M15_RANGE_HIGH"),
+                range_low=kl0.get("M15_RANGE_LOW"),
+                range_high=kl0.get("M15_RANGE_HIGH"),
                 playbook_v2=playbook_v2,
                 liquidity_map_v1=liquidity_map_v1,
                 ema_pack=ema_pack,
@@ -5803,6 +5822,7 @@ def _attach_vnext_meta(
             }
     
         base.setdefault("meta", {})["path_forecast_v1"] = pf1
+        
         
         
         manual_likelihood_v1 = _manual_likelihood_v1(
