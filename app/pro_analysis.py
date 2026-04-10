@@ -1752,7 +1752,232 @@ def _build_fvg_range_plugin_v1(
         "tp2": tp2,
     }
 
+def _pf_zone_tuple(z):
+    try:
+        if isinstance(z, (list, tuple)) and len(z) == 2:
+            a = float(z[0])
+            b = float(z[1])
+            return (min(a, b), max(a, b))
+    except Exception:
+        pass
+    return None
 
+
+def _path_forecast_v1(
+    current_price: float | None,
+    atr15: float | None,
+    h1_trend: str | None,
+    h4_trend: str | None,
+    m15_struct_tag: str | None,
+    range_low: float | None,
+    range_high: float | None,
+    playbook_v2: dict | None,
+    liquidity_map_v1: dict | None,
+    ema_pack: dict | None,
+    m15c,
+) -> dict:
+    out = {
+        "down_bias": "KHÔNG RÕ",
+        "up_bias": "KHÔNG RÕ",
+        "sideway_bars": "n/a",
+        "res_near": None,
+        "res_far": None,
+        "sup_near": None,
+        "sup_far": None,
+        "sell_action": "canh SELL theo nến M15",
+        "buy_action": "canh BUY theo nến M15",
+        "reason": [],
+    }
+
+    cp = _safe_float(current_price)
+    a = _safe_float(atr15)
+    if cp is None:
+        return out
+    if a is None or a <= 0:
+        a = max(1e-9, abs(cp) * 0.003)
+
+    playbook_v2 = playbook_v2 or {}
+    liquidity_map_v1 = liquidity_map_v1 or {}
+    ema_pack = ema_pack or {}
+
+    tag = str(m15_struct_tag or "").upper()
+    h1 = str(h1_trend or "").lower()
+    h4 = str(h4_trend or "").lower()
+    ema_trend = str(ema_pack.get("trend") or "MIXED").upper()
+    ema_zone = str(ema_pack.get("zone") or "")
+
+    try:
+        rlo = float(range_low) if range_low is not None else None
+        rhi = float(range_high) if range_high is not None else None
+    except Exception:
+        rlo, rhi = None, None
+
+    # ===== score hướng =====
+    down_score = 0
+    up_score = 0
+    reasons = []
+
+    if h1 == "bearish":
+        down_score += 2
+        reasons.append("H1 giảm")
+    elif h1 == "bullish":
+        up_score += 2
+        reasons.append("H1 tăng")
+
+    if h4 == "bearish":
+        down_score += 1
+    elif h4 == "bullish":
+        up_score += 1
+
+    if "LH" in tag or "LL" in tag:
+        down_score += 2
+        reasons.append("M15 yếu")
+    elif "HL" in tag or "HH" in tag:
+        up_score += 2
+        reasons.append("M15 khỏe")
+
+    if ema_trend == "BEARISH":
+        down_score += 1
+    elif ema_trend == "BULLISH":
+        up_score += 1
+
+    if "DƯỚI EMA89" in ema_zone:
+        down_score += 1
+    elif "TRÊN EMA34/89" in ema_zone:
+        up_score += 1
+
+    above_zone = _pf_zone_tuple(liquidity_map_v1.get("above_zone"))
+    below_zone = _pf_zone_tuple(liquidity_map_v1.get("below_zone"))
+
+    if str(liquidity_map_v1.get("above_strength") or "LOW").upper() in ("MEDIUM", "HIGH"):
+        down_score += 1
+        reasons.append("phía trên có liquidity")
+    if str(liquidity_map_v1.get("below_strength") or "LOW").upper() in ("MEDIUM", "HIGH"):
+        up_score += 1
+        reasons.append("phía dưới có liquidity")
+
+    sweep_bias = str(liquidity_map_v1.get("sweep_bias") or "").upper()
+    if "UP → DOWN" in sweep_bias:
+        down_score += 2
+        reasons.append("dễ quét lên rồi đạp")
+    elif "DOWN → UP" in sweep_bias:
+        up_score += 2
+        reasons.append("dễ quét xuống rồi kéo")
+
+    # ===== sideway bars =====
+    sideway_bars = "2-4"
+    try:
+        if m15c and len(m15c) >= 24:
+            closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+            recent = closed[-20:]
+            highs = [float(_c_val(x, "high", 0.0) or 0.0) for x in recent]
+            lows = [float(_c_val(x, "low", 0.0) or 0.0) for x in recent]
+            closes = [float(_c_val(x, "close", 0.0) or 0.0) for x in recent]
+
+            rng20 = max(highs) - min(lows)
+            avg_bar = sum(abs(highs[i] - lows[i]) for i in range(len(highs))) / max(1, len(highs))
+
+            if rng20 <= 2.2 * a and avg_bar <= 0.85 * a:
+                sideway_bars = "4-8"
+            elif rng20 <= 3.0 * a:
+                sideway_bars = "3-6"
+            else:
+                sideway_bars = "1-3"
+
+            # nếu 2 hướng cân bằng thì tăng xác suất đi ngang
+            if abs(down_score - up_score) <= 1:
+                sideway_bars = "4-8"
+    except Exception:
+        pass
+
+    # ===== build support / resistance zones =====
+    zones_res = []
+    zones_sup = []
+
+    # playbook zone
+    pz_lo = _safe_float(playbook_v2.get("zone_low"))
+    pz_hi = _safe_float(playbook_v2.get("zone_high"))
+    if pz_lo is not None and pz_hi is not None:
+        z = (min(pz_lo, pz_hi), max(pz_lo, pz_hi))
+        if z[0] >= cp:
+            zones_res.append(z)
+        elif z[1] <= cp:
+            zones_sup.append(z)
+        else:
+            # nếu giá đang nằm trong zone thì phân loại theo bias gần nhất
+            zones_res.append(z)
+            zones_sup.append(z)
+
+    # liquidity zones
+    if above_zone:
+        zones_res.append(above_zone)
+    if below_zone:
+        zones_sup.append(below_zone)
+
+    # range boundary fallback
+    if rhi is not None:
+        zones_res.append((rhi - 0.12 * a, rhi + 0.12 * a))
+    if rlo is not None:
+        zones_sup.append((rlo - 0.12 * a, rlo + 0.12 * a))
+
+    # dedupe nhẹ
+    def _dedupe_zones(zs):
+        out_z = []
+        for z in zs:
+            if not z:
+                continue
+            lo, hi = float(z[0]), float(z[1])
+            exists = False
+            for e in out_z:
+                if abs(lo - e[0]) <= 0.10 * a and abs(hi - e[1]) <= 0.10 * a:
+                    exists = True
+                    break
+            if not exists:
+                out_z.append((lo, hi))
+        return out_z
+
+    zones_res = _dedupe_zones(zones_res)
+    zones_sup = _dedupe_zones(zones_sup)
+
+    def _dist_to_zone(z):
+        if z is None:
+            return 999999999.0
+        lo, hi = z
+        if lo <= cp <= hi:
+            return 0.0
+        return min(abs(cp - lo), abs(cp - hi))
+
+    zones_res = sorted(zones_res, key=_dist_to_zone)
+    zones_sup = sorted(zones_sup, key=_dist_to_zone)
+
+    res_near = zones_res[0] if len(zones_res) >= 1 else None
+    res_far = zones_res[1] if len(zones_res) >= 2 else None
+    sup_near = zones_sup[0] if len(zones_sup) >= 1 else None
+    sup_far = zones_sup[1] if len(zones_sup) >= 2 else None
+
+    # ===== label hướng =====
+    if down_score >= up_score + 2:
+        out["down_bias"] = "NGHIÊNG"
+    elif down_score > up_score:
+        out["down_bias"] = "CÓ THỂ"
+    else:
+        out["down_bias"] = "KHÔNG RÕ"
+
+    if up_score >= down_score + 2:
+        out["up_bias"] = "NGHIÊNG"
+    elif up_score > down_score:
+        out["up_bias"] = "CÓ THỂ"
+    else:
+        out["up_bias"] = "KHÔNG RÕ"
+
+    out["sideway_bars"] = sideway_bars
+    out["res_near"] = res_near
+    out["res_far"] = res_far
+    out["sup_near"] = sup_near
+    out["sup_far"] = sup_far
+    out["reason"] = reasons[:4]
+
+    return out
 
 def _detect_liquidation_v2(
     m15c: Sequence[Any],
@@ -4996,46 +5221,7 @@ def _build_probe_engine_v1(
             current_price = None
 
     # ===== DEBUG PROBE START =====
-    try:
-        print("\n========== PROBE DEBUG ==========")
-        print(f"symbol = {symbol}")
-        print(f"bias_side(arg) = {bias_side}")
-        print(f"side_used = {side}")
-        print(f"cls(arg) = {cls}")
-        print(f"setup_score(arg) = {setup_score}")
-        print(f"current_price = {current_price}")
-        print(f"range_pos(arg) = {range_pos}")
-        print(f"atr15(arg) = {atr15}")
 
-        print(f"meta.pullback_engine_v1 = {meta.get('pullback_engine_v1')}")
-        print(f"meta.key_levels = {meta.get('key_levels')}")
-        print(f"meta.liquidity_map_v1 = {meta.get('liquidity_map_v1')}")
-        print(f"meta.ema = {meta.get('ema')}")
-        print(f"meta.close_confirm_v4 = {meta.get('close_confirm_v4')}")
-        print(f"meta.playbook_v2 = {meta.get('playbook_v2')}")
-        print(f"meta.fib_confluence_v1 = {meta.get('fib_confluence_v1')}")
-        print(f"meta.fvg_range_plugin_v1 = {meta.get('fvg_range_plugin_v1')}")
-
-        pb = meta.get("pullback_engine_v1") or {}
-        print(f"pullback_engine = {pb}")
-        print(f"pullback_ok = {pb.get('ok')}")
-        print(f"pullback_pct = {pb.get('pullback_pct')}")
-        print(f"pullback_pct_text = {pb.get('pullback_pct_text')}")
-        print(f"pullback_label = {pb.get('label')}")
-        print(f"pullback_anchor_low = {pb.get('anchor_low')}")
-        print(f"pullback_anchor_high = {pb.get('anchor_high')}")
-
-        zone = _probe_detect_zone_v1(
-            sig=sig,
-            bias_side=bias_side,
-            current_price=current_price,
-            range_pos=range_pos,
-            atr15=atr15,
-        )
-        print(f"zone_detect = {zone}")
-
-    except Exception as e:
-        print(f"[PROBE_DEBUG_ERROR] {e}")
     # ===== DEBUG PROBE END =====
 
     current_price = (
@@ -5539,6 +5725,35 @@ def _attach_vnext_meta(
                 "tp1": None,
                 "tp2": None,
             }
+        try:
+            pf1 = _path_forecast_v1(
+                current_price=current_price,
+                atr15=atr15,
+                h1_trend=h1_trend,
+                h4_trend=h4_trend,
+                m15_struct_tag=(m15_struct or {}).get("tag"),
+                range_low=(key_levels or {}).get("M15_RANGE_LOW"),
+                range_high=(key_levels or {}).get("M15_RANGE_HIGH"),
+                playbook_v2=playbook_v2,
+                liquidity_map_v1=liquidity_map_v1,
+                ema_pack=ema_pack,
+                m15c=m15c,
+            )
+        except Exception as e:
+            pf1 = {
+                "down_bias": "KHÔNG RÕ",
+                "up_bias": "KHÔNG RÕ",
+                "sideway_bars": "n/a",
+                "res_near": None,
+                "res_far": None,
+                "sup_near": None,
+                "sup_far": None,
+                "sell_action": "canh SELL theo nến M15",
+                "buy_action": "canh BUY theo nến M15",
+                "reason": [f"path_forecast_error: {e}"],
+            }
+    
+        base.setdefault("meta", {})["path_forecast_v1"] = pf1
         
         manual_likelihood_v1 = _manual_likelihood_v1(
             bias_side=bias_side,
@@ -11305,6 +11520,34 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_reason(f"- Current move: {sce1.get('current_move', 'CHOP')}")
         push_reason(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_reason(f"- Narrative: {sce1.get('narrative', '')}")
+
+    # ===== REASON: PATH FORECAST =====
+    pf1 = (meta.get("path_forecast_v1") or {})
+    def _pf_zone_text(z):
+        try:
+            if not z:
+                return "n/a"
+            lo = float(z[0])
+            hi = float(z[1])
+            return f"{_fmt(lo)} – {_fmt(hi)}"
+        except Exception:
+            return "n/a"
+
+    push_reason("")
+    push_reason("🔮 PATH FORECAST:")
+    push_reason(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
+    push_reason(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
+    push_reason(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
+
+    push_reason("📍 Vùng kháng cự M15:")
+    push_reason(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
+    push_reason(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
+    push_reason(f"- Hành động: {pf1.get('sell_action', 'canh SELL theo nến M15')}")
+
+    push_reason("📍 Vùng hỗ trợ M15:")
+    push_reason(f"- Gần: {_pf_zone_text(pf1.get('sup_near'))}")
+    push_reason(f"- Xa: {_pf_zone_text(pf1.get('sup_far'))}")
+    push_reason(f"- Hành động: {pf1.get('buy_action', 'canh BUY theo nến M15')}")
     
     # ===== ACTION/REASON: SMART ENTRY FILTER =====
     fvgp = (meta.get("fvg_range_plugin_v1") or {})
