@@ -11446,7 +11446,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         tradeable_label = "NO"
         grade = _score_to_grade_v2(final_score)
     push_conclusion("")
-    push_conclusion(f"📊 Chất lượng cơ hội:  {grade}") | ({symbol})
+    push_conclusion(f"📊 Chất lượng cơ hội: {"grade"} {symbol})
     push_conclusion(f"🔥 Final Score: {final_score}/100")
     push_conclusion(f"→ Tradeable: {tradeable_label}")
 
