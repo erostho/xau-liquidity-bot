@@ -6144,13 +6144,19 @@ def _attach_vnext_meta(
         )
         meta["final_decision_engine_v1"] = final_decision_engine_v1
         # =========================================================
-
+        
         try:
+            print("=== PBC DEBUG ===")
+            print("M15_BOS =", (k or {}).get("M15_BOS"))
+            print("M15_RANGE_LOW =", (k or {}).get("M15_RANGE_LOW"))
+            print("M15_RANGE_HIGH =", (k or {}).get("M15_RANGE_HIGH"))
+            print("trigger_engine_v3 =", trigger_engine_v3 if 'trigger_engine_v3' in locals() else None)
+            print("close_confirm_v4 =", close_confirm_v4 if 'close_confirm_v4' in locals() else None)
             continuity_v1 = _post_break_continuity_engine_v1(
                 current_price=float(last_px if 'last_px' in locals() and last_px is not None else current_price),
                 bos_level=(k or {}).get("M15_BOS"),
-                range_low=(k or {}).get("M15_LOW"),
-                range_high=(k or {}).get("M15_HIGH"),
+                range_low=(k or {}).get("M15_RANGE_LOW"),
+                range_high=(k or {}).get("M15_RANGE_HIGH"),
                 struct=struct if 'struct' in locals() else {},
                 close_confirm_v4=close_confirm_v4 if 'close_confirm_v4' in locals() else {},
                 liquidity_map_v1=liquidity_map_v1 if 'liquidity_map_v1' in locals() else {},
