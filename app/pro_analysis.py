@@ -8191,11 +8191,12 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     div  = _divergence_rsi(m15c, period=14, lookback=50)
 
     # nhét vào meta để main.py / review lệnh dùng lại
-    
+    meta = base.setdefault("meta", {})
     base["meta"]["volq"] = volq
     base["meta"]["candle"] = cpat
     base["meta"]["div"] = div
-    meta = base.setdefault("meta", {})
+    base["meta"]["rsi14"] = rsi15
+    base["meta"]["atr15"] = atr15
     meta["_m15_raw"] = m15c
     meta["_m30_raw"] = m30c
     meta["atr15"] = atr15
@@ -11050,22 +11051,29 @@ def format_signal(sig: Dict[str, Any]) -> str:
         for s in psych[:3]:
             push_info(f"- {s}")
             
-    volq = meta.get("vol_quality") or meta.get("volume_quality") or {}
-    candle_pat = meta.get("candle_patterns") or {}
-    rsi_v = meta.get("rsi14") if meta.get("rsi14") is not None else meta.get("rsi")
+    volq = meta.get("volq") or meta.get("vol_quality") or meta.get("volume_quality") or {}
+    candle_pat = meta.get("candle") or meta.get("candle_patterns") or {}
+    div = meta.get("div") or meta.get("divergence") or {}
+
+    rsi_show = (
+        meta.get("rsi14")
+        if meta.get("rsi14") is not None
+        else (rsi15 if 'rsi15' in locals() else meta.get("rsi"))
+    )
+
     push_info("🧪 Chi tiết bổ sung:")
     push_info(f"- Volume: {volq.get('state', 'N/A')} (x{volq.get('ratio', 'n/a')} vs SMA20)")
-    if candle_pat:
-        if candle_pat.get("txt"):
-            push_info(f"- Candle: {candle_pat.get('txt')}")
-    push_info(f"- RSI(14) M15: {rsi_v if rsi_v is not None else 'n/a'}")
-    push_info(f"- ATR(14) M15: ~{_fmt(meta.get('atr15'))}")
-    if sig.get("rr_text"):
-        push_info(f"- RR ~ {sig.get('rr_text')}")
-    elif meta.get("rr_text"):
-        push_info(f"- RR ~ {meta.get('rr_text')}")
-    else:
-        push_info("- RR ~ 1:2 (mục tiêu)")
+
+    if candle_pat.get("txt"):
+        push_info(f"- Candle: {candle_pat.get('txt')}")
+
+    if div.get("txt") and str(div.get("txt")).upper() != "N/A":
+        push_info(f"- {div.get('txt')}")
+
+    push_info(f"- RSI(14) M15: {rsi_show if rsi_show is not None else 'n/a'}")
+    push_info(f"- ATR(14) M15: ~{_fmt(meta.get('atr15') if meta.get('atr15') is not None else (atr15 if 'atr15' in locals() else None))}")
+    push_info("- RR ~ 1:2 (mục tiêu)")
+    push_info("")
 
     rsi_ctx1 = meta.get("rsi_context_v1") or {}
     push_info("📈 RSI context:")
@@ -11438,7 +11446,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         tradeable_label = "NO"
         grade = _score_to_grade_v2(final_score)
     push_conclusion("")
-    push_conclusion(f"📊 Chất lượng cơ hội:{symbol} | {grade}")
+    push_conclusion(f"📊 Chất lượng cơ hội:  {grade}") | ({symbol})
     push_conclusion(f"🔥 Final Score: {final_score}/100")
     push_conclusion(f"→ Tradeable: {tradeable_label}")
 
