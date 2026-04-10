@@ -11281,11 +11281,46 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # PATH FORECAST
     pf1 = (meta.get("path_forecast_v1") or {})
+    if not pf1 or (pf1.get("res_near") is None and pf1.get("sup_near") is None):
+        kl0 = (meta.get("key_levels") or {})
+        try:
+            cp0 = (
+                _safe_float(sig.get("current_price"))
+                or _safe_float(sig.get("last_price"))
+                or _safe_float(sig.get("price"))
+                or _safe_float(sig.get("entry"))
+            )
+        except Exception:
+            cp0 = None
+        if cp0 is None:
+            try:
+                if m15c:
+                    cp0 = _safe_float(_c_val(m15c[-1], "close", None))
+            except Exception:
+                cp0 = None
+        try:
+            pf1 = _path_forecast_v1(
+                current_price=cp0,
+                atr15=atr15 if 'atr15' in locals() else meta.get("atr15"),
+                h1_trend=((meta.get("structure") or {}).get("H1") if meta.get("structure") else None),
+                h4_trend=((meta.get("structure") or {}).get("H4") if meta.get("structure") else None),
+                m15_struct_tag=((meta.get("structure") or {}).get("M15") if meta.get("structure") else None),
+                range_low=kl0.get("M15_RANGE_LOW"),
+                range_high=kl0.get("M15_RANGE_HIGH"),
+                playbook_v2=(meta.get("playbook_v2") or {}),
+                liquidity_map_v1=(meta.get("liquidity_map_v1") or {}),
+                ema_pack=(meta.get("ema") or {}),
+                smart_filter_v1=(meta.get("fvg_range_plugin_v1") or {}),
+                m15c=m15c if 'm15c' in locals() else [],
+            )
+            meta["path_forecast_v1"] = pf1
+        except Exception as e:
+            print(f"[PATH_FORECAST_ERROR] {e}")
     push_conclusion("🔮 PATH FORECAST:")
     push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
-    
+    push_conclusion("")
     push_conclusion("📍 Vùng kháng cự M15:")
     push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
     push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
