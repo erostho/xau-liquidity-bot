@@ -1788,24 +1788,24 @@ def _path_forecast_v1(
         "action_note": "",
         "reason": [],
     }
-    cp = _safe_float(current_price)
-    a = _safe_float(atr15)
+
     playbook_v2 = playbook_v2 or {}
     liquidity_map_v1 = liquidity_map_v1 or {}
     ema_pack = ema_pack or {}
     smart_filter_v1 = smart_filter_v1 or {}
     m15c = m15c or []
+
     sf_range = smart_filter_v1.get("range_filter") or {}
     sf_state = str(sf_range.get("state") or smart_filter_v1.get("smart_state") or "").upper()
     sf_tag = str(sf_range.get("tag") or "").upper()
+
+    cp = _safe_float(current_price)
+    a = _safe_float(atr15)
+
     if cp is None:
         return out
     if a is None or a <= 0:
         a = max(1e-9, abs(cp) * 0.003)
-
-    playbook_v2 = playbook_v2 or {}
-    liquidity_map_v1 = liquidity_map_v1 or {}
-    ema_pack = ema_pack or {}
 
     tag = str(m15_struct_tag or "").upper()
     h1 = str(h1_trend or "").lower()
@@ -1862,7 +1862,8 @@ def _path_forecast_v1(
     def _pf_zone_tuple(z):
         try:
             if isinstance(z, (list, tuple)) and len(z) == 2:
-                a1 = float(z[0]); b1 = float(z[1])
+                a1 = float(z[0])
+                b1 = float(z[1])
                 return (min(a1, b1), max(a1, b1))
         except Exception:
             pass
@@ -1931,13 +1932,13 @@ def _path_forecast_v1(
     if below_zone:
         zones_sup.append(below_zone)
 
-    # range fallback: luôn phải có nếu range tồn tại
+    # range fallback
     if rhi is not None:
         zones_res.append((rhi - 0.15 * a, rhi + 0.15 * a))
     if rlo is not None:
         zones_sup.append((rlo - 0.15 * a, rlo + 0.15 * a))
 
-    # swing fallback từ M15
+    # swing fallback
     try:
         if m15c and len(m15c) >= 12:
             closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
@@ -1994,11 +1995,10 @@ def _path_forecast_v1(
     elif up_score > down_score:
         out["up_bias"] = "CÓ THỂ"
 
-    # ===== 1 action line only =====
+    # ===== base action =====
     dist_res = _dist(out["res_near"])
     dist_sup = _dist(out["sup_near"])
 
-    # ===== action base theo bias tổng =====
     base_action = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
 
     if down_score >= up_score + 2:
@@ -2016,7 +2016,7 @@ def _path_forecast_v1(
             elif h1 == "bearish" or ema_trend == "BEARISH":
                 base_action = "ƯU TIÊN canh SELL theo nến M15"
 
-    # ===== override theo vị trí hiện tại =====
+    # ===== override theo vị trí hiện tại + smart filter =====
     near_res = dist_res <= 0.35 * a
     near_sup = dist_sup <= 0.35 * a
 
@@ -2046,6 +2046,9 @@ def _path_forecast_v1(
     else:
         out["priority_action"] = base_action
         out["action_note"] = ""
+
+    out["reason"] = reasons[:4]
+    return out
 
 def _detect_liquidation_v2(
     m15c: Sequence[Any],
@@ -11283,41 +11286,44 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("")
 
     # PATH FORECAST
+    # ===== PATH FORECAST BUILD (SAFE) =====
     meta = meta or {}
     sig = sig or {}
+
+    struct0 = meta.get("structure") or {}
+    kl0 = meta.get("key_levels") or {}
+    playbook0 = meta.get("playbook_v2") or {}
+    liq0 = meta.get("liquidity_map_v1") or {}
+    ema0 = meta.get("ema") or {}
+    sf0 = meta.get("fvg_range_plugin_v1") or {}
+
     m15c0 = []
     try:
         if 'm15c' in locals() and m15c is not None:
             m15c0 = m15c
     except Exception:
         m15c0 = []
-    
-    pf1 = (meta.get("path_forecast_v1") or {})
-    if not pf1 or (pf1.get("res_near") is None and pf1.get("sup_near") is None):
-        kl0 = (meta.get("key_levels") or {})
-        struct0 = (meta.get("structure") or {})
-        playbook0 = (meta.get("playbook_v2") or {})
-        liq0 = (meta.get("liquidity_map_v1") or {})
-        ema0 = (meta.get("ema") or {})
-        sf0 = (meta.get("fvg_range_plugin_v1") or {})
-    
+
+    cp0 = None
+    try:
+        cp0 = (
+            _safe_float(sig.get("current_price"))
+            or _safe_float(sig.get("last_price"))
+            or _safe_float(sig.get("price"))
+            or _safe_float(sig.get("entry"))
+        )
+    except Exception:
+        cp0 = None
+
+    if cp0 is None:
         try:
-            cp0 = (
-                _safe_float(sig.get("current_price"))
-                or _safe_float(sig.get("last_price"))
-                or _safe_float(sig.get("price"))
-                or _safe_float(sig.get("entry"))
-            )
+            if m15c0:
+                cp0 = _safe_float(_c_val(m15c0[-1], "close", None))
         except Exception:
             cp0 = None
-    
-        if cp0 is None:
-            try:
-                if m15c0:
-                    cp0 = _safe_float(_c_val(m15c0[-1], "close", None))
-            except Exception:
-                cp0 = None
-    
+
+    pf1 = meta.get("path_forecast_v1") or {}
+    if not pf1 or (pf1.get("res_near") is None and pf1.get("sup_near") is None):
         try:
             pf1 = _path_forecast_v1(
                 current_price=cp0,
@@ -11332,8 +11338,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 ema_pack=ema0,
                 smart_filter_v1=sf0,
                 m15c=m15c0,
-            )
-            meta["path_forecast_v1"] = pf1 or {}
+            ) or {}
         except Exception as e:
             print(f"[PATH_FORECAST_ERROR] {e}")
             pf1 = {
@@ -11347,22 +11352,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 "priority_action": "ƯU TIÊN ĐỨNG NGOÀI",
                 "action_note": "",
             }
-    push_conclusion("🔮 PATH FORECAST:")
-    push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
-    push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
-    push_conclusion(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
-    push_conclusion("")
-    push_conclusion("📍 Vùng kháng cự M15:")
-    push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
-    push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
+
+        meta["path_forecast_v1"] = pf1
+        # PATH FORECAST
+        push_conclusion("🔮 PATH FORECAST:")
+        push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
+        push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
+        push_conclusion(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
     
-    push_conclusion("📍 Vùng hỗ trợ M15:")
-    push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('sup_near'))}")
-    push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('sup_far'))}")
+        push_conclusion("📍 Vùng kháng cự M15:")
+        push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
+        push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
     
-    push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
-    if pf1.get("action_note"):
-        push_conclusion(f"- {pf1.get('action_note')}")
+        push_conclusion("📍 Vùng hỗ trợ M15:")
+        push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('sup_near'))}")
+        push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('sup_far'))}")
+    
+        push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
+        if pf1.get("action_note"):
+            push_conclusion(f"- {pf1.get('action_note')}")
+        push_conclusion("")
 
     # SMART ENTRY FILTER
     fvgp = (meta.get("fvg_range_plugin_v1") or {})
