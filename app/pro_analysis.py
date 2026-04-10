@@ -11158,16 +11158,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if phase:
         push_conclusion(f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase.get('meaning', phase.get('label', 'n/a'))}")
 
-    push_conclusion("━━━━━━━━━━━")
-    push_conclusion("🎯 KỊCH BẢN CHÍNH")
-    push_conclusion("━━━━━━━━━━━")
-    if scenario.get("base_case"):
-        push_conclusion(f"- {scenario.get('base_case')}")
-    else:
-        wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
-        if wait_lines:
-            for s in wait_lines[:2]:
-                push_conclusion(f"- {s}")
 
     pbc1 = meta.get("post_break_continuity_v1") or {}
     push_conclusion("🔁 POST-BREAK CONTINUITY:")
@@ -11176,8 +11166,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"- Hướng sau break: {pbc1.get('side_after_break', 'NONE')}")
     push_conclusion(f"- Hành động: {pbc1.get('action', 'WAIT')}")
 
-    push_conclusion("🪄 KỊCH BẢN PHỤ:")
-    push_conclusion(f"- {scenario.get('alt_case', 'Chờ displacement thật + follow-through')}")
+
 
     push_conclusion("🧯 Điểm sai kịch bản:")
     push_conclusion(f"- {scenario.get('invalid_if', 'Nếu break sai hướng và giữ được → bỏ kịch bản hiện tại')}")
@@ -11284,7 +11273,18 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
     push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
     push_conclusion("")
-
+    push_conclusion("🪄 KỊCH BẢN PHỤ:")
+    push_conclusion(f"- {scenario.get('alt_case', 'Chờ displacement thật + follow-through')}")
+    push_conclusion("━━━━━━━━━━━")
+    push_conclusion("🎯 KỊCH BẢN CHÍNH")
+    push_conclusion("━━━━━━━━━━━")
+    if scenario.get("base_case"):
+        push_conclusion(f"- {scenario.get('base_case')}")
+    else:
+        wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
+        if wait_lines:
+            for s in wait_lines[:2]:
+                push_conclusion(f"- {s}")
     # PROBE + SETUP CLASS
     for s in _render_probe_block_v1(sig):
         add(conclusion_lines, s)
