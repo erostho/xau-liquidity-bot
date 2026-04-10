@@ -11284,7 +11284,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion("- Chờ trigger rõ hơn")
     push_conclusion("")
     
-    #SMART ENTRY FILTER
+    # SMART ENTRY FILTER
+    fvgp = (meta.get("fvg_range_plugin_v1") or {})
+    rf1 = (fvgp.get("range_filter") or {})
+    ema1 = (fvgp.get("ema") or {})
+    fvg1 = (fvgp.get("fvg") or {})
     push_conclusion("🧩 SMART ENTRY FILTER:")
     pos = rf1.get("position")
     state = rf1.get("state", "UNKNOWN")
@@ -11391,12 +11395,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
     if pf1.get("action_note"):
         push_conclusion(f"- {pf1.get('action_note')}")
-
-    # SMART ENTRY FILTER
-    fvgp = (meta.get("fvg_range_plugin_v1") or {})
-    rf1 = (fvgp.get("range_filter") or {})
-    ema1 = (fvgp.get("ema") or {})
-    fvg1 = (fvgp.get("fvg") or {})
 
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
