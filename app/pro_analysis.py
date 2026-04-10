@@ -11281,22 +11281,22 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # PATH FORECAST
     pf1 = (meta.get("path_forecast_v1") or {})
-    push_action("🔮 PATH FORECAST:")
-    push_action(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
-    push_action(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
-    push_action(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
+    push_conclusion("🔮 PATH FORECAST:")
+    push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
+    push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
+    push_conclusion(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
     
-    push_action("📍 Vùng kháng cự M15:")
-    push_action(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
-    push_action(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
+    push_conclusion("📍 Vùng kháng cự M15:")
+    push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
+    push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
     
-    push_action("📍 Vùng hỗ trợ M15:")
-    push_action(f"- Gần: {_pf_zone_text(pf1.get('sup_near'))}")
-    push_action(f"- Xa: {_pf_zone_text(pf1.get('sup_far'))}")
+    push_conclusion("📍 Vùng hỗ trợ M15:")
+    push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('sup_near'))}")
+    push_conclusion(f"- Xa: {_pf_zone_text(pf1.get('sup_far'))}")
     
-    push_action(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
+    push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
     if pf1.get("action_note"):
-        push_action(f"- {pf1.get('action_note')}")
+        push_conclusion(f"- {pf1.get('action_note')}")
 
     # SMART ENTRY FILTER
     fvgp = (meta.get("fvg_range_plugin_v1") or {})
