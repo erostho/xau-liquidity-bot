@@ -11158,15 +11158,23 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if phase:
         push_conclusion(f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase.get('meaning', phase.get('label', 'n/a'))}")
 
-
-    pbc1 = meta.get("post_break_continuity_v1") or {}
-    push_conclusion("🔁 POST-BREAK CONTINUITY:")
-    push_conclusion(f"- State: {pbc1.get('state', 'NONE')}")
-    push_conclusion(f"- Vai trò mới của mốc: {pbc1.get('role_shift', 'NONE')}")
-    push_conclusion(f"- Hướng sau break: {pbc1.get('side_after_break', 'NONE')}")
-    push_conclusion(f"- Hành động: {pbc1.get('action', 'WAIT')}")
-
-
+    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
+    pbc_state = str(pbc1.get("state") or "NONE").upper()
+    if pbc1 and pbc_state not in ("NONE", ""):
+        push_action("")
+        push_action("🔁 POST-BREAK CONTINUITY:")
+        push_action(f"- State: {pbc1.get('state')}")
+        if pbc1.get("reference_level") is not None:
+            push_action(f"- Mốc đang theo dõi: {nf(pbc1.get('reference_level'))} ({pbc1.get('reference_type')})")
+        push_action(f"- Vai trò mới của mốc: {pbc1.get('role_shift')}")
+        push_action(f"- Hướng sau break: {pbc1.get('side_after_break')}")
+        push_action(f"- Hành động: {pbc1.get('action')}")
+        if pbc1.get("message"):
+            push_action(f"- {pbc1.get('message')}")
+        if pbc1.get("narrative"):
+            push_action(f"- Câu chuyện tiếp diễn: {pbc1.get('narrative')}")
+        for s in (pbc1.get("reasons") or [])[:3]:
+            push_action(f"- {s}")
 
     push_conclusion("🧯 Điểm sai kịch bản:")
     push_conclusion(f"- {scenario.get('invalid_if', 'Nếu break sai hướng và giữ được → bỏ kịch bản hiện tại')}")
