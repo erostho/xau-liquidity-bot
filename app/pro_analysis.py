@@ -11283,12 +11283,33 @@ def format_signal(sig: Dict[str, Any]) -> str:
     else:
         push_conclusion("- Chờ trigger rõ hơn")
     push_conclusion("")
-
+    
+    #SMART ENTRY FILTER
+    push_conclusion("🧩 SMART ENTRY FILTER:")
+    pos = rf1.get("position")
+    state = rf1.get("state", "UNKNOWN")
+    tag = rf1.get("tag", "N/A")
+    if pos is None:
+        push_conclusion(f"- Range: {state} | N/A")
+    else:
+        try:
+            push_conclusion(f"- Range: {state} | {float(pos):.1f}% | {tag}")
+        except Exception:
+            push_conclusion(f"- Range: {state} | {pos} | {tag}")
+    reasons = rf1.get("reason") or []
+    for s in reasons[:2]:
+        push_conclusion(f"- {s}")
+    push_conclusion(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
+    push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
+    push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
+    push_conclusion("")
+    push_conclusion("🪄 KỊCH BẢN PHỤ:")
+    push_conclusion(f"- {scenario.get('alt_case', 'Chờ displacement thật + follow-through')}")
+    push_conclusion("")
     # PATH FORECAST
     # ===== PATH FORECAST BUILD (SAFE) =====
     meta = meta or {}
     sig = sig or {}
-
     struct0 = meta.get("structure") or {}
     kl0 = meta.get("key_levels") or {}
     playbook0 = meta.get("playbook_v2") or {}
@@ -11370,7 +11391,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
     if pf1.get("action_note"):
         push_conclusion(f"- {pf1.get('action_note')}")
-    push_conclusion("")
 
     # SMART ENTRY FILTER
     fvgp = (meta.get("fvg_range_plugin_v1") or {})
@@ -11378,26 +11398,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     ema1 = (fvgp.get("ema") or {})
     fvg1 = (fvgp.get("fvg") or {})
 
-    push_conclusion("🧩 SMART ENTRY FILTER:")
-    pos = rf1.get("position")
-    state = rf1.get("state", "UNKNOWN")
-    tag = rf1.get("tag", "N/A")
-    if pos is None:
-        push_conclusion(f"- Range: {state} | N/A")
-    else:
-        try:
-            push_conclusion(f"- Range: {state} | {float(pos):.1f}% | {tag}")
-        except Exception:
-            push_conclusion(f"- Range: {state} | {pos} | {tag}")
-    reasons = rf1.get("reason") or []
-    for s in reasons[:2]:
-        push_conclusion(f"- {s}")
-    push_conclusion(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
-    push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
-    push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
-    push_conclusion("")
-    push_conclusion("🪄 KỊCH BẢN PHỤ:")
-    push_conclusion(f"- {scenario.get('alt_case', 'Chờ displacement thật + follow-through')}")
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
