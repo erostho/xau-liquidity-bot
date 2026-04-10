@@ -5771,7 +5771,8 @@ def _attach_vnext_meta(
             print(f"liquidity_map_v1 = {liquidity_map_v1}")
             print(f"ema_pack = {ema_pack}")
             print(f"len_m15c = {len(m15c) if m15c else 0}")
-    
+            current_price = sig.get("price") or sig.get("entry") or sig.get("close")
+
             pf1 = _path_forecast_v1(
                 current_price=current_price,
                 atr15=atr15,
