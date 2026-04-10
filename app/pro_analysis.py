@@ -5778,20 +5778,7 @@ def _attach_vnext_meta(
             except Exception:
                 cp0 = None
     
-        try:
-            print("\n========== PATH FORECAST DEBUG ==========")
-            print(f"cp0 = {cp0}")
-            print(f"atr15 = {atr15}")
-            print(f"h1_trend = {h1_trend}")
-            print(f"h4_trend = {h4_trend}")
-            print(f"m15_struct_tag = {(m15_struct or {}).get('tag')}")
-            print(f"range_low = {kl0.get('M15_RANGE_LOW')}")
-            print(f"range_high = {kl0.get('M15_RANGE_HIGH')}")
-            print(f"playbook_v2 = {playbook_v2}")
-            print(f"liquidity_map_v1 = {liquidity_map_v1}")
-            print(f"ema_pack = {ema_pack}")
-            print(f"len_m15c = {len(m15c) if m15c else 0}")
-    
+        try:    
             pf1 = _path_forecast_v1(
                 current_price=cp0,
                 atr15=atr15,
@@ -5808,7 +5795,6 @@ def _attach_vnext_meta(
             print(f"pf1 = {pf1}")
     
         except Exception as e:
-            print(f"[PATH_FORECAST_ERROR] {e}")
             pf1 = {
                 "down_bias": "KHÔNG RÕ",
                 "up_bias": "KHÔNG RÕ",
