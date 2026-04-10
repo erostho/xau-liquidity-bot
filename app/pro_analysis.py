@@ -1762,7 +1762,6 @@ def _pf_zone_tuple(z):
         pass
     return None
 
-
 def _path_forecast_v1(
     current_price: float | None,
     atr15: float | None,
@@ -1779,13 +1778,12 @@ def _path_forecast_v1(
     out = {
         "down_bias": "KHÔNG RÕ",
         "up_bias": "KHÔNG RÕ",
-        "sideway_bars": "n/a",
+        "sideway_bars": "2-4",
         "res_near": None,
         "res_far": None,
         "sup_near": None,
         "sup_far": None,
-        "sell_action": "canh SELL theo nến M15",
-        "buy_action": "canh BUY theo nến M15",
+        "priority_action": "CHỜ",
         "reason": [],
     }
 
@@ -1812,11 +1810,11 @@ def _path_forecast_v1(
     except Exception:
         rlo, rhi = None, None
 
-    # ===== score hướng =====
     down_score = 0
     up_score = 0
     reasons = []
 
+    # ===== xu hướng lớn =====
     if h1 == "bearish":
         down_score += 2
         reasons.append("H1 giảm")
@@ -1829,6 +1827,7 @@ def _path_forecast_v1(
     elif h4 == "bullish":
         up_score += 1
 
+    # ===== structure M15 =====
     if "LH" in tag or "LL" in tag:
         down_score += 2
         reasons.append("M15 yếu")
@@ -1836,6 +1835,7 @@ def _path_forecast_v1(
         up_score += 2
         reasons.append("M15 khỏe")
 
+    # ===== EMA =====
     if ema_trend == "BEARISH":
         down_score += 1
     elif ema_trend == "BULLISH":
@@ -1845,14 +1845,30 @@ def _path_forecast_v1(
         down_score += 1
     elif "TRÊN EMA34/89" in ema_zone:
         up_score += 1
+    elif "GIỮA EMA34-89" in ema_zone or "GIỮA EMA34-89" in ema_zone.replace("/", "-"):
+        up_score += 0.5
+        down_score += 0.5
+
+    # ===== liquidity =====
+    def _pf_zone_tuple(z):
+        try:
+            if isinstance(z, (list, tuple)) and len(z) == 2:
+                a1 = float(z[0]); b1 = float(z[1])
+                return (min(a1, b1), max(a1, b1))
+        except Exception:
+            pass
+        return None
 
     above_zone = _pf_zone_tuple(liquidity_map_v1.get("above_zone"))
     below_zone = _pf_zone_tuple(liquidity_map_v1.get("below_zone"))
 
-    if str(liquidity_map_v1.get("above_strength") or "LOW").upper() in ("MEDIUM", "HIGH"):
+    above_strength = str(liquidity_map_v1.get("above_strength") or "LOW").upper()
+    below_strength = str(liquidity_map_v1.get("below_strength") or "LOW").upper()
+
+    if above_strength in ("MEDIUM", "HIGH"):
         down_score += 1
         reasons.append("phía trên có liquidity")
-    if str(liquidity_map_v1.get("below_strength") or "LOW").upper() in ("MEDIUM", "HIGH"):
+    if below_strength in ("MEDIUM", "HIGH"):
         up_score += 1
         reasons.append("phía dưới có liquidity")
 
@@ -1865,32 +1881,27 @@ def _path_forecast_v1(
         reasons.append("dễ quét xuống rồi kéo")
 
     # ===== sideway bars =====
-    sideway_bars = "2-4"
     try:
-        if m15c and len(m15c) >= 24:
+        if m15c and len(m15c) >= 20:
             closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
             recent = closed[-20:]
             highs = [float(_c_val(x, "high", 0.0) or 0.0) for x in recent]
             lows = [float(_c_val(x, "low", 0.0) or 0.0) for x in recent]
-            closes = [float(_c_val(x, "close", 0.0) or 0.0) for x in recent]
-
             rng20 = max(highs) - min(lows)
-            avg_bar = sum(abs(highs[i] - lows[i]) for i in range(len(highs))) / max(1, len(highs))
 
-            if rng20 <= 2.2 * a and avg_bar <= 0.85 * a:
-                sideway_bars = "4-8"
-            elif rng20 <= 3.0 * a:
-                sideway_bars = "3-6"
+            if rng20 <= 2.2 * a:
+                out["sideway_bars"] = "4-8"
+            elif rng20 <= 3.2 * a:
+                out["sideway_bars"] = "3-6"
             else:
-                sideway_bars = "1-3"
+                out["sideway_bars"] = "1-3"
 
-            # nếu 2 hướng cân bằng thì tăng xác suất đi ngang
             if abs(down_score - up_score) <= 1:
-                sideway_bars = "4-8"
+                out["sideway_bars"] = "4-8"
     except Exception:
         pass
 
-    # ===== build support / resistance zones =====
+    # ===== build zones =====
     zones_res = []
     zones_sup = []
 
@@ -1899,13 +1910,10 @@ def _path_forecast_v1(
     pz_hi = _safe_float(playbook_v2.get("zone_high"))
     if pz_lo is not None and pz_hi is not None:
         z = (min(pz_lo, pz_hi), max(pz_lo, pz_hi))
-        if z[0] >= cp:
+        mid = (z[0] + z[1]) / 2.0
+        if mid >= cp:
             zones_res.append(z)
-        elif z[1] <= cp:
-            zones_sup.append(z)
         else:
-            # nếu giá đang nằm trong zone thì phân loại theo bias gần nhất
-            zones_res.append(z)
             zones_sup.append(z)
 
     # liquidity zones
@@ -1914,69 +1922,93 @@ def _path_forecast_v1(
     if below_zone:
         zones_sup.append(below_zone)
 
-    # range boundary fallback
+    # range fallback: luôn phải có nếu range tồn tại
     if rhi is not None:
-        zones_res.append((rhi - 0.12 * a, rhi + 0.12 * a))
+        zones_res.append((rhi - 0.15 * a, rhi + 0.15 * a))
     if rlo is not None:
-        zones_sup.append((rlo - 0.12 * a, rlo + 0.12 * a))
+        zones_sup.append((rlo - 0.15 * a, rlo + 0.15 * a))
 
-    # dedupe nhẹ
-    def _dedupe_zones(zs):
-        out_z = []
+    # swing fallback từ M15
+    try:
+        if m15c and len(m15c) >= 12:
+            closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+            recent = closed[-12:]
+            sh = max(float(_c_val(x, "high", 0.0) or 0.0) for x in recent)
+            sl = min(float(_c_val(x, "low", 0.0) or 0.0) for x in recent)
+            zones_res.append((sh - 0.12 * a, sh + 0.12 * a))
+            zones_sup.append((sl - 0.12 * a, sl + 0.12 * a))
+    except Exception:
+        pass
+
+    def _dedupe(zs):
+        outz = []
         for z in zs:
             if not z:
                 continue
             lo, hi = float(z[0]), float(z[1])
-            exists = False
-            for e in out_z:
+            found = False
+            for e in outz:
                 if abs(lo - e[0]) <= 0.10 * a and abs(hi - e[1]) <= 0.10 * a:
-                    exists = True
+                    found = True
                     break
-            if not exists:
-                out_z.append((lo, hi))
-        return out_z
+            if not found:
+                outz.append((lo, hi))
+        return outz
 
-    zones_res = _dedupe_zones(zones_res)
-    zones_sup = _dedupe_zones(zones_sup)
+    zones_res = _dedupe(zones_res)
+    zones_sup = _dedupe(zones_sup)
 
-    def _dist_to_zone(z):
-        if z is None:
+    def _dist(z):
+        if not z:
             return 999999999.0
         lo, hi = z
         if lo <= cp <= hi:
             return 0.0
         return min(abs(cp - lo), abs(cp - hi))
 
-    zones_res = sorted(zones_res, key=_dist_to_zone)
-    zones_sup = sorted(zones_sup, key=_dist_to_zone)
+    zones_res = sorted(zones_res, key=_dist)
+    zones_sup = sorted(zones_sup, key=_dist)
 
-    res_near = zones_res[0] if len(zones_res) >= 1 else None
-    res_far = zones_res[1] if len(zones_res) >= 2 else None
-    sup_near = zones_sup[0] if len(zones_sup) >= 1 else None
-    sup_far = zones_sup[1] if len(zones_sup) >= 2 else None
+    out["res_near"] = zones_res[0] if len(zones_res) >= 1 else None
+    out["res_far"] = zones_res[1] if len(zones_res) >= 2 else None
+    out["sup_near"] = zones_sup[0] if len(zones_sup) >= 1 else None
+    out["sup_far"] = zones_sup[1] if len(zones_sup) >= 2 else None
 
-    # ===== label hướng =====
+    # ===== bias text =====
     if down_score >= up_score + 2:
         out["down_bias"] = "NGHIÊNG"
     elif down_score > up_score:
         out["down_bias"] = "CÓ THỂ"
-    else:
-        out["down_bias"] = "KHÔNG RÕ"
 
     if up_score >= down_score + 2:
         out["up_bias"] = "NGHIÊNG"
     elif up_score > down_score:
         out["up_bias"] = "CÓ THỂ"
+
+    # ===== 1 action line only =====
+    dist_res = _dist(out["res_near"])
+    dist_sup = _dist(out["sup_near"])
+
+    if down_score >= up_score + 2:
+        out["priority_action"] = "ƯU TIÊN canh SELL theo nến M15"
+    elif up_score >= down_score + 2:
+        out["priority_action"] = "ƯU TIÊN canh BUY theo nến M15"
     else:
-        out["up_bias"] = "KHÔNG RÕ"
+        # nếu 2 hướng không chênh nhiều thì xét gần zone nào hơn
+        if dist_res < dist_sup:
+            out["priority_action"] = "ƯU TIÊN canh SELL theo nến M15"
+        elif dist_sup < dist_res:
+            out["priority_action"] = "ƯU TIÊN canh BUY theo nến M15"
+        else:
+            # tie-break theo H1 / EMA
+            if h1 == "bullish" or ema_trend == "BULLISH":
+                out["priority_action"] = "ƯU TIÊN canh BUY theo nến M15"
+            elif h1 == "bearish" or ema_trend == "BEARISH":
+                out["priority_action"] = "ƯU TIÊN canh SELL theo nến M15"
+            else:
+                out["priority_action"] = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
 
-    out["sideway_bars"] = sideway_bars
-    out["res_near"] = res_near
-    out["res_far"] = res_far
-    out["sup_near"] = sup_near
-    out["sup_far"] = sup_far
     out["reason"] = reasons[:4]
-
     return out
 
 def _detect_liquidation_v2(
@@ -11523,6 +11555,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     # ===== REASON: PATH FORECAST =====
     pf1 = (meta.get("path_forecast_v1") or {})
+
     def _pf_zone_text(z):
         try:
             if not z:
@@ -11542,12 +11575,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_reason("📍 Vùng kháng cự M15:")
     push_reason(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
     push_reason(f"- Xa: {_pf_zone_text(pf1.get('res_far'))}")
-    push_reason(f"- Hành động: {pf1.get('sell_action', 'canh SELL theo nến M15')}")
 
     push_reason("📍 Vùng hỗ trợ M15:")
     push_reason(f"- Gần: {_pf_zone_text(pf1.get('sup_near'))}")
     push_reason(f"- Xa: {_pf_zone_text(pf1.get('sup_far'))}")
-    push_reason(f"- Hành động: {pf1.get('buy_action', 'canh BUY theo nến M15')}")
+
+    push_reason(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
     
     # ===== ACTION/REASON: SMART ENTRY FILTER =====
     fvgp = (meta.get("fvg_range_plugin_v1") or {})
