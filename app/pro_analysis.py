@@ -11361,7 +11361,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     out.append("━━━━━━━━━━━━━━━━━━")
     out.append("🚀 BLOCK 3: KẾT LUẬN & HÀNH ĐỘNG")
     out.append("━━━━━━━━━━━━━━━━━━")
-
+    out.extend(conclusion_lines)
     final = []
     for line in out:
         if line == "" and (not final or final[-1] == ""):
