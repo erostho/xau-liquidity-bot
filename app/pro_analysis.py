@@ -11244,8 +11244,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
     m15c0 = []
     try:
-        if 'm15c' in locals() and m15c is not None:
-            m15c0 = m15c
+        m15_raw0 = meta.get("_m15_raw") or []
+        if m15_raw0:
+            m15c0 = _safe_candles(m15_raw0)
     except Exception:
         m15c0 = []
     
@@ -11298,6 +11299,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 "action_note": "",
                 "reason": [],
             }
+    
         meta["path_forecast_v1"] = pf1
     
     push_conclusion("🔮 PATH FORECAST:")
