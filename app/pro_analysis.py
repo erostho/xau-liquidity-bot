@@ -11230,6 +11230,40 @@ def format_signal(sig: Dict[str, Any]) -> str:
     for s in (tg3.get("reason") or [])[:3]:
         push_conclusion(f"- {s}")
     push_conclusion("")
+
+    # SMART ENTRY FILTER
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
+    rf1 = fvgp.get("range_filter") or {}
+    ema1 = fvgp.get("ema") or {}
+    fvg1 = fvgp.get("fvg") or {}
+    
+    push_conclusion("🧩 SMART ENTRY FILTER:")
+    pos = rf1.get("position")
+    state = rf1.get("state", "UNKNOWN")
+    tag = rf1.get("tag", "N/A")
+    if pos is None:
+        push_conclusion(f"- Range: {state} | N/A")
+    else:
+        try:
+            push_conclusion(f"- Range: {state} | {float(pos):.1f}% | {tag}")
+        except Exception:
+            push_conclusion(f"- Range: {state} | {pos} | {tag}")
+    for s in (rf1.get("reason") or [])[:2]:
+        push_conclusion(f"- {s}")
+    push_conclusion(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
+    push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
+    push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
+    push_conclusion("")
+    
+    # kịch bản chính/phụ
+    push_conclusion("🪄 KỊCH BẢN PHỤ:")
+    if scenario.get("alt_case"):
+        push_conclusion(f"- {scenario.get('alt_case')}")
+    elif scenario.get("alt_plan"):
+        push_conclusion(f"- {scenario.get('alt_plan')}")
+    else:
+        push_conclusion("- Chưa có alt case rõ")
+    push_conclusion("")
     
     # ===== PATH FORECAST BUILD (SAFE) =====
     meta = meta or {}
@@ -11322,39 +11356,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"- {pf1.get('action_note')}")
     push_conclusion("")
     
-    # SMART ENTRY FILTER
-    fvgp = meta.get("fvg_range_plugin_v1") or {}
-    rf1 = fvgp.get("range_filter") or {}
-    ema1 = fvgp.get("ema") or {}
-    fvg1 = fvgp.get("fvg") or {}
-    
-    push_conclusion("🧩 SMART ENTRY FILTER:")
-    pos = rf1.get("position")
-    state = rf1.get("state", "UNKNOWN")
-    tag = rf1.get("tag", "N/A")
-    if pos is None:
-        push_conclusion(f"- Range: {state} | N/A")
-    else:
-        try:
-            push_conclusion(f"- Range: {state} | {float(pos):.1f}% | {tag}")
-        except Exception:
-            push_conclusion(f"- Range: {state} | {pos} | {tag}")
-    for s in (rf1.get("reason") or [])[:2]:
-        push_conclusion(f"- {s}")
-    push_conclusion(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
-    push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
-    push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
-    push_conclusion("")
-    
-    # kịch bản chính/phụ
-    push_conclusion("🪄 KỊCH BẢN PHỤ:")
-    if scenario.get("alt_case"):
-        push_conclusion(f"- {scenario.get('alt_case')}")
-    elif scenario.get("alt_plan"):
-        push_conclusion(f"- {scenario.get('alt_plan')}")
-    else:
-        push_conclusion("- Chưa có alt case rõ")
-    push_conclusion("")
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
