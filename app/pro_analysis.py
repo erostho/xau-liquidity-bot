@@ -1994,65 +1994,123 @@ def _path_forecast_v1(
     elif up_score > down_score:
         out["up_bias"] = "CÓ THỂ"
 
-    # ===== base action =====
+
+    # ===== ACTION ENGINE V2: sync theo vị trí =====
     dist_res = _dist(out["res_near"])
     dist_sup = _dist(out["sup_near"])
 
     near_res = dist_res <= 0.35 * a
     near_sup = dist_sup <= 0.35 * a
-    mid_range = (not near_res and not near_sup)
+    mid_zone = (not near_res and not near_sup)
 
     buy_blocked = ("BUY_TOO_HIGH" in sf_tag) or (sf_state == "BLOCK" and near_res)
     sell_blocked = ("SELL_TOO_LOW" in sf_tag) or (sf_state == "BLOCK" and near_sup)
 
-    # Nhận diện context chính để sync ACTION với FORECAST
-    is_buy_context = (up_score >= down_score) and (
-        h1 == "bullish" or h4 == "bullish" or ema_trend == "BULLISH"
+    # Bias chính
+    is_buy_context = (
+        up_score >= down_score
+        and (h1 == "bullish" or h4 == "bullish" or ema_trend == "BULLISH")
     )
-    is_sell_context = (down_score >= up_score) and (
-        h1 == "bearish" or h4 == "bearish" or ema_trend == "BEARISH"
+    is_sell_context = (
+        down_score >= up_score
+        and (h1 == "bearish" or h4 == "bearish" or ema_trend == "BEARISH")
     )
 
-    # Mặc định
+    # Breakout chỉ hợp lệ khi:
+    # 1) đang gần kháng cự / hỗ trợ thật
+    # 2) bias cùng hướng
+    # 3) không bị smart filter block sai phía
+    allow_breakout_buy = is_buy_context and near_res and not buy_blocked
+    allow_breakout_sell = is_sell_context and near_sup and not sell_blocked
+
     out["priority_action"] = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
-    out["action_note"] = "Chưa có edge đủ rõ."
+    out["action_note"] = "Chưa có lợi thế rõ."
 
-    # ===== BUY CONTEXT =====
+    # =========================
+    # BUY CONTEXT
+    # =========================
     if is_buy_context:
-        # Gần hỗ trợ / gần đáy -> đúng kiểu buy the dip
-        if near_sup and not sell_blocked:
+
+        # A. Gần hỗ trợ -> đúng pha buy dip
+        if near_sup:
             out["priority_action"] = "ƯU TIÊN canh BUY vùng hỗ trợ M15"
-            out["action_note"] = "Đúng cảnh buy-the-dip: giá đang gần hỗ trợ / đáy range. Chờ sweep low, giữ đáy hoặc nến xác nhận rồi BUY."
-        # Gần kháng cự -> không BUY đuổi, chỉ breakout nếu thật sự rõ
+            out["action_note"] = (
+                "Đúng pha buy-the-dip: giá đang gần hỗ trợ / đáy range. "
+                "Ưu tiên chờ sweep low, giữ đáy hoặc nến xác nhận rồi BUY."
+            )
+
+        # B. Giữa range -> chưa phải breakout phase
+        elif mid_zone:
+            out["priority_action"] = "CHỜ về hỗ trợ để BUY hoặc break rõ rồi mới BUY"
+            out["action_note"] = (
+                "Context vẫn BUY nhưng giá đang ở giữa biên độ / chưa có điểm vào đẹp. "
+                "Không BUY giữa đường, ưu tiên chờ hồi về support."
+            )
+
+        # C. Gần kháng cự
         elif near_res:
             if buy_blocked:
                 out["priority_action"] = "KHÔNG BUY đuổi; chờ break hẳn rồi retest để BUY"
-                out["action_note"] = "Giá đang sát kháng cự / quá cao so với điểm vào đẹp. Ưu tiên chờ breakout rõ và giữ trên."
-            else:
+                out["action_note"] = (
+                    "Giá đang sát kháng cự / quá cao so với điểm vào đẹp. "
+                    "Không BUY đuổi ở vùng này."
+                )
+            elif allow_breakout_buy:
                 out["priority_action"] = "CHỜ break kháng cự + follow-through rồi mới BUY"
-                out["action_note"] = "Context vẫn BUY nhưng vị trí hiện tại đã gần kháng cự, không còn là điểm buy-dip đẹp."
-        # Ở giữa range -> chưa đẹp, chờ về support hoặc breakout
-        else:
-            out["priority_action"] = "CHỜ về hỗ trợ để BUY hoặc break rõ rồi mới BUY"
-            out["action_note"] = "Context BUY nhưng giá chưa nằm đúng support và cũng chưa breakout rõ."
+                out["action_note"] = (
+                    "Đây mới là pha breakout hợp lệ: giá đã áp sát kháng cự trong context BUY. "
+                    "Chỉ BUY khi break rõ và nến sau giữ được."
+                )
+            else:
+                out["priority_action"] = "CHỜ phản ứng tại kháng cự rồi quyết định"
+                out["action_note"] = (
+                    "Đã gần kháng cự nhưng chưa đủ điều kiện breakout sạch."
+                )
 
-    # ===== SELL CONTEXT =====
+    # =========================
+    # SELL CONTEXT
+    # =========================
     elif is_sell_context:
-        if near_res and not buy_blocked:
+
+        # A. Gần kháng cự -> đúng pha sell rally
+        if near_res:
             out["priority_action"] = "ƯU TIÊN canh SELL vùng kháng cự M15"
-            out["action_note"] = "Đúng cảnh sell-the-rally: giá đang gần kháng cự / đỉnh range. Chờ fail break, rejection hoặc nến xác nhận rồi SELL."
+            out["action_note"] = (
+                "Đúng pha sell-the-rally: giá đang gần kháng cự / đỉnh range. "
+                "Ưu tiên chờ fail break, rejection hoặc nến xác nhận rồi SELL."
+            )
+
+        # B. Giữa range -> chưa phải breakdown phase
+        elif mid_zone:
+            out["priority_action"] = "CHỜ lên kháng cự để SELL hoặc break rõ rồi mới SELL"
+            out["action_note"] = (
+                "Context vẫn SELL nhưng giá đang ở giữa biên độ / chưa có điểm vào đẹp. "
+                "Không SELL giữa đường, ưu tiên chờ hồi lên resistance."
+            )
+
+        # C. Gần hỗ trợ
         elif near_sup:
             if sell_blocked:
                 out["priority_action"] = "KHÔNG SELL đuổi; chờ break hẳn rồi retest để SELL"
-                out["action_note"] = "Giá đang sát hỗ trợ / quá thấp so với điểm vào đẹp. Ưu tiên chờ breakdown rõ và giữ dưới."
-            else:
+                out["action_note"] = (
+                    "Giá đang sát hỗ trợ / quá thấp so với điểm vào đẹp. "
+                    "Không SELL đuổi ở vùng này."
+                )
+            elif allow_breakout_sell:
                 out["priority_action"] = "CHỜ break hỗ trợ + follow-through rồi mới SELL"
-                out["action_note"] = "Context vẫn SELL nhưng vị trí hiện tại đã gần hỗ trợ, không còn là điểm sell-rally đẹp."
-        else:
-            out["priority_action"] = "CHỜ lên kháng cự để SELL hoặc break rõ rồi mới SELL"
-            out["action_note"] = "Context SELL nhưng giá chưa nằm đúng kháng cự và cũng chưa breakdown rõ."
+                out["action_note"] = (
+                    "Đây mới là pha breakdown hợp lệ: giá đã áp sát hỗ trợ trong context SELL. "
+                    "Chỉ SELL khi break rõ và nến sau giữ được."
+                )
+            else:
+                out["priority_action"] = "CHỜ phản ứng tại hỗ trợ rồi quyết định"
+                out["action_note"] = (
+                    "Đã gần hỗ trợ nhưng chưa đủ điều kiện breakdown sạch."
+                )
 
-    # ===== KHÔNG RÕ CONTEXT =====
+    # =========================
+    # CONTEXT KHÔNG RÕ
+    # =========================
     else:
         if near_sup and not sell_blocked:
             out["priority_action"] = "CHỜ phản ứng tại hỗ trợ rồi quyết định"
@@ -2063,6 +2121,14 @@ def _path_forecast_v1(
         else:
             out["priority_action"] = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
             out["action_note"] = "Thị trường đang ở vùng khó, chưa có lợi thế rõ."
+
+    # ===== Reasoning bổ sung cho action =====
+    if near_sup:
+        reasons.append("gần hỗ trợ")
+    elif near_res:
+        reasons.append("gần kháng cự")
+    else:
+        reasons.append("đang giữa biên độ")
 
     out["reason"] = reasons[:4]
     return out
