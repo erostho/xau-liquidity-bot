@@ -11609,37 +11609,64 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
-
+    
+    scenario = meta.get("scenario_v1") or {}
+    wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
+    kl1 = meta.get("key_levels") or {}
+    
     base_case = str(scenario.get("base_case") or "").strip()
     best_zone = str(scenario.get("best_zone") or "").strip()
-
+    
+    # bỏ prefix "Base case:" cho sạch
     if base_case:
-        base_case = re.sub(r"^\s*Base case:\s*", "", base_case, flags=re.I)
-        push_conclusion(f"- {base_case}")
-
+        try:
+            base_case = re.sub(r"^\s*Base case:\s*", "", base_case, flags=re.I).strip()
+        except Exception:
+            pass
+    
+    kb_lines = []
+    
+    # ===== Priority 1: scenario.base_case =====
+    if base_case:
+        kb_lines.append(f"- {base_case}")
+    
         if best_zone and "vùng" not in base_case.lower():
-            push_conclusion(f"- Vùng ưu tiên: {best_zone}")
-
-        if final_side == "BUY":
-            if wait_lines:
-                for s in wait_lines[:2]:
-                    push_conclusion(f"- Trigger BUY: {s}")
-            else:
-                push_conclusion("- Chờ sweep low giữ được hoặc break high có follow-through")
-
-        elif final_side == "SELL":
-            if wait_lines:
-                for s in wait_lines[:2]:
-                    push_conclusion(f"- Trigger SELL: {s}")
-            else:
-                push_conclusion("- Chờ sweep high giữ được hoặc break low có follow-through")
-
-    else:
-        if wait_lines:
-            for s in wait_lines[:2]:
-                push_conclusion(f"- {s}")
-        else:
-            push_conclusion("- Chờ thị trường rõ hơn")
+            kb_lines.append(f"- Vùng ưu tiên: {best_zone}")
+    
+    # ===== Priority 2: wait_for_v1 =====
+    if not kb_lines and wait_lines:
+        for s in wait_lines[:2]:
+            if s and str(s).strip():
+                kb_lines.append(f"- {s}")
+    
+    # ===== Priority 3: fallback từ PATH FORECAST =====
+    if not kb_lines:
+        final_side_kb = str((sce1 or {}).get("final_side") or final_side or "NONE").upper()
+    
+        if final_side_kb == "BUY":
+            sup_zone = pf1.get("sup_near") or pf1.get("sup_far")
+            brk = _safe_float(kl1.get("M15_RANGE_HIGH"))
+    
+            if sup_zone:
+                kb_lines.append(f"- Chờ vùng {_pf_zone_text(sup_zone)}")
+            if brk is not None:
+                kb_lines.append(f"- Hoặc break {_fmt(brk)}")
+    
+        elif final_side_kb == "SELL":
+            res_zone = pf1.get("res_near") or pf1.get("res_far")
+            brk = _safe_float(kl1.get("M15_RANGE_LOW"))
+    
+            if res_zone:
+                kb_lines.append(f"- Chờ vùng {_pf_zone_text(res_zone)}")
+            if brk is not None:
+                kb_lines.append(f"- Hoặc break {_fmt(brk)}")
+    
+    # ===== Final fallback =====
+    if not kb_lines:
+        kb_lines.append("- Chờ thị trường rõ hơn")
+    
+    for s in kb_lines[:2]:
+        push_conclusion(s)
     
     # PROBE + SETUP CLASS
     for s in _render_probe_block_v1(sig):
