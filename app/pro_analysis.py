@@ -11555,7 +11555,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # ===== PATH FORECAST BUILD (SAFE) =====
     meta = meta or {}
     sig = sig or {}
-    
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
+    rf1 = fvgp.get("range_filter") or {}
+    ema1 = fvgp.get("ema") or {}
+    fvg1 = fvgp.get("fvg") or {}
     struct0 = meta.get("structure") or {}
     kl0 = meta.get("key_levels") or {}
     playbook0 = meta.get("playbook_v2") or {}
@@ -11671,15 +11674,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"- Invalidation: {tg3.get('invalidation_line')}")
     for s in (tg3.get("reason") or [])[:3]:
         push_conclusion(f"- {s}")  
-        
-
-        
-    # SMART ENTRY FILTER
-    fvgp = meta.get("fvg_range_plugin_v1") or {}
-    rf1 = fvgp.get("range_filter") or {}
-    ema1 = fvgp.get("ema") or {}
-    fvg1 = fvgp.get("fvg") or {}
-    
+          
+    # SMART ENTRY FILTER   
     push_conclusion("🧩 SMART ENTRY FILTER:")
     pos = rf1.get("position")
     state = rf1.get("state", "UNKNOWN")
@@ -11745,11 +11741,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
     )
     grade = _score_to_grade_v2(final_score)
-    
     fd1 = meta.get("final_decision_engine_v1") or {}
     me1 = meta.get("master_engine_v1") or {}
     sce1 = meta.get("signal_consistency_v1") or {}
-    
     fd_decision = str(fd1.get("decision") or "").upper()
     master_state = str(me1.get("state") or "").upper()
     final_side = str(sce1.get("final_side") or "NONE").upper()
