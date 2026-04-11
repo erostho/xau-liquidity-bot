@@ -11317,20 +11317,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"- {scenario.get('alt_plan')}")
     else:
         push_conclusion("- Chưa có alt case rõ")
-    push_conclusion("")
-    
-    push_conclusion("🎯 TRIGGER ENGINE V3:")
-    push_conclusion(f"- State: {tg3.get('state', 'WAIT')}")
-    push_conclusion(f"- Side: {tg3.get('entry_side', 'NONE')}")
-    push_conclusion(f"- Quality: {tg3.get('quality', 'LOW')}")
-    if tg3.get("trigger_line"):
-        push_conclusion(f"- Trigger: {tg3.get('trigger_line')}")
-    if tg3.get("close_confirm_line"):
-        push_conclusion(f"- {tg3.get('close_confirm_line')}")
-    if tg3.get("invalidation_line"):
-        push_conclusion(f"- Invalidation: {tg3.get('invalidation_line')}")
-    for s in (tg3.get("reason") or [])[:3]:
-        push_conclusion(f"- {s}")
         
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 TRIGGER QUAN TRỌNG")
@@ -11345,7 +11331,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if not (tg3.get("trigger_line") or tg3.get("close_confirm_line") or tg3.get("invalidation_line")):
         for s in (tg3.get("reason") or [])[:3]:
             push_conclusion(f"- {s}")
-            
+    push_conclusion("🎯 TRIGGER ENGINE V3:")
+    push_conclusion(f"- State: {tg3.get('state', 'WAIT')}")
+    push_conclusion(f"- Side: {tg3.get('entry_side', 'NONE')}")
+    push_conclusion(f"- Quality: {tg3.get('quality', 'LOW')}")
+    if tg3.get("trigger_line"):
+        push_conclusion(f"- Trigger: {tg3.get('trigger_line')}")
+    if tg3.get("close_confirm_line"):
+        push_conclusion(f"- {tg3.get('close_confirm_line')}")
+    if tg3.get("invalidation_line"):
+        push_conclusion(f"- Invalidation: {tg3.get('invalidation_line')}")
+    for s in (tg3.get("reason") or [])[:3]:
+        push_conclusion(f"- {s}")  
+        
     push_conclusion("")
     push_conclusion(f"🎯 Decision: {de1.get('decision', 'STAND ASIDE')}")
     push_conclusion("⏳ Wait for:")
