@@ -11220,7 +11220,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # Gộp action: chỉ giữ một action chính, không lặp
     push_conclusion("⚙️ Hành động:")
     de1 = meta.get("decision_engine_v1") or {}
-    
     pf_action = (pf1.get("priority_action") if 'pf1' in locals() and pf1 else None) or ""
     if ntz.get("active"):
         action_main = "No-trade zone"
@@ -11232,42 +11231,27 @@ def format_signal(sig: Dict[str, Any]) -> str:
         action_main = "Chờ trigger SELL rõ"
     else:
         action_main = "Chưa nên mở lệnh mới"
-    
     push_conclusion(f"- {action_main}")
     if pf1 and pf1.get("action_note"):
         push_conclusion(f"- {pf1.get('action_note')}")
     else:
         push_conclusion(f"- {state_line}")
     push_conclusion("")
-    
-    push_conclusion(f"🎯 Decision: {de1.get('decision', 'STAND ASIDE')}")
-    push_conclusion("⏳ Wait for:")
-    wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
-    if wait_lines:
-        for s in wait_lines[:3]:
-            push_conclusion(f"- {s}")
-    else:
-        push_conclusion("- Chờ trigger rõ hơn")
-    push_conclusion("")
-    
+        
     push_conclusion("🧯 Điểm sai kịch bản:")
     scenario = meta.get("scenario_v1") or {}
     push_conclusion(f"- {scenario.get('invalid_if', 'Mất cấu trúc hiện tại')}")
     push_conclusion("")
     
-    push_conclusion("━━━━━━━━━━━")
-    push_conclusion("🎯 TRIGGER QUAN TRỌNG")
-    push_conclusion("━━━━━━━━━━━")
-    tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
-    if tg3.get("trigger_line"):
-        push_conclusion(f"- {tg3.get('trigger_line')}")
-    if tg3.get("close_confirm_line"):
-        push_conclusion(f"- {tg3.get('close_confirm_line')}")
-    if tg3.get("invalidation_line"):
-        push_conclusion(f"- {tg3.get('invalidation_line')}")
-    if not (tg3.get("trigger_line") or tg3.get("close_confirm_line") or tg3.get("invalidation_line")):
-        for s in (tg3.get("reason") or [])[:3]:
-            push_conclusion(f"- {s}")
+    # kịch bản phụ
+    push_conclusion("🪄 KỊCH BẢN PHỤ:")
+    if scenario.get("alt_case"):
+        push_conclusion(f"- {scenario.get('alt_case')}")
+    elif scenario.get("alt_plan"):
+        push_conclusion(f"- {scenario.get('alt_plan')}")
+    else:
+        push_conclusion("- Chưa có alt case rõ")
+    push_conclusion("")
     
     push_conclusion("🎯 TRIGGER ENGINE V3:")
     push_conclusion(f"- State: {tg3.get('state', 'WAIT')}")
@@ -11281,18 +11265,32 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"- Invalidation: {tg3.get('invalidation_line')}")
     for s in (tg3.get("reason") or [])[:3]:
         push_conclusion(f"- {s}")
+        
+    push_conclusion("━━━━━━━━━━━")
+    push_conclusion("🎯 TRIGGER QUAN TRỌNG")
+    push_conclusion("━━━━━━━━━━━")
+    tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
+    if tg3.get("trigger_line"):
+        push_conclusion(f"- {tg3.get('trigger_line')}")
+    if tg3.get("close_confirm_line"):
+        push_conclusion(f"- {tg3.get('close_confirm_line')}")
+    if tg3.get("invalidation_line"):
+        push_conclusion(f"- {tg3.get('invalidation_line')}")
+    if not (tg3.get("trigger_line") or tg3.get("close_confirm_line") or tg3.get("invalidation_line")):
+        for s in (tg3.get("reason") or [])[:3]:
+            push_conclusion(f"- {s}")
+            
     push_conclusion("")
-    
-    # kịch bản phụ
-    push_conclusion("🪄 KỊCH BẢN PHỤ:")
-    if scenario.get("alt_case"):
-        push_conclusion(f"- {scenario.get('alt_case')}")
-    elif scenario.get("alt_plan"):
-        push_conclusion(f"- {scenario.get('alt_plan')}")
+    push_conclusion(f"🎯 Decision: {de1.get('decision', 'STAND ASIDE')}")
+    push_conclusion("⏳ Wait for:")
+    wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
+    if wait_lines:
+        for s in wait_lines[:3]:
+            push_conclusion(f"- {s}")
     else:
-        push_conclusion("- Chưa có alt case rõ")
+        push_conclusion("- Chờ trigger rõ hơn")
     push_conclusion("")
-    
+        
     # SMART ENTRY FILTER
     fvgp = meta.get("fvg_range_plugin_v1") or {}
     rf1 = fvgp.get("range_filter") or {}
