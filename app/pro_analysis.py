@@ -2079,7 +2079,6 @@ def _path_forecast_v1(
                 "Đúng pha sell-the-rally: giá đang gần kháng cự / đỉnh range. "
                 "Ưu tiên chờ fail break, rejection hoặc nến xác nhận rồi SELL."
             )
-
         # B. Giữa range -> chưa phải breakdown phase
         elif mid_zone:
             out["priority_action"] = "CHỜ lên kháng cự để SELL hoặc break rõ rồi mới SELL"
@@ -2087,7 +2086,6 @@ def _path_forecast_v1(
                 "Context vẫn SELL nhưng giá đang ở giữa biên độ / chưa có điểm vào đẹp. "
                 "Không SELL giữa đường, ưu tiên chờ hồi lên resistance."
             )
-
         # C. Gần hỗ trợ
         elif near_sup:
             if sell_blocked:
@@ -10110,9 +10108,13 @@ def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
             if rp <= 0.20 or rp >= 0.80:
                 setup += 8
                 reasons.append("đang ở vùng biên")
-            elif 0.30 <= rp <= 0.70:
+            elif 0.40 <= rp <= 0.60:
                 setup -= 10
                 reasons.append("đang ở giữa biên độ")
+            elif 0.20 < rp < 0.40:
+                reasons.append("đang ở nửa dưới range")
+            elif 0.60 < rp < 0.80:
+                reasons.append("đang ở nửa trên range")
         except Exception:
             rp = None
 
@@ -10166,7 +10168,7 @@ def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
                 entry -= 25
                 tradeable_now = False
                 trade_reasons.append("BUY đang ở vùng cao")
-            if 0.30 <= rp <= 0.70:
+            if 0.40 <= rp <= 0.60:
                 entry -= 18
                 tradeable_now = False
                 trade_reasons.append("đang ở giữa biên độ")
@@ -10414,9 +10416,13 @@ def format_signal(sig: Dict[str, Any]) -> str:
             if rp <= 0.20 or rp >= 0.80:
                 score += 8
                 reasons.append("đang ở vùng biên")
-            elif 0.30 <= rp <= 0.70:
+            elif 0.40 <= rp <= 0.60:
                 score -= 10
                 reasons.append("đang ở giữa biên độ")
+            elif 0.20 < rp < 0.40:
+                reasons.append("đang ở nửa dưới range")
+            elif 0.60 < rp < 0.80:
+                reasons.append("đang ở nửa trên range")
         except Exception:
             pass
     
@@ -10505,7 +10511,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
         try:
             rp = float(playbook.get("range_pos"))
-            if 0.30 <= rp <= 0.70:
+            if 0.40 <= rp <= 0.60:
                 tradeable = False
                 tradeable_reasons.append("đang ở giữa biên độ")
         except Exception:
@@ -10566,7 +10572,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
         try:
             rp = float(playbook.get("range_pos"))
-            if 0.3 <= rp <= 0.7:
+            if 0.4 <= rp <= 0.6:
                 tradeable = False
                 reasons.append("đang ở giữa biên độ")
         except:
@@ -10599,12 +10605,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
         rp = playbook.get("range_pos")
         try:
             rp = float(rp)
-            if rp <= 0.2 or rp >= 0.8:
+            if rp <= 0.20 or rp >= 0.80:
                 score += 2
                 reasons.append("đang ở vùng biên có lợi")
-            elif 0.3 <= rp <= 0.7:
+            elif 0.40 <= rp <= 0.60:
                 score -= 2
                 reasons.append("đang ở giữa biên độ")
+            elif 0.20 < rp < 0.40:
+                reasons.append("đang ở nửa dưới range")
+            elif 0.60 < rp < 0.80:
+                reasons.append("đang ở nửa trên range")
         except Exception:
             pass
     
@@ -10658,11 +10668,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
             rp = float(range_pos_val)
         except Exception:
             return "chưa xác định rõ vị trí"
+    
         if rp >= 0.80:
-            return "đang sát vùng cao"
+            return "đang sát vùng cao / gần kháng cự"
         if rp <= 0.20:
-            return "đang sát vùng thấp"
-        return "đang ở giữa biên độ"
+            return "đang sát vùng thấp / gần hỗ trợ"
+        if 0.40 <= rp <= 0.60:
+            return "đang ở giữa biên độ"
+        if rp > 0.60:
+            return "đang ở nửa trên range"
+        return "đang ở nửa dưới range"
 
     def no_trade_reason(range_pos_val, ntz_obj: dict, state: str) -> str:
         tags = []
@@ -10682,16 +10697,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
     
         try:
             rp = float(range_pos_val)
-            if 0.30 <= rp <= 0.70 and "mid" not in tags:
+            if 0.40 <= rp <= 0.60 and "mid" not in tags:
                 tags.append("mid")
+            elif 0.60 < rp < 0.80 and "upper" not in tags:
+                tags.append("upper")
+            elif 0.20 < rp < 0.40 and "lower" not in tags:
+                tags.append("lower")
         except Exception:
             pass
-    
-        mapping = {
-            "chop": "thị trường đang nhiễu",
-            "mid": "đang ở giữa biên độ",
-            "confirm": "chưa có xác nhận rõ",
-        }
+            mapping = {
+                "chop": "thị trường đang nhiễu",
+                "mid": "đang ở giữa biên độ",
+                "upper": "đang ở nửa trên range",
+                "lower": "đang ở nửa dưới range",
+                "confirm": "chưa có xác nhận rõ",
+            }
     
         reasons = [mapping[t] for t in tags if t in mapping]
         return "; ".join(reasons) if reasons else "chưa có xác nhận đủ mạnh"
@@ -11019,12 +11039,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if range_pos is not None:
         try:
             rp = float(range_pos)
-            if rp > 0.8:
-                reason = "đang sát vùng cao, không nên BUY đuổi"
-            elif rp < 0.2:
-                reason = "đang sát vùng thấp, không nên SELL đuổi"
-            else:
+            if rp >= 0.80:
+                reason = "đang sát vùng cao / gần kháng cự, không nên BUY đuổi"
+            elif rp <= 0.20:
+                reason = "đang sát vùng thấp / gần hỗ trợ, không nên SELL đuổi"
+            elif 0.40 <= rp <= 0.60:
                 reason = "đang ở giữa biên độ, dễ nhiễu"
+            elif rp > 0.60:
+                reason = "đang ở nửa trên của range, rủi ro BUY đuổi cao"
+            else:
+                reason = "đang ở nửa dưới của range, chưa phải vùng SELL đẹp"
         except Exception:
             reason = ""
     
