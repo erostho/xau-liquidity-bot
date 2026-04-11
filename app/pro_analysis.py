@@ -11566,6 +11566,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     ema0 = meta.get("ema") or {}
     sf0 = meta.get("fvg_range_plugin_v1") or {}
     m15c0 = []
+    de1 = meta.get("decision_engine_v1") or {}
+
     try:
         m15_raw0 = meta.get("_m15_raw") or []
         if m15_raw0:
