@@ -11218,6 +11218,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase.get('meaning', phase.get('label', 'n/a'))}")
     
     # Gộp action: chỉ giữ một action chính, không lặp
+    pf1 = {}
     push_conclusion("⚙️ Hành động:")
     de1 = meta.get("decision_engine_v1") or {}
     pf_action = (pf1.get("priority_action") if 'pf1' in locals() and pf1 else None) or ""
