@@ -11218,7 +11218,72 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase.get('meaning', phase.get('label', 'n/a'))}")
     
     # Gộp action: chỉ giữ một action chính, không lặp
-    pf1 = {}
+    # ===== PATH FORECAST BUILD (SAFE) =====
+    meta = meta or {}
+    sig = sig or {}
+    
+    struct0 = meta.get("structure") or {}
+    kl0 = meta.get("key_levels") or {}
+    playbook0 = meta.get("playbook_v2") or {}
+    liq0 = meta.get("liquidity_map_v1") or {}
+    ema0 = meta.get("ema") or {}
+    sf0 = meta.get("fvg_range_plugin_v1") or {}
+    m15c0 = []
+    try:
+        m15_raw0 = meta.get("_m15_raw") or []
+        if m15_raw0:
+            m15c0 = _safe_candles(m15_raw0)
+    except Exception:
+        m15c0 = []
+    cp0 = None
+    try:
+        cp0 = (
+            _safe_float(sig.get("current_price"))
+            or _safe_float(sig.get("last_price"))
+            or _safe_float(sig.get("price"))
+            or _safe_float(sig.get("entry"))
+        )
+    except Exception:
+        cp0 = None
+    
+    if cp0 is None:
+        try:
+            if m15c0:
+                cp0 = _safe_float(_c_val(m15c0[-1], "close", None))
+        except Exception:
+            cp0 = None
+    pf1 = meta.get("path_forecast_v1") or {}
+    if not pf1 or (pf1.get("res_near") is None and pf1.get("sup_near") is None):
+        try:
+            pf1 = _path_forecast_v1(
+                current_price=cp0,
+                atr15=(atr15 if 'atr15' in locals() else meta.get("atr15")),
+                h1_trend=struct0.get("H1"),
+                h4_trend=struct0.get("H4"),
+                m15_struct_tag=struct0.get("M15"),
+                range_low=kl0.get("M15_RANGE_LOW"),
+                range_high=kl0.get("M15_RANGE_HIGH"),
+                playbook_v2=playbook0,
+                liquidity_map_v1=liq0,
+                ema_pack=ema0,
+                smart_filter_v1=sf0,
+                m15c=m15c0,
+            ) or {}
+        except Exception as e:
+            print(f"[PATH_FORECAST_ERROR] {e}")
+            pf1 = {
+                "down_bias": "KHÔNG RÕ",
+                "up_bias": "KHÔNG RÕ",
+                "sideway_bars": "n/a",
+                "res_near": None,
+                "res_far": None,
+                "sup_near": None,
+                "sup_far": None,
+                "priority_action": "ƯU TIÊN ĐỨNG NGOÀI",
+                "action_note": "",
+                "reason": [],
+            }
+        meta["path_forecast_v1"] = pf1    
     push_conclusion("⚙️ Hành động:")
     de1 = meta.get("decision_engine_v1") or {}
     pf_action = (pf1.get("priority_action") if 'pf1' in locals() and pf1 else None) or ""
@@ -11315,76 +11380,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
     push_conclusion("")
         
-    # ===== PATH FORECAST BUILD (SAFE) =====
-    pf1 = {}
-    meta = meta or {}
-    sig = sig or {}
-    
-    struct0 = meta.get("structure") or {}
-    kl0 = meta.get("key_levels") or {}
-    playbook0 = meta.get("playbook_v2") or {}
-    liq0 = meta.get("liquidity_map_v1") or {}
-    ema0 = meta.get("ema") or {}
-    sf0 = meta.get("fvg_range_plugin_v1") or {}
-    
-    m15c0 = []
-    try:
-        m15_raw0 = meta.get("_m15_raw") or []
-        if m15_raw0:
-            m15c0 = _safe_candles(m15_raw0)
-    except Exception:
-        m15c0 = []
-    
-    cp0 = None
-    try:
-        cp0 = (
-            _safe_float(sig.get("current_price"))
-            or _safe_float(sig.get("last_price"))
-            or _safe_float(sig.get("price"))
-            or _safe_float(sig.get("entry"))
-        )
-    except Exception:
-        cp0 = None
-    
-    if cp0 is None:
-        try:
-            if m15c0:
-                cp0 = _safe_float(_c_val(m15c0[-1], "close", None))
-        except Exception:
-            cp0 = None
-    
-    pf1 = meta.get("path_forecast_v1") or {}
-    if not pf1 or (pf1.get("res_near") is None and pf1.get("sup_near") is None):
-        try:
-            pf1 = _path_forecast_v1(
-                current_price=cp0,
-                atr15=(atr15 if 'atr15' in locals() else meta.get("atr15")),
-                h1_trend=struct0.get("H1"),
-                h4_trend=struct0.get("H4"),
-                m15_struct_tag=struct0.get("M15"),
-                range_low=kl0.get("M15_RANGE_LOW"),
-                range_high=kl0.get("M15_RANGE_HIGH"),
-                playbook_v2=playbook0,
-                liquidity_map_v1=liq0,
-                ema_pack=ema0,
-                smart_filter_v1=sf0,
-                m15c=m15c0,
-            ) or {}
-        except Exception as e:
-            print(f"[PATH_FORECAST_ERROR] {e}")
-            pf1 = {
-                "down_bias": "KHÔNG RÕ",
-                "up_bias": "KHÔNG RÕ",
-                "sideway_bars": "n/a",
-                "res_near": None,
-                "res_far": None,
-                "sup_near": None,
-                "sup_far": None,
-                "priority_action": "ƯU TIÊN ĐỨNG NGOÀI",
-                "action_note": "",
-                "reason": [],
-            }
-        meta["path_forecast_v1"] = pf1
     push_conclusion("🔮 PATH FORECAST:")
     push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
