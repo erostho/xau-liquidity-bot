@@ -10986,9 +10986,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
     else:
         push_info("- Vị trí trong biên độ: n/a")
     
+    h4_struct = struct.get("H4") if struct.get("H4") is not None else struct.get("h4")
+    h1_struct = struct.get("H1") if struct.get("H1") is not None else struct.get("h1")
+    m15_struct = struct.get("M15") if struct.get("M15") is not None else struct.get("m15")
     push_info("✅ Xác nhận:")
-    push_info(f"- Cấu trúc lớn: H4 {struct.get('h4', 'n/a')} | H1 {struct.get('h1', 'n/a')}")
-    push_info(f"- Cấu trúc ngắn hạn: M15 {struct.get('m15', 'n/a')}")
+    push_info(f"- Cấu trúc lớn: H4 {h4_struct if h4_struct is not None else 'n/a'} | H1 {h1_struct if h1_struct is not None else 'n/a'}")
+    push_info(f"- Cấu trúc ngắn hạn: M15 {m15_struct if m15_struct is not None else 'n/a'}")
     
     liq1 = meta.get("liquidity_map_v1") or {}
     push_info("💧 Thanh khoản:")
@@ -11094,11 +11097,33 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_decision(f"- {ctx_verdict}")
     
     ll = meta.get("manual_likelihood_v1") or {}
-    push_decision("📊 Manual likelihood:")
-    push_decision(f"- BUY={ll.get('buy', 0)}/100")
-    push_decision(f"- SELL={ll.get('sell', 0)}/100")
-    push_decision(f"- Trap={ll.get('trap', 0)}/100")
+    buy_like = (
+        ll.get("buy_likelihood")
+        if ll.get("buy_likelihood") is not None
+        else ll.get("buy_score")
+    )
+    if buy_like is None:
+        buy_like = ll.get("buy", 0)
     
+    sell_like = (
+        ll.get("sell_likelihood")
+        if ll.get("sell_likelihood") is not None
+        else ll.get("sell_score")
+    )
+    if sell_like is None:
+        sell_like = ll.get("sell", 0)
+    
+    trap_like = (
+        ll.get("trap_risk")
+        if ll.get("trap_risk") is not None
+        else ll.get("trap_score")
+    )
+    if trap_like is None:
+        trap_like = ll.get("trap", 0)
+    push_decision("📊 Manual likelihood:")
+    push_decision(f"- BUY={buy_like}/100")
+    push_decision(f"- SELL={sell_like}/100")
+    push_decision(f"- Trap={trap_like}/100")
     trap_lines = []
     if pb1 and not pb1.get("enough_for_entry"):
         trap_lines.append("chưa có close confirmation rõ")
