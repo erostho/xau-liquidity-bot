@@ -10759,13 +10759,13 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 tags.append("lower")
         except Exception:
             pass
-            mapping = {
-                "chop": "thị trường đang nhiễu",
-                "mid": "đang ở giữa biên độ",
-                "upper": "đang ở nửa trên range",
-                "lower": "đang ở nửa dưới range",
-                "confirm": "chưa có xác nhận rõ",
-            }
+        mapping = {
+            "chop": "thị trường đang nhiễu",
+            "mid": "đang ở giữa biên độ",
+            "upper": "đang ở nửa trên range",
+            "lower": "đang ở nửa dưới range",
+            "confirm": "chưa có xác nhận rõ",
+        }
     
         reasons = [mapping[t] for t in tags if t in mapping]
         return "; ".join(reasons) if reasons else "chưa có xác nhận đủ mạnh"
