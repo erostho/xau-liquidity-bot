@@ -10296,7 +10296,168 @@ def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
             "confidence_level": "LOW",
             "risk_level": "HIGH",
         }
-        
+
+def _build_trade_logic_v1(
+    final_side: str,
+    htf_bias: str,
+    range_pos,
+    liquidity_done,
+    smart_filter_state: str,
+    smart_filter_tag: str,
+    current_move: str,
+):
+    """
+    Đồng bộ ACTION + FORECAST + EDGE
+    """
+    final_side = str(final_side or "NONE").upper()
+    htf_bias = str(htf_bias or "NONE").upper()
+    smart_filter_state = str(smart_filter_state or "NEUTRAL").upper()
+    smart_filter_tag = str(smart_filter_tag or "N/A").upper()
+    current_move = str(current_move or "CHOP").upper()
+
+    try:
+        rp = float(range_pos)
+    except Exception:
+        rp = None
+
+    reasoning_lines = []
+    action_lines = []
+    edge_lines = []
+    scenario_lines = []
+
+    # ===== HTF trend =====
+    if htf_bias == "BUY":
+        reasoning_lines.append("- HTF giữ trend tăng")
+    elif htf_bias == "SELL":
+        reasoning_lines.append("- HTF giữ trend giảm")
+    else:
+        reasoning_lines.append("- HTF chưa rõ bias")
+
+    # ===== Position =====
+    pos_label = "không rõ vị trí"
+    if rp is not None:
+        if rp >= 0.90:
+            pos_label = "vùng cực cao"
+            reasoning_lines.append("- Giá đang ở vùng cực cao (very late phase)")
+        elif rp >= 0.80:
+            pos_label = "vùng cao"
+            reasoning_lines.append("- Giá đang ở vùng cao (late phase)")
+        elif rp <= 0.10:
+            pos_label = "vùng cực thấp"
+            reasoning_lines.append("- Giá đang ở vùng cực thấp (early phase)")
+        elif rp <= 0.20:
+            pos_label = "vùng thấp"
+            reasoning_lines.append("- Giá đang ở vùng thấp (early phase)")
+        elif 0.40 <= rp <= 0.60:
+            pos_label = "giữa biên độ"
+            reasoning_lines.append("- Giá đang ở giữa biên độ (dễ nhiễu)")
+        elif rp > 0.60:
+            pos_label = "nửa trên range"
+            reasoning_lines.append("- Giá đang ở nửa trên range")
+        else:
+            pos_label = "nửa dưới range"
+            reasoning_lines.append("- Giá đang ở nửa dưới range")
+
+    # ===== Liquidity =====
+    if liquidity_done:
+        reasoning_lines.append("- Thanh khoản đã hoàn tất → đủ điều kiện xét trigger tiếp")
+    else:
+        reasoning_lines.append("- Chưa có liquidity sweep → chưa đủ điều kiện breakout")
+
+    # ===== Current move =====
+    if current_move == "CHOP":
+        reasoning_lines.append("- Market đang nhiễu / thiếu follow-through")
+
+    # ===== ACTION + EDGE + SCENARIO =====
+    if final_side == "BUY" or htf_bias == "BUY":
+        # BUY context
+        if rp is not None and rp >= 0.80:
+            action_lines.append("- KHÔNG BUY ở vùng hiện tại")
+            action_lines.append("- Chỉ xét BUY nếu break hẳn rồi retest giữ được")
+            edge_lines.append("- Trend đúng nhưng vị trí xấu → edge thấp")
+            scenario_lines.append("- Chờ pullback về hỗ trợ rồi BUY")
+            scenario_lines.append("- Hoặc break rõ, retest giữ được rồi mới BUY")
+
+        elif rp is not None and rp <= 0.20:
+            action_lines.append("- Ưu tiên canh BUY vùng hỗ trợ")
+            action_lines.append("- Chờ sweep low / giữ đáy / nến xác nhận rồi BUY")
+            edge_lines.append("- Context BUY + vị trí đẹp → edge tốt hơn")
+            scenario_lines.append("- BUY tại hỗ trợ nếu có confirm")
+            scenario_lines.append("- Nếu thủng hỗ trợ và giữ dưới → hủy BUY")
+
+        elif rp is not None and 0.40 <= rp <= 0.60:
+            action_lines.append("- Chưa nên BUY giữa đường")
+            action_lines.append("- Chờ hồi về hỗ trợ hoặc break rõ rồi mới BUY")
+            edge_lines.append("- Trend đúng nhưng vị trí trung tính → edge yếu")
+            scenario_lines.append("- Chờ về support rồi BUY")
+            scenario_lines.append("- Hoặc breakout rõ rồi mới xét BUY")
+
+        else:
+            action_lines.append("- Chờ setup BUY rõ hơn")
+            action_lines.append("- Ưu tiên pullback đẹp hoặc breakout có follow-through")
+            edge_lines.append("- Có bias BUY nhưng chưa có điểm vào đẹp")
+            scenario_lines.append("- Chờ vùng đẹp hơn để BUY")
+            scenario_lines.append("- Không BUY đuổi khi chưa có confirm")
+
+    elif final_side == "SELL" or htf_bias == "SELL":
+        # SELL context
+        if rp is not None and rp <= 0.20:
+            action_lines.append("- KHÔNG SELL ở vùng hiện tại")
+            action_lines.append("- Chỉ xét SELL nếu break hẳn rồi retest giữ được")
+            edge_lines.append("- Trend đúng nhưng vị trí xấu → edge thấp")
+            scenario_lines.append("- Chờ hồi lên kháng cự rồi SELL")
+            scenario_lines.append("- Hoặc break rõ, retest giữ được rồi mới SELL")
+
+        elif rp is not None and rp >= 0.80:
+            action_lines.append("- Ưu tiên canh SELL vùng kháng cự")
+            action_lines.append("- Chờ sweep high / fail break / nến xác nhận rồi SELL")
+            edge_lines.append("- Context SELL + vị trí đẹp → edge tốt hơn")
+            scenario_lines.append("- SELL tại kháng cự nếu có confirm")
+            scenario_lines.append("- Nếu break kháng cự và giữ trên → hủy SELL")
+
+        elif rp is not None and 0.40 <= rp <= 0.60:
+            action_lines.append("- Chưa nên SELL giữa đường")
+            action_lines.append("- Chờ hồi lên kháng cự hoặc break rõ rồi mới SELL")
+            edge_lines.append("- Trend đúng nhưng vị trí trung tính → edge yếu")
+            scenario_lines.append("- Chờ lên resistance rồi SELL")
+            scenario_lines.append("- Hoặc breakdown rõ rồi mới xét SELL")
+
+        else:
+            action_lines.append("- Chờ setup SELL rõ hơn")
+            action_lines.append("- Ưu tiên sell-rally đẹp hoặc breakdown có follow-through")
+            edge_lines.append("- Có bias SELL nhưng chưa có điểm vào đẹp")
+            scenario_lines.append("- Chờ vùng đẹp hơn để SELL")
+            scenario_lines.append("- Không SELL đuổi khi chưa có confirm")
+
+    else:
+        action_lines.append("- Ưu tiên đứng ngoài")
+        action_lines.append("- Chờ market rõ hướng rồi mới vào")
+        edge_lines.append("- Chưa có bias rõ → chưa có edge")
+        scenario_lines.append("- Chưa có kịch bản rõ")
+        scenario_lines.append("- Đứng ngoài quan sát")
+
+    # ===== Smart filter override =====
+    if "BUY_TOO_HIGH" in smart_filter_tag or (smart_filter_state == "BLOCK" and final_side == "BUY"):
+        action_lines = [
+            "- KHÔNG BUY ở vùng hiện tại",
+            "- Chờ pullback hoặc break rõ rồi retest mới BUY",
+        ]
+        edge_lines = ["- BUY context nhưng đang quá cao → edge thấp"]
+    elif "SELL_TOO_LOW" in smart_filter_tag or (smart_filter_state == "BLOCK" and final_side == "SELL"):
+        action_lines = [
+            "- KHÔNG SELL ở vùng hiện tại",
+            "- Chờ hồi lên hoặc break rõ rồi retest mới SELL",
+        ]
+        edge_lines = ["- SELL context nhưng đang quá thấp → edge thấp"]
+
+    return {
+        "reasoning_lines": reasoning_lines[:4],
+        "action_lines": action_lines[:2],
+        "edge_lines": edge_lines[:2],
+        "scenario_lines": scenario_lines[:2],
+        "pos_label": pos_label,
+    }
+
 def format_signal(sig: Dict[str, Any]) -> str:
     """Telegram formatter V5: dễ đọc hơn, giữ nguyên logic/meta hiện có."""
     def sf(x):
@@ -11368,7 +11529,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_decision(f"- Current move: {sce1.get('current_move', 'CHOP')}")
         push_decision(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_decision(f"- Narrative: {sce1.get('narrative', '')}")
-    
+        
+    logic_v1 = _build_trade_logic_v1(
+        final_side=str((sce1 or {}).get("final_side") or "NONE").upper(),
+        htf_bias=str((playbook_v4 or {}).get("htf_bias") or final_side or "NONE").upper(),
+        range_pos=range_pos,
+        liquidity_done=bool((liq1 or {}).get("done")),
+        smart_filter_state=str((fvgp or {}).get("smart_state") or "NEUTRAL"),
+        smart_filter_tag=str((rf1 or {}).get("tag") or "N/A"),
+        current_move=str((sce1 or {}).get("current_move") or "CHOP"),
+    )
     # =========================
     # BLOCK 3: KẾT LUẬN & HÀNH ĐỘNG
     # =========================
@@ -11446,23 +11616,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
             }
         meta["path_forecast_v1"] = pf1    
     push_conclusion("⚙️ Hành động:")
-    de1 = meta.get("decision_engine_v1") or {}
-    pf_action = (pf1.get("priority_action") if 'pf1' in locals() and pf1 else None) or ""
-    if ntz.get("active"):
-        action_main = "No-trade zone"
-    elif pf_action:
-        action_main = pf_action
-    elif final_side == "BUY":
-        action_main = "Chờ trigger BUY rõ"
-    elif final_side == "SELL":
-        action_main = "Chờ trigger SELL rõ"
-    else:
-        action_main = "Chưa nên mở lệnh mới"
-    push_conclusion(f"- {action_main}")
-    if pf1 and pf1.get("action_note"):
-        push_conclusion(f"- {pf1.get('action_note')}")
-    else:
-        push_conclusion(f"- {state_line}")
+    for a in (logic_v1.get("action_lines") or [])[:2]:
+        push_conclusion(a)
     push_conclusion("")
         
     push_conclusion("🧯 Điểm sai kịch bản:")
@@ -11538,15 +11693,64 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
     push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
     push_conclusion("")
-        
+    
     push_conclusion("🔮 PATH FORECAST:")
     push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
     
-    pf_reasons = [str(x) for x in (pf1.get("reason") or [])[:3] if x]
-    if pf_reasons:
-        push_conclusion(f"- Reasoning: {' | '.join(pf_reasons)}")
+    push_conclusion("- Reasoning:")
+    for r in (logic_v1.get("reasoning_lines") or [])[:3]:
+        push_conclusion(r)
+    
+    #pf_reasons = [str(x) for x in (pf1.get("reason") or [])[:3] if x]
+    #if pf_reasons:
+        #push_conclusion(f"- Reasoning: {' | '.join(pf_reasons)}")
+    # ===== FORECAST REASONING (PRO CHIẾN) =====
+    reason_lines = []
+    # 1. HTF trend
+    try:
+        if htf_bias == "BUY":
+            reason_lines.append("- HTF giữ trend tăng")
+        elif htf_bias == "SELL":
+            reason_lines.append("- HTF giữ trend giảm")
+    except:
+        pass
+    # 2. Position trong range
+    try:
+        rp_val = float(playbook.get("range_pos"))
+        if rp_val >= 0.8:
+            reason_lines.append("- Giá đang ở vùng cao (late phase)")
+        elif rp_val <= 0.2:
+            reason_lines.append("- Giá đang ở vùng thấp (early phase)")
+        elif 0.3 <= rp_val <= 0.7:
+            reason_lines.append("- Giá đang ở giữa biên độ (dễ nhiễu)")
+    except:
+        pass
+    # 3. Liquidity (rất quan trọng)
+    try:
+        liq_done = (meta.get("liquidity") or {}).get("done")
+        if not liq_done:
+            reason_lines.append("- Chưa có liquidity sweep → chưa đủ điều kiện breakout")
+    except:
+        pass
+    # 4. Compression (nếu có)
+    try:
+        pd = meta.get("pump_dump") or {}
+        if pd.get("compression") == "LOW":
+            reason_lines.append("- Không có nén → khó có breakout mạnh")
+    except:
+        pass
+    # 5. Fallback
+    if not reason_lines:
+        reason_lines.append("- Market chưa có tín hiệu rõ")
+    if rp_val >= 0.9:
+        reason_lines.append("- Đang ở vùng cực cao → breakout dễ fake")
+    
+    # 6. Push ra output
+    #push_conclusion("- Reasoning:")
+    #for r in reason_lines[:3]:   # giữ tối đa 3 dòng cho gọn
+        #push_conclusion(r)
     
     push_conclusion("📍 Vùng kháng cự M15:")
     push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
@@ -11563,37 +11767,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
-
-    base_case = str(scenario.get("base_case") or "").strip()
-    best_zone = str(scenario.get("best_zone") or "").strip()
-
-    if base_case:
-        base_case = re.sub(r"^\s*Base case:\s*", "", base_case, flags=re.I)
-        push_conclusion(f"- {base_case}")
-
-        if best_zone and "vùng" not in base_case.lower():
-            push_conclusion(f"- Vùng ưu tiên: {best_zone}")
-
-        if final_side == "BUY":
-            if wait_lines:
-                for s in wait_lines[:2]:
-                    push_conclusion(f"- Trigger BUY: {s}")
-            else:
-                push_conclusion("- Chờ sweep low giữ được hoặc break high có follow-through")
-
-        elif final_side == "SELL":
-            if wait_lines:
-                for s in wait_lines[:2]:
-                    push_conclusion(f"- Trigger SELL: {s}")
-            else:
-                push_conclusion("- Chờ sweep high giữ được hoặc break low có follow-through")
-
-    else:
-        if wait_lines:
-            for s in wait_lines[:2]:
-                push_conclusion(f"- {s}")
-        else:
-            push_conclusion("- Chờ thị trường rõ hơn")
+    for s in (logic_v1.get("scenario_lines") or [])[:2]:
+        push_conclusion(s)
     
     # PROBE + SETUP CLASS
     for s in _render_probe_block_v1(sig):
@@ -11606,11 +11781,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
     )
     grade = _score_to_grade_v2(final_score)
-    
     fd1 = meta.get("final_decision_engine_v1") or {}
     me1 = meta.get("master_engine_v1") or {}
     sce1 = meta.get("signal_consistency_v1") or {}
-    
     fd_decision = str(fd1.get("decision") or "").upper()
     master_state = str(me1.get("state") or "").upper()
     final_side = str(sce1.get("final_side") or "NONE").upper()
@@ -11641,12 +11814,9 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"- Lý do chưa trade: {', '.join(tradeable_reasons)}")
     
     # thêm 1 dòng EDGE
-    edge_line = "Chưa có edge rõ"
-    if grade in ("A", "B", "B-"):
-        edge_line = "Có edge nhưng cần chọn điểm vào kỹ"
-    elif grade == "C":
-        edge_line = "Ý tưởng có thể đúng nhưng rủi ro còn cao"
-    push_conclusion(f"- EDGE: {edge_line}")
+    push_conclusion("- EDGE:")
+    for e in (logic_v1.get("edge_lines") or [])[:2]:
+        push_conclusion(f"  {e}")
     
     if playbook_v4.get("quality"):
         push_conclusion(f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
