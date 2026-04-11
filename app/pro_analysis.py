@@ -10885,25 +10885,20 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # OUTPUT V3 - 3 BLOCK
     # Replace from: head = f"{symbol} NOW ...
     # ====== ADD HELPER ======
-    action_lines = []
-    reason_lines = []
-    info_lines = []
-    conclusion_lines = []
-    def push_action(s=""):
-        add(action_lines, s)
-
-    def push_reason(s=""):
-        add(reason_lines, s)
-
+    lines: List[str] = []
+    info_lines: List[str] = []
+    decision_lines: List[str] = []
+    conclusion_lines: List[str] = []
+    
     def push_info(s=""):
         add(info_lines, s)
-
+    
     def push_decision(s=""):
         add(decision_lines, s)
-
+    
     def push_conclusion(s=""):
         add(conclusion_lines, s)
-
+    
     def _pf_zone_text(z):
         try:
             if not z:
@@ -10913,23 +10908,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
             return f"{_fmt(lo)} – {_fmt(hi)}"
         except Exception:
             return "n/a"
-
-    lines: List[str] = []
-    info_lines: List[str] = []
-    decision_lines: List[str] = []
-    conclusion_lines: List[str] = []
-
+    
     head = f"📌 {symbol} NOW"
     if tf:
         head += f" | {tf}"
     if session:
         head += f" | {session}"
-
+    
     add(lines, head)
     if data_source:
         add(lines, f"📡 Dữ liệu: {data_source}")
-
-    # ===== Giá hiện tại =====
+    add(lines, "")
+    
+    # ===== Giá hiện tại: fallback nhiều lớp =====
     last_px = k.get("M15_LAST")
     if last_px is None:
         last_px = sig.get("last_price")
@@ -10938,18 +10929,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if last_px is None:
         last_px = sig.get("entry")
     price_now = nf(last_px)
-
-    # ===== Range pos =====
-    range_lo = k.get("M15_RANGE_LOW")
-    range_hi = k.get("M15_RANGE_HIGH")
-    range_pos = playbook.get("range_pos")
-    if range_pos is None and range_lo is not None and range_hi is not None and last_px is not None:
-        lo_v = sf(range_lo)
-        hi_v = sf(range_hi)
-        cur_v = sf(last_px)
-        if lo_v is not None and hi_v is not None and cur_v is not None and hi_v > lo_v:
-            range_pos = (cur_v - lo_v) / max(1e-9, hi_v - lo_v)
-
+    
     # ===== Kết luận nhanh =====
     reason = ""
     if range_pos is not None:
@@ -10963,126 +10943,94 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 reason = "đang ở giữa biên độ, dễ nhiễu"
         except Exception:
             reason = ""
-
-    verdict_quick = "Chưa đẹp để vào ngay"
-    reason_text = no_trade_reason(range_pos, ntz, meta.get("market_state_v2"))
-
-    if trade_mode == "FULL":
-        verdict_quick = "Có thể theo kịch bản chính"
-    elif trade_mode == "HALF":
-        verdict_quick = "Có thể canh nhưng chưa nên quá quyết liệt"
-    elif ntz.get("active"):
-        verdict_quick = "Ưu tiên đứng ngoài"
-
-    if trade_mode == "WAIT":
-        verdict_quick = f"{verdict_quick}; {reason_text}"
-
+    
     verdict_full = verdict_quick
     if reason and reason not in verdict_quick:
         verdict_full += f"; {reason}"
-
+    
     trend_ctx = _trend_context_for_now(str(htf_pressure_v4.get("state") or ""), struct, rec)
     state_text_final = _state_text_v7(symbol, trend_ctx, meta.get("market_state_v2"))
-
-    if rec == "CHỜ":
-        if trend_ctx == "BEAR":
-            rec = "CHỜ"
-        elif trend_ctx == "BULL":
-            rec = "CHỜ"
-
-    # =========================================================
+    
+    # =========================
     # BLOCK 1: THÔNG TIN & INDICATOR
-    # =========================================================
+    # =========================
+    
     pb1 = meta.get("pullback_engine_v1") or {}
     if pb1:
-        push_info(f"📌 Pullback: {pb1.get('label', 'CHƯA RÕ')} | {pb1.get('message', '')}")
-        push_info(f"📉 Pullback engine: {pb1.get('label', 'CHƯA RÕ')} | hồi ~{pb1.get('pullback_pct_text', 'n/a')}")
+        push_info(f"📌 Pullback: {pb1.get('label', 'n/a')} | {pb1.get('message', 'n/a')}")
+        push_info(f"📉 Pullback engine: {pb1.get('label', 'n/a')} | hồi ~{pb1.get('pullback_pct_text', 'n/a')}")
         push_info(f"- Đánh giá: {pb1.get('message', 'n/a')}")
-        push_info(f"- Reversal risk: {pb1.get('reversal_risk', 'LOW')}")
+        push_info(f"- Reversal risk: {pb1.get('reversal_risk', 'N/A')}")
         push_info(f"- Enough for entry: {'YES' if pb1.get('enough_for_entry') else 'NO'}")
         push_info(f"- Khung đo hồi: {_fmt(pb1.get('anchor_low'))} – {_fmt(pb1.get('anchor_high'))}")
-        for s in (pb1.get("reason") or [])[:4]:
-            # gom reason thành dòng cũ
-            pass
-        rs_pb = (pb1.get("reason") or [])
-        if rs_pb:
-            push_info(f"- Lý do: {', '.join(str(x) for x in rs_pb[:4])}")
+        rs = pb1.get("reason") or []
+        if rs:
+            push_info(f"- Lý do: {', '.join([str(x) for x in rs[:4]])}")
         push_info("")
-
+    
     push_info(f"💵 Giá hiện tại: {price_now}")
     push_info("📍 Vị trí giá:")
     push_info(f"- Giá hiện tại: {price_now}")
     push_info(f"- Biên độ M15: {_fmt(range_lo)} – {_fmt(range_hi)}")
     if range_pos is not None:
         try:
-            rp = float(range_pos)
-            rp_pct = rp * 100.0 if 0 <= rp <= 1 else rp
-            note = "giữa biên độ"
+            rp_pct = float(range_pos) * 100.0 if float(range_pos) <= 1.0 else float(range_pos)
+            pos_note = "giữa biên độ, dễ nhiễu"
             if rp_pct >= 80:
-                note = "sát vùng cao, không nên BUY đuổi"
+                pos_note = "sát vùng cao, không nên BUY đuổi"
             elif rp_pct <= 20:
-                note = "sát vùng thấp, không nên SELL đuổi"
-            push_info(f"- Vị trí trong biên độ: ~{rp_pct:.0f}% → {note}")
+                pos_note = "sát vùng thấp, không nên SELL đuổi"
+            push_info(f"- Vị trí trong biên độ: ~{rp_pct:.0f}% → {pos_note}")
         except Exception:
-            pass
+            push_info("- Vị trí trong biên độ: n/a")
+    else:
+        push_info("- Vị trí trong biên độ: n/a")
+    
     push_info("✅ Xác nhận:")
-    push_info(f"- Cấu trúc lớn: H4 {struct.get('H4', 'n/a')} | H1 {struct.get('H1', 'n/a')}")
-    push_info(f"- Cấu trúc ngắn hạn: M15 {struct.get('M15', 'n/a')}")
-
+    push_info(f"- Cấu trúc lớn: H4 {struct.get('h4', 'n/a')} | H1 {struct.get('h1', 'n/a')}")
+    push_info(f"- Cấu trúc ngắn hạn: M15 {struct.get('m15', 'n/a')}")
+    
     liq1 = meta.get("liquidity_map_v1") or {}
-    ld1 = meta.get("liquidity_completion_v1") or {}
     push_info("💧 Thanh khoản:")
     push_info(f"- Liquidity trên: {liq1.get('above_strength', 'LOW')}")
     push_info(f"- Liquidity dưới: {liq1.get('below_strength', 'LOW')}")
     push_info(f"- Trạng thái: {liq1.get('state_text', 'Chưa thấy sweep/spring rõ')}")
     push_info(f"- Khả năng quét: {liq1.get('sweep_bias', 'NEUTRAL')}")
-    push_info(f"💧 Liquidity done: {ld1.get('state', 'NO')} | {ld1.get('message', 'Thanh khoản chưa hoàn tất')}")
-
-    gap_lines = extract_gap_lines(ctx_lines, notes) if 'extract_gap_lines' in locals() else []
+    push_info(f"💧 Liquidity done: {'YES' if liq1.get('done') else 'NO'} | {liq1.get('done_text', 'Thanh khoản chưa hoàn tất')}")
+    
+    gap1 = meta.get("gap_info_v1") or {}
     push_info("🕳 GAP:")
-    if gap_lines:
-        for s in gap_lines[:3]:
-            push_info(f"- {s}")
-    else:
-        push_info("- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
-    psych = meta.get("psych_warnings") or meta.get("psychology_warning_v1") or []
-    if psych:
-        push_info("🧠 Cảnh báo tâm lý:")
-        for s in psych[:3]:
-            push_info(f"- {s}")
-            
-    volq = meta.get("volq") or meta.get("vol_quality") or meta.get("volume_quality") or {}
-    candle_pat = meta.get("candle") or meta.get("candle_patterns") or {}
-    div = meta.get("div") or meta.get("divergence") or {}
-
+    push_info(f"- {gap1.get('text', 'Chưa có dấu hiệu GAP / mở cửa bất thường rõ')}")
+    
+    volq = meta.get("volq") or meta.get("vol_quality") or {}
+    candle_pat = meta.get("candle") or {}
+    div = meta.get("div") or {}
+    
     rsi_show = (
         meta.get("rsi14")
         if meta.get("rsi14") is not None
         else (rsi15 if 'rsi15' in locals() else meta.get("rsi"))
     )
-
+    
     push_info("🧪 Chi tiết bổ sung:")
     push_info(f"- Volume: {volq.get('state', 'N/A')} (x{volq.get('ratio', 'n/a')} vs SMA20)")
-
     if candle_pat.get("txt"):
         push_info(f"- Candle: {candle_pat.get('txt')}")
-
     if div.get("txt") and str(div.get("txt")).upper() != "N/A":
         push_info(f"- {div.get('txt')}")
-
     push_info(f"- RSI(14) M15: {rsi_show if rsi_show is not None else 'n/a'}")
     push_info(f"- ATR(14) M15: ~{_fmt(meta.get('atr15') if meta.get('atr15') is not None else (atr15 if 'atr15' in locals() else None))}")
     push_info("- RR ~ 1:2 (mục tiêu)")
     push_info("")
-
+    
     rsi_ctx1 = meta.get("rsi_context_v1") or {}
     push_info("📈 RSI context:")
     push_info(f"- {rsi_ctx1.get('message', 'RSI trung tính')}")
-
+    
     fib1 = meta.get("fib_confluence_v1") or {}
     push_info("📐 Fib confluence:")
     push_info(f"- {'YES' if fib1.get('ok') else 'NO'}")
-
+    
     ema_pack = meta.get("ema") or {}
     if ema_pack:
         push_info("📉 EMA FILTER:")
@@ -11092,7 +11040,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_info(f"- Trend: {ema_pack.get('trend', 'N/A')}")
         push_info(f"- Alignment: {ema_pack.get('alignment', 'NO')}")
         push_info(f"- Vị trí giá vs EMA: {ema_pack.get('zone', 'N/A')}")
-
+    
     pump1 = meta.get("pump_dump_v3") or meta.get("pump_dump_v2") or meta.get("pump_dump_v1") or {}
     push_info("🚀 DỰ ĐOÁN PUMP/DUMP V3:")
     push_info(f"- Stage: {pump1.get('stage', 'NONE')}")
@@ -11100,7 +11048,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_info(f"- Compression: {pump1.get('compression', 'LOW')}")
     push_info(f"- Xác suất: {pump1.get('probability', 'LOW')}")
     push_info(f"- Thời điểm: {pump1.get('timing', 'CHƯA RÕ')}")
-
+    
     reveal1 = meta.get("reveal_engine_v1") or {}
     if reveal1:
         push_info("🧠 REVEAL ENGINE:")
@@ -11109,132 +11057,156 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_info(f"- Quality: {reveal1.get('quality', 'LOW')}")
         if reveal1.get("message"):
             push_info(f"- {reveal1.get('message')}")
-        if reveal1.get("reason"):
-            rs = reveal1.get("reason")
-            if isinstance(rs, list):
-                for s in rs[:2]:
-                    push_info(f"- Lý do: {s}")
-            else:
-                push_info(f"- Lý do: {rs}")
-
-    # =========================================================
+    
+    # =========================
     # BLOCK 2: PHÂN TÍCH & QUYẾT ĐỊNH
-    # =========================================================
+    # =========================
+    
+    # FIX conflict BUY/SELL: ưu tiên bám final_side + bias lớn, không nói 2 giọng
+    sce1 = meta.get("signal_consistency_v1") or {}
+    final_side = str(sce1.get("final_side") or "NONE").upper()
+    market_state = str(meta.get("market_state_v2") or "")
+    htf_bias = str((meta.get("htf_pressure_v4") or {}).get("state") or "").upper()
+    
+    state_line = state_text_final or "Market chưa lộ mặt → ưu tiên chờ"
+    if final_side == "BUY":
+        state_line = f"{symbol} đang hồi trong xu hướng tăng; ưu tiên buy-the-dip, tránh mua đuổi."
+    elif final_side == "SELL":
+        state_line = f"{symbol} đang hồi trong xu hướng giảm; ưu tiên sell-the-rally, tránh bán đuổi."
+    
     push_decision("🌡 Trạng thái:")
-    push_decision(f"- {state_text_final}")
-
+    push_decision(f"- {state_line}")
+    
+    flow_text = "Dòng tiền trung tính"
+    if final_side == "BUY":
+        flow_text = "smart money buying dip"
+    elif final_side == "SELL":
+        flow_text = "smart money selling rally"
     push_decision("💰 Dòng tiền:")
-    flow_note = flow.get("note") or flow.get("state") or "Chưa rõ"
-    push_decision(f"- {flow_note}")
-
-    cv1 = meta.get("context_verdict_v1") or {}
+    push_decision(f"- {flow_text}")
+    
+    ctx_verdict = "CHƯA CÓ CẢNH"
+    if final_side == "BUY":
+        ctx_verdict = "ĐÚNG CẢNH BUY"
+    elif final_side == "SELL":
+        ctx_verdict = "ĐÚNG CẢNH SELL"
     push_decision("🧠 Context verdict:")
-    push_decision(f"- {cv1.get('verdict', 'CHƯA CÓ CẢNH')}")
-
-    ml1 = meta.get("manual_likelihood_v1") or {}
+    push_decision(f"- {ctx_verdict}")
+    
+    ll = meta.get("manual_likelihood_v1") or {}
     push_decision("📊 Manual likelihood:")
-    push_decision(f"- BUY={ml1.get('buy_likelihood', 'n/a')}/100")
-    push_decision(f"- SELL={ml1.get('sell_likelihood', 'n/a')}/100")
-    push_decision(f"- Trap={ml1.get('trap_risk', 'n/a')}/100")
-
-    tw1 = meta.get("trap_warning_v1") or {}
-    if tw1.get("warnings"):
+    push_decision(f"- BUY={ll.get('buy', 0)}/100")
+    push_decision(f"- SELL={ll.get('sell', 0)}/100")
+    push_decision(f"- Trap={ll.get('trap', 0)}/100")
+    
+    trap_lines = []
+    if pb1 and not pb1.get("enough_for_entry"):
+        trap_lines.append("chưa có close confirmation rõ")
+    if range_pos is not None:
+        try:
+            rp = float(range_pos)
+            if final_side == "BUY" and rp >= 0.8:
+                trap_lines.append("BUY vùng cao → dễ mua đuổi")
+            elif final_side == "SELL" and rp <= 0.2:
+                trap_lines.append("SELL vùng thấp → dễ bán đuổi")
+        except Exception:
+            pass
+    if trap_lines:
         push_decision("⚠️ Trap:")
-        for s in tw1.get("warnings", [])[:4]:
+        for s in trap_lines[:3]:
             push_decision(f"- {s}")
-        push_decision("")
-
-    mm1 = meta.get("mm_real_play_v1") or {}
-    if mm1:
-        push_decision("🎯 KỊCH BẢN MM (REAL PLAY):")
-        push_decision(f"- Kịch bản: {mm1.get('headline', 'n/a')}")
-        push_decision(f"- Đường đi: {mm1.get('path', 'NEUTRAL')}")
-        push_decision(f"- Entry chuẩn: {mm1.get('entry_hint', 'Chờ thêm xác nhận')}")
-
+    
+    push_decision("")
     push_decision("===== PRO DESK =====")
-    push_decision(f"🧠 Market state:")
-    push_decision(f"- {meta.get('market_state_v2', 'N/A')} | {narrative.get('headline', narrative.get('summary', 'n/a'))}")
+    push_decision("🧠 Market state:")
+    push_decision(f"- {market_state or 'N/A'}")
+    
+    playbook_v4 = meta.get("playbook_v2") or {}
     push_decision("🧭 Bias:")
-    push_decision(f"- HTF: {flow.get('favored_side', 'NONE')}")
-    push_decision(f"- MTF: {playbook.get('plan', 'WAIT')}")
-
-    if ntz.get("active"):
-        push_decision("🚫 NO TRADE ZONE")
-        for s in (ntz.get("reasons") or [])[:4]:
-            push_decision(f"- {s}")
-
-    cf1 = meta.get("conflict_engine_v1") or {}
-    if cf1.get("active"):
-        push_decision("⚖️ Conflict:")
-        push_decision(f"- {cf1.get('verdict')}")
-        for s in (cf1.get("reasons") or [])[:4]:
-            push_decision(f"- {s}")
-        push_decision("")
-    else:
-        # fallback nếu không có conflict_engine_v1
-        push_decision("⚖️ Conflict:")
-        if ntz.get("active"):
-            push_decision("- HIGH CONFLICT")
-            for s in (ntz.get("reasons") or [])[:3]:
-                push_decision(f"- {s}")
-        else:
-            push_decision("- LOW CONFLICT")
-
+    push_decision(f"- HTF: {playbook_v4.get('htf_bias', final_side or 'WAIT')}")
+    push_decision(f"- MTF: {playbook_v4.get('plan', 'WAIT')}")
+    
+    conflict_lines = []
+    if pb1 and not pb1.get("enough_for_entry"):
+        conflict_lines.append("pullback chưa đủ đẹp")
+    if liq1 and not liq1.get("done"):
+        conflict_lines.append("thanh khoản chưa hoàn tất")
+    if fib1 and not fib1.get("ok"):
+        conflict_lines.append("chưa có fib confluence rõ")
+    
+    conflict_label = "LOW CONFLICT"
+    if len(conflict_lines) >= 3:
+        conflict_label = "HIGH CONFLICT"
+    elif len(conflict_lines) >= 1:
+        conflict_label = "MEDIUM CONFLICT"
+    
+    push_decision("⚖️ Conflict:")
+    push_decision(f"- {conflict_label}")
+    for s in conflict_lines[:3]:
+        push_decision(f"- {s}")
+    
     me1 = meta.get("master_engine_v1") or {}
     if me1:
+        push_decision("")
         push_decision("🧠 MASTER ENGINE:")
-        push_decision(f"- State: {me1.get('state', 'WAIT')}")
+        push_decision(f"- State: {me1.get('state', 'NO_TRADE')}")
         push_decision(f"- Best side: {me1.get('best_side', 'NONE')}")
         push_decision(f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
-        push_decision(f"- Confidence: {me1.get('confidence', 'LOW')}")
+        push_decision(f"- Confidence: {me1.get('confidence', 'HIGH')}")
         if me1.get("reason"):
             push_decision("- Lý do:")
-            for s in me1.get("reason", [])[:4]:
+            for s in (me1.get("reason") or [])[:3]:
                 push_decision(f"  • {s}")
-
-    sce1 = meta.get("signal_consistency_v1") or {}
+    
     if sce1:
         push_decision("🧠 SIGNAL CONSISTENCY:")
         push_decision(f"- Final side: {sce1.get('final_side', 'NONE')}")
         push_decision(f"- Current move: {sce1.get('current_move', 'CHOP')}")
         push_decision(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_decision(f"- Narrative: {sce1.get('narrative', '')}")
-
-    # =========================================================
+    
+    # =========================
     # BLOCK 3: KẾT LUẬN & HÀNH ĐỘNG
-    # =========================================================
+    # =========================
+    
     push_conclusion(f"🧭 Hướng ưu tiên: {rec}")
     push_conclusion(f"📌 Kết luận nhanh: {verdict_full}")
     if phase:
         push_conclusion(f"🪜 Giai đoạn: {phase.get('phase', 'n/a')} | {phase.get('meaning', phase.get('label', 'n/a'))}")
-
-    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
-    pbc_state = str(pbc1.get("state") or "NONE").upper()
-    if pbc1 and pbc_state not in ("NONE", ""):
-        push_conclusion("")
-        push_conclusion("🔁 POST-BREAK CONTINUITY:")
-        push_conclusion(f"- State: {pbc1.get('state')}")
-        if pbc1.get("reference_level") is not None:
-            push_conclusion(f"- Mốc đang theo dõi: {nf(pbc1.get('reference_level'))} ({pbc1.get('reference_type')})")
-        push_conclusion(f"- Vai trò mới của mốc: {pbc1.get('role_shift')}")
-        push_conclusion(f"- Hướng sau break: {pbc1.get('side_after_break')}")
-        push_conclusion(f"- Hành động: {pbc1.get('action')}")
-        if pbc1.get("message"):
-            push_conclusion(f"- {pbc1.get('message')}")
-        if pbc1.get("narrative"):
-            push_conclusion(f"- Câu chuyện tiếp diễn: {pbc1.get('narrative')}")
-        for s in (pbc1.get("reasons") or [])[:3]:
+    
+    # Gộp action: chỉ giữ một action chính, không lặp
+    push_conclusion("⚙️ Hành động:")
+    de1 = meta.get("decision_engine_v1") or {}
+    action_main = "Chưa nên mở lệnh mới"
+    if ntz.get("active"):
+        action_main = "No-trade zone"
+    elif final_side == "BUY":
+        action_main = "Chờ trigger BUY rõ"
+    elif final_side == "SELL":
+        action_main = "Chờ trigger SELL rõ"
+    push_conclusion(f"- {action_main}")
+    push_conclusion(f"- {state_line}")
+    push_conclusion("")
+    
+    push_conclusion(f"🎯 Decision: {de1.get('decision', 'STAND ASIDE')}")
+    push_conclusion("⏳ Wait for:")
+    wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
+    if wait_lines:
+        for s in wait_lines[:3]:
             push_conclusion(f"- {s}")
-
+    else:
+        push_conclusion("- Chờ trigger rõ hơn")
+    push_conclusion("")
+    
     push_conclusion("🧯 Điểm sai kịch bản:")
-    push_conclusion(f"- {scenario.get('invalid_if', 'Nếu break sai hướng và giữ được → bỏ kịch bản hiện tại')}")
-
-    # trigger quan trọng
+    scenario = meta.get("scenario_v1") or {}
+    push_conclusion(f"- {scenario.get('invalid_if', 'Mất cấu trúc hiện tại')}")
+    push_conclusion("")
+    
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 TRIGGER QUAN TRỌNG")
     push_conclusion("━━━━━━━━━━━")
     tg3 = (sig.get("meta") or {}).get("trigger_engine_v3") or {}
-    lr1 = (sig.get("meta") or {}).get("liquidity_reaction_v1") or {}
     if tg3.get("trigger_line"):
         push_conclusion(f"- {tg3.get('trigger_line')}")
     if tg3.get("close_confirm_line"):
@@ -11244,14 +11216,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if not (tg3.get("trigger_line") or tg3.get("close_confirm_line") or tg3.get("invalidation_line")):
         for s in (tg3.get("reason") or [])[:3]:
             push_conclusion(f"- {s}")
-
-    sniper1 = meta.get("entry_sniper_v1") or {}
-    if sniper1:
-        push_conclusion("🎯 ENTRY SNIPER:")
-        push_conclusion(f"- Cây chỉ hướng: {sniper1.get('direction', 'NONE')} ({sniper1.get('strength', '-')})")
-        push_conclusion(f"- Điểm nổ: {sniper1.get('trigger', 'NONE')}")
-        push_conclusion(f"- Trạng thái: {sniper1.get('state', 'KHÔNG CÓ SETUP')}")
-
+    
     push_conclusion("🎯 TRIGGER ENGINE V3:")
     push_conclusion(f"- State: {tg3.get('state', 'WAIT')}")
     push_conclusion(f"- Side: {tg3.get('entry_side', 'NONE')}")
@@ -11262,80 +11227,28 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"- {tg3.get('close_confirm_line')}")
     if tg3.get("invalidation_line"):
         push_conclusion(f"- Invalidation: {tg3.get('invalidation_line')}")
-    if tg3.get("reason"):
-        for s in tg3.get("reason", [])[:3]:
-            push_conclusion(f"- {s}")
-    if lr1:
-        push_conclusion(f"- Liquidity reaction: {lr1.get('reaction_type', 'NONE')} | {lr1.get('state', 'WAIT')}")
-    push_conclusion("")
-
-    # hành động / decision
-    de1 = meta.get("decision_engine_v1") or {}
-    push_conclusion("⚙️ Hành động:")
-    if de1.get("reason"):
-        push_conclusion(f"- {de1.get('reason')}")
-    else:
-        push_conclusion("- Chưa nên mở lệnh mới")
-    if state_text_final:
-        push_conclusion(f"- {state_text_final}")
-    push_conclusion("")
-
-    push_conclusion(f"🎯 Decision: {de1.get('decision', 'STAND ASIDE')}")
-    if ntz.get("active"):
-        push_conclusion("- No-trade zone")
-    push_conclusion("⏳ Wait for:")
-    wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
-    if wait_lines:
-        for s in wait_lines[:3]:
-            push_conclusion(f"- {s}")
-    else:
-        push_conclusion("- Chờ trigger rõ hơn")
+    for s in (tg3.get("reason") or [])[:3]:
+        push_conclusion(f"- {s}")
     push_conclusion("")
     
-    # SMART ENTRY FILTER
-    fvgp = (meta.get("fvg_range_plugin_v1") or {})
-    rf1 = (fvgp.get("range_filter") or {})
-    ema1 = (fvgp.get("ema") or {})
-    fvg1 = (fvgp.get("fvg") or {})
-    push_conclusion("🧩 SMART ENTRY FILTER:")
-    pos = rf1.get("position")
-    state = rf1.get("state", "UNKNOWN")
-    tag = rf1.get("tag", "N/A")
-    if pos is None:
-        push_conclusion(f"- Range: {state} | N/A")
-    else:
-        try:
-            push_conclusion(f"- Range: {state} | {float(pos):.1f}% | {tag}")
-        except Exception:
-            push_conclusion(f"- Range: {state} | {pos} | {tag}")
-    reasons = rf1.get("reason") or []
-    for s in reasons[:2]:
-        push_conclusion(f"- {s}")
-    push_conclusion(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
-    push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
-    push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
-    push_conclusion("")
-    push_conclusion("🪄 KỊCH BẢN PHỤ:")
-    push_conclusion(f"- {scenario.get('alt_case', 'Chờ displacement thật + follow-through')}")
-    push_conclusion("")
-    # PATH FORECAST
     # ===== PATH FORECAST BUILD (SAFE) =====
     meta = meta or {}
     sig = sig or {}
+    
     struct0 = meta.get("structure") or {}
     kl0 = meta.get("key_levels") or {}
     playbook0 = meta.get("playbook_v2") or {}
     liq0 = meta.get("liquidity_map_v1") or {}
     ema0 = meta.get("ema") or {}
     sf0 = meta.get("fvg_range_plugin_v1") or {}
-
+    
     m15c0 = []
     try:
         if 'm15c' in locals() and m15c is not None:
             m15c0 = m15c
     except Exception:
         m15c0 = []
-
+    
     cp0 = None
     try:
         cp0 = (
@@ -11346,14 +11259,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
         )
     except Exception:
         cp0 = None
-
+    
     if cp0 is None:
         try:
             if m15c0:
                 cp0 = _safe_float(_c_val(m15c0[-1], "close", None))
         except Exception:
             cp0 = None
-
+    
     pf1 = meta.get("path_forecast_v1") or {}
     if not pf1 or (pf1.get("res_near") is None and pf1.get("sup_near") is None):
         try:
@@ -11383,14 +11296,16 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 "sup_far": None,
                 "priority_action": "ƯU TIÊN ĐỨNG NGOÀI",
                 "action_note": "",
+                "reason": [],
             }
-
         meta["path_forecast_v1"] = pf1
-    # PATH FORECAST
+    
     push_conclusion("🔮 PATH FORECAST:")
     push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
+    if pf1.get("reason"):
+        push_conclusion(f"- Reasoning: {' | '.join([str(x) for x in (pf1.get('reason') or [])[:3]])}")
     
     push_conclusion("📍 Vùng kháng cự M15:")
     push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
@@ -11403,36 +11318,71 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
     if pf1.get("action_note"):
         push_conclusion(f"- {pf1.get('action_note')}")
-
+    push_conclusion("")
+    
+    # SMART ENTRY FILTER
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
+    rf1 = fvgp.get("range_filter") or {}
+    ema1 = fvgp.get("ema") or {}
+    fvg1 = fvgp.get("fvg") or {}
+    
+    push_conclusion("🧩 SMART ENTRY FILTER:")
+    pos = rf1.get("position")
+    state = rf1.get("state", "UNKNOWN")
+    tag = rf1.get("tag", "N/A")
+    if pos is None:
+        push_conclusion(f"- Range: {state} | N/A")
+    else:
+        try:
+            push_conclusion(f"- Range: {state} | {float(pos):.1f}% | {tag}")
+        except Exception:
+            push_conclusion(f"- Range: {state} | {pos} | {tag}")
+    for s in (rf1.get("reason") or [])[:2]:
+        push_conclusion(f"- {s}")
+    push_conclusion(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
+    push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
+    push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
+    push_conclusion("")
+    
+    # kịch bản chính/phụ
+    push_conclusion("🪄 KỊCH BẢN PHỤ:")
+    if scenario.get("alt_case"):
+        push_conclusion(f"- {scenario.get('alt_case')}")
+    elif scenario.get("alt_plan"):
+        push_conclusion(f"- {scenario.get('alt_plan')}")
+    else:
+        push_conclusion("- Chưa có alt case rõ")
+    push_conclusion("")
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
     if scenario.get("base_case"):
         push_conclusion(f"- {scenario.get('base_case')}")
     else:
-        wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
         if wait_lines:
             for s in wait_lines[:2]:
                 push_conclusion(f"- {s}")
+    
     # PROBE + SETUP CLASS
     for s in _render_probe_block_v1(sig):
         add(conclusion_lines, s)
     for s in _render_setup_class_block_v4(sig, final_score, tradeable_label):
         add(conclusion_lines, s)
-    # ===== SCORE LOGIC COPY FROM OLD OUTPUT =====
+    
+    # SCORE LOGIC COPY FROM OLD OUTPUT
     final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
         sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
     )
     grade = _score_to_grade_v2(final_score)
-
+    
     fd1 = meta.get("final_decision_engine_v1") or {}
     me1 = meta.get("master_engine_v1") or {}
     sce1 = meta.get("signal_consistency_v1") or {}
-
+    
     fd_decision = str(fd1.get("decision") or "").upper()
     master_state = str(me1.get("state") or "").upper()
     final_side = str(sce1.get("final_side") or "NONE").upper()
-
+    
     if (
         fd_decision == "NO_TRADE"
         or master_state == "NO_TRADE"
@@ -11442,59 +11392,61 @@ def format_signal(sig: Dict[str, Any]) -> str:
             final_score = min(float(final_score or 0), 35.0)
         except Exception:
             final_score = 35.0
-
         tradeable_label = "NO"
         grade = _score_to_grade_v2(final_score)
+    
     push_conclusion("")
     push_conclusion(f"📊 Chất lượng cơ hội: {grade} | {symbol}")
     push_conclusion(f"🔥 Final Score: {final_score}/100")
     push_conclusion(f"→ Tradeable: {tradeable_label}")
-
+    
     summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
     push_conclusion(f"- {summary_line}")
-
+    
     if score_reasons:
         push_conclusion(f"- Điểm cộng/trừ chính: {', '.join(score_reasons)}")
     if tradeable_reasons:
         push_conclusion(f"- Lý do chưa trade: {', '.join(tradeable_reasons)}")
-
+    
+    # thêm 1 dòng EDGE
+    edge_line = "Chưa có edge rõ"
+    if grade in ("A", "B", "B-"):
+        edge_line = "Có edge nhưng cần chọn điểm vào kỹ"
+    elif grade == "C":
+        edge_line = "Ý tưởng có thể đúng nhưng rủi ro còn cao"
+    push_conclusion(f"- EDGE: {edge_line}")
+    
     if playbook_v4.get("quality"):
         push_conclusion(f"- Độ sạch theo playbook: {playbook_v4.get('quality')}")
     if ntz.get("active"):
         rs = "; ".join(str(x) for x in (ntz.get("reasons") or []) if x)
         push_conclusion(f"- Cảnh báo: {rs or 'đang là vùng nên đứng ngoài'}")
-
-    if grade == "A":
-        push_conclusion("- Edge mạnh: có thể theo nếu giá vào đúng vùng")
-    elif grade in ("A", "B", "B-"):
-        push_conclusion("- Có edge nhưng cần chọn điểm vào kỹ, không đuổi giá")
-    elif grade == "C":
-        push_conclusion("- Ý tưởng có thể đúng nhưng rủi ro còn cao")
-
-    # final score section
+    
+    # final output
     out = []
     out.extend(lines)
-
+    
     out.append("━━━━━━━━━━━━━━━━━━")
     out.append("🧩 BLOCK 1: THÔNG TIN & INDICATOR")
     out.append("━━━━━━━━━━━━━━━━━━")
     out.extend(info_lines)
-
+    
     out.append("")
     out.append("━━━━━━━━━━━━━━━━━━")
     out.append("🎯 BLOCK 2: PHÂN TÍCH & QUYẾT ĐỊNH")
     out.append("━━━━━━━━━━━━━━━━━━")
     out.extend(decision_lines)
-
+    
     out.append("")
     out.append("━━━━━━━━━━━━━━━━━━")
     out.append("🚀 BLOCK 3: KẾT LUẬN & HÀNH ĐỘNG")
     out.append("━━━━━━━━━━━━━━━━━━")
     out.extend(conclusion_lines)
+    
     final = []
     for line in out:
         if line == "" and (not final or final[-1] == ""):
             continue
         final.append(line)
-
+    
     return "\n".join(final).strip()
