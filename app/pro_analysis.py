@@ -11315,6 +11315,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("")
         
     # ===== PATH FORECAST BUILD (SAFE) =====
+    pf1 = {}
     meta = meta or {}
     sig = sig or {}
     
