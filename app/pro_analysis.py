@@ -1998,53 +1998,71 @@ def _path_forecast_v1(
     dist_res = _dist(out["res_near"])
     dist_sup = _dist(out["sup_near"])
 
-    base_action = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
-
-    if down_score >= up_score + 2:
-        base_action = "ƯU TIÊN canh SELL theo nến M15"
-    elif up_score >= down_score + 2:
-        base_action = "ƯU TIÊN canh BUY theo nến M15"
-    else:
-        if dist_res < dist_sup:
-            base_action = "ƯU TIÊN canh SELL theo nến M15"
-        elif dist_sup < dist_res:
-            base_action = "ƯU TIÊN canh BUY theo nến M15"
-        else:
-            if h1 == "bullish" or ema_trend == "BULLISH":
-                base_action = "ƯU TIÊN canh BUY theo nến M15"
-            elif h1 == "bearish" or ema_trend == "BEARISH":
-                base_action = "ƯU TIÊN canh SELL theo nến M15"
-
-    # ===== override theo vị trí hiện tại + smart filter =====
     near_res = dist_res <= 0.35 * a
     near_sup = dist_sup <= 0.35 * a
+    mid_range = (not near_res and not near_sup)
 
     buy_blocked = ("BUY_TOO_HIGH" in sf_tag) or (sf_state == "BLOCK" and near_res)
     sell_blocked = ("SELL_TOO_LOW" in sf_tag) or (sf_state == "BLOCK" and near_sup)
 
-    if buy_blocked and "BUY" in base_action:
-        if down_score >= up_score:
-            out["priority_action"] = "CHỜ FAIL BREAK tại kháng cự hoặc BREAK hẳn rồi mới BUY"
-            out["action_note"] = "SMART FILTER đang chặn BUY vì giá ở quá cao / sát kháng cự."
+    # Nhận diện context chính để sync ACTION với FORECAST
+    is_buy_context = (up_score >= down_score) and (
+        h1 == "bullish" or h4 == "bullish" or ema_trend == "BULLISH"
+    )
+    is_sell_context = (down_score >= up_score) and (
+        h1 == "bearish" or h4 == "bearish" or ema_trend == "BEARISH"
+    )
+
+    # Mặc định
+    out["priority_action"] = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
+    out["action_note"] = "Chưa có edge đủ rõ."
+
+    # ===== BUY CONTEXT =====
+    if is_buy_context:
+        # Gần hỗ trợ / gần đáy -> đúng kiểu buy the dip
+        if near_sup and not sell_blocked:
+            out["priority_action"] = "ƯU TIÊN canh BUY vùng hỗ trợ M15"
+            out["action_note"] = "Đúng cảnh buy-the-dip: giá đang gần hỗ trợ / đáy range. Chờ sweep low, giữ đáy hoặc nến xác nhận rồi BUY."
+        # Gần kháng cự -> không BUY đuổi, chỉ breakout nếu thật sự rõ
+        elif near_res:
+            if buy_blocked:
+                out["priority_action"] = "KHÔNG BUY đuổi; chờ break hẳn rồi retest để BUY"
+                out["action_note"] = "Giá đang sát kháng cự / quá cao so với điểm vào đẹp. Ưu tiên chờ breakout rõ và giữ trên."
+            else:
+                out["priority_action"] = "CHỜ break kháng cự + follow-through rồi mới BUY"
+                out["action_note"] = "Context vẫn BUY nhưng vị trí hiện tại đã gần kháng cự, không còn là điểm buy-dip đẹp."
+        # Ở giữa range -> chưa đẹp, chờ về support hoặc breakout
         else:
-            out["priority_action"] = "CHỜ BREAK kháng cự rồi retest để BUY"
-            out["action_note"] = "Bias lớn vẫn BUY nhưng SMART FILTER đang chặn BUY tại vị trí hiện tại."
-    elif sell_blocked and "SELL" in base_action:
-        if up_score >= down_score:
-            out["priority_action"] = "CHỜ GIỮ HỖ TRỢ hoặc SWEEP LOW rồi mới BUY"
-            out["action_note"] = "SMART FILTER đang chặn SELL vì giá ở quá thấp / sát hỗ trợ."
+            out["priority_action"] = "CHỜ về hỗ trợ để BUY hoặc break rõ rồi mới BUY"
+            out["action_note"] = "Context BUY nhưng giá chưa nằm đúng support và cũng chưa breakout rõ."
+
+    # ===== SELL CONTEXT =====
+    elif is_sell_context:
+        if near_res and not buy_blocked:
+            out["priority_action"] = "ƯU TIÊN canh SELL vùng kháng cự M15"
+            out["action_note"] = "Đúng cảnh sell-the-rally: giá đang gần kháng cự / đỉnh range. Chờ fail break, rejection hoặc nến xác nhận rồi SELL."
+        elif near_sup:
+            if sell_blocked:
+                out["priority_action"] = "KHÔNG SELL đuổi; chờ break hẳn rồi retest để SELL"
+                out["action_note"] = "Giá đang sát hỗ trợ / quá thấp so với điểm vào đẹp. Ưu tiên chờ breakdown rõ và giữ dưới."
+            else:
+                out["priority_action"] = "CHỜ break hỗ trợ + follow-through rồi mới SELL"
+                out["action_note"] = "Context vẫn SELL nhưng vị trí hiện tại đã gần hỗ trợ, không còn là điểm sell-rally đẹp."
         else:
-            out["priority_action"] = "CHỜ BREAK xuống rõ rồi retest để SELL"
-            out["action_note"] = "Bias lớn vẫn SELL nhưng SMART FILTER đang chặn SELL tại vị trí hiện tại."
-    elif near_res and "BUY" in base_action:
-        out["priority_action"] = "CHỜ BREAK kháng cự rồi retest để BUY"
-        out["action_note"] = "Đang sát kháng cự → không BUY đuổi."
-    elif near_sup and "SELL" in base_action:
-        out["priority_action"] = "CHỜ BREAK hỗ trợ rồi retest để SELL"
-        out["action_note"] = "Đang sát hỗ trợ → không SELL đuổi."
+            out["priority_action"] = "CHỜ lên kháng cự để SELL hoặc break rõ rồi mới SELL"
+            out["action_note"] = "Context SELL nhưng giá chưa nằm đúng kháng cự và cũng chưa breakdown rõ."
+
+    # ===== KHÔNG RÕ CONTEXT =====
     else:
-        out["priority_action"] = base_action
-        out["action_note"] = ""
+        if near_sup and not sell_blocked:
+            out["priority_action"] = "CHỜ phản ứng tại hỗ trợ rồi quyết định"
+            out["action_note"] = "Giá gần hỗ trợ nhưng bias chưa đủ rõ."
+        elif near_res and not buy_blocked:
+            out["priority_action"] = "CHỜ phản ứng tại kháng cự rồi quyết định"
+            out["action_note"] = "Giá gần kháng cự nhưng bias chưa đủ rõ."
+        else:
+            out["priority_action"] = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
+            out["action_note"] = "Thị trường đang ở vùng khó, chưa có lợi thế rõ."
 
     out["reason"] = reasons[:4]
     return out
@@ -11202,15 +11220,24 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # Gộp action: chỉ giữ một action chính, không lặp
     push_conclusion("⚙️ Hành động:")
     de1 = meta.get("decision_engine_v1") or {}
-    action_main = "Chưa nên mở lệnh mới"
+    
+    pf_action = (pf1.get("priority_action") if 'pf1' in locals() and pf1 else None) or ""
     if ntz.get("active"):
         action_main = "No-trade zone"
+    elif pf_action:
+        action_main = pf_action
     elif final_side == "BUY":
         action_main = "Chờ trigger BUY rõ"
     elif final_side == "SELL":
         action_main = "Chờ trigger SELL rõ"
+    else:
+        action_main = "Chưa nên mở lệnh mới"
+    
     push_conclusion(f"- {action_main}")
-    push_conclusion(f"- {state_line}")
+    if pf1 and pf1.get("action_note"):
+        push_conclusion(f"- {pf1.get('action_note')}")
+    else:
+        push_conclusion(f"- {state_line}")
     push_conclusion("")
     
     push_conclusion(f"🎯 Decision: {de1.get('decision', 'STAND ASIDE')}")
@@ -11255,13 +11282,22 @@ def format_signal(sig: Dict[str, Any]) -> str:
     for s in (tg3.get("reason") or [])[:3]:
         push_conclusion(f"- {s}")
     push_conclusion("")
-
+    
+    # kịch bản phụ
+    push_conclusion("🪄 KỊCH BẢN PHỤ:")
+    if scenario.get("alt_case"):
+        push_conclusion(f"- {scenario.get('alt_case')}")
+    elif scenario.get("alt_plan"):
+        push_conclusion(f"- {scenario.get('alt_plan')}")
+    else:
+        push_conclusion("- Chưa có alt case rõ")
+    push_conclusion("")
+    
     # SMART ENTRY FILTER
     fvgp = meta.get("fvg_range_plugin_v1") or {}
     rf1 = fvgp.get("range_filter") or {}
     ema1 = fvgp.get("ema") or {}
     fvg1 = fvgp.get("fvg") or {}
-    
     push_conclusion("🧩 SMART ENTRY FILTER:")
     pos = rf1.get("position")
     state = rf1.get("state", "UNKNOWN")
@@ -11279,17 +11315,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
     push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
     push_conclusion("")
-    
-    # kịch bản chính/phụ
-    push_conclusion("🪄 KỊCH BẢN PHỤ:")
-    if scenario.get("alt_case"):
-        push_conclusion(f"- {scenario.get('alt_case')}")
-    elif scenario.get("alt_plan"):
-        push_conclusion(f"- {scenario.get('alt_plan')}")
-    else:
-        push_conclusion("- Chưa có alt case rõ")
-    push_conclusion("")
-    
+        
     # ===== PATH FORECAST BUILD (SAFE) =====
     meta = meta or {}
     sig = sig or {}
@@ -11358,15 +11384,15 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 "action_note": "",
                 "reason": [],
             }
-    
         meta["path_forecast_v1"] = pf1
-    
     push_conclusion("🔮 PATH FORECAST:")
     push_conclusion(f"- Đi xuống: {pf1.get('down_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Hồi lên: {pf1.get('up_bias', 'KHÔNG RÕ')}")
     push_conclusion(f"- Đi ngang: ~{pf1.get('sideway_bars', 'n/a')} nến M15")
-    if pf1.get("reason"):
-        push_conclusion(f"- Reasoning: {' | '.join([str(x) for x in (pf1.get('reason') or [])[:3]])}")
+    
+    pf_reasons = [str(x) for x in (pf1.get("reason") or [])[:3] if x]
+    if pf_reasons:
+        push_conclusion(f"- Reasoning: {' | '.join(pf_reasons)}")
     
     push_conclusion("📍 Vùng kháng cự M15:")
     push_conclusion(f"- Gần: {_pf_zone_text(pf1.get('res_near'))}")
@@ -11379,17 +11405,21 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
     if pf1.get("action_note"):
         push_conclusion(f"- {pf1.get('action_note')}")
-    push_conclusion("")
-    
+
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
     if scenario.get("base_case"):
         push_conclusion(f"- {scenario.get('base_case')}")
+    elif pf1 and pf1.get("priority_action"):
+        push_conclusion(f"- {pf1.get('priority_action')}")
+        if pf1.get("action_note"):
+            push_conclusion(f"- {pf1.get('action_note')}")
+    elif wait_lines:
+        for s in wait_lines[:2]:
+            push_conclusion(f"- {s}")
     else:
-        if wait_lines:
-            for s in wait_lines[:2]:
-                push_conclusion(f"- {s}")
+        push_conclusion("- Chờ thị trường rõ hơn")
     
     # PROBE + SETUP CLASS
     for s in _render_probe_block_v1(sig):
