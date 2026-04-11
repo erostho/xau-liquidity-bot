@@ -11529,7 +11529,10 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_decision(f"- Current move: {sce1.get('current_move', 'CHOP')}")
         push_decision(f"- Action mode: {sce1.get('action_mode', 'NO_TRADE')}")
         push_decision(f"- Narrative: {sce1.get('narrative', '')}")
-        
+    fvgp = meta.get("fvg_range_plugin_v1") or {}
+    rf1 = fvgp.get("range_filter") or {}
+    ema1 = fvgp.get("ema") or {}
+    fvg1 = fvgp.get("fvg") or {}
     logic_v1 = _build_trade_logic_v1(
         final_side=str((sce1 or {}).get("final_side") or "NONE").upper(),
         htf_bias=str((playbook_v4 or {}).get("htf_bias") or final_side or "NONE").upper(),
@@ -11552,7 +11555,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     # ===== PATH FORECAST BUILD (SAFE) =====
     meta = meta or {}
     sig = sig or {}
-    
     struct0 = meta.get("structure") or {}
     kl0 = meta.get("key_levels") or {}
     playbook0 = meta.get("playbook_v2") or {}
@@ -11672,10 +11674,6 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("")
         
     # SMART ENTRY FILTER
-    fvgp = meta.get("fvg_range_plugin_v1") or {}
-    rf1 = fvgp.get("range_filter") or {}
-    ema1 = fvgp.get("ema") or {}
-    fvg1 = fvgp.get("fvg") or {}
     push_conclusion("🧩 SMART ENTRY FILTER:")
     pos = rf1.get("position")
     state = rf1.get("state", "UNKNOWN")
