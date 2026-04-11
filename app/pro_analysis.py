@@ -11162,27 +11162,44 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_info(f"- Trạng thái: {liq1.get('state_text', 'Chưa thấy sweep/spring rõ')}")
     push_info(f"- Khả năng quét: {liq1.get('sweep_bias', 'NEUTRAL')}")
     push_info(f"💧 Liquidity done: {'YES' if liq1.get('done') else 'NO'} | {liq1.get('done_text', 'Thanh khoản chưa hoàn tất')}")
-    
+
     gap1 = meta.get("gap_info_v1") or {}
     push_info("🕳 GAP:")
     push_info(f"- {gap1.get('text', 'Chưa có dấu hiệu GAP / mở cửa bất thường rõ')}")
-    
     volq = meta.get("volq") or meta.get("vol_quality") or {}
     candle_pat = meta.get("candle") or {}
     div = meta.get("div") or {}
-    
     rsi_show = (
         meta.get("rsi14")
         if meta.get("rsi14") is not None
         else (rsi15 if 'rsi15' in locals() else meta.get("rsi"))
     )
     
+    volq = meta.get("volq") or meta.get("vol_quality") or {}
+    candle_pat = meta.get("candle") or {}
+    div = meta.get("div") or meta.get("divergence") or {}
+    rsi_show = (
+        meta.get("rsi14")
+        if meta.get("rsi14") is not None
+        else (rsi15 if 'rsi15' in locals() else meta.get("rsi"))
+    )
     push_info("🧪 Chi tiết bổ sung:")
-    push_info(f"- Volume: {volq.get('state', 'N/A')} (x{volq.get('ratio', 'n/a')} vs SMA20)")
-    if candle_pat.get("txt"):
-        push_info(f"- Candle: {candle_pat.get('txt')}")
-    if div.get("txt") and str(div.get("txt")).upper() != "N/A":
-        push_info(f"- {div.get('txt')}")
+    vol_state = volq.get("state") or "N/A"
+    vol_ratio = volq.get("ratio")
+    if vol_ratio is None:
+        vol_ratio_txt = "n/a"
+    else:
+        try:
+            vol_ratio_txt = f"{float(vol_ratio):.2f}"
+        except Exception:
+            vol_ratio_txt = str(vol_ratio)
+    push_info(f"- Volume: {vol_state} (x{vol_ratio_txt} vs SMA20)")
+    candle_txt = candle_pat.get("txt")
+    if candle_txt and str(candle_txt).strip().upper() not in ("NONE", "N/A", "NULL"):
+        push_info(f"- Candle: {candle_txt}")
+    div_txt = div.get("txt")
+    if div_txt and str(div_txt).strip().upper() not in ("NONE", "N/A", "NULL"):
+        push_info(f"- RSI divergence: {div_txt}")
     push_info(f"- RSI(14) M15: {rsi_show if rsi_show is not None else 'n/a'}")
     push_info(f"- ATR(14) M15: ~{_fmt(meta.get('atr15') if meta.get('atr15') is not None else (atr15 if 'atr15' in locals() else None))}")
     push_info("- RR ~ 1:2 (mục tiêu)")
