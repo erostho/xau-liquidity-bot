@@ -2041,9 +2041,26 @@ def _path_forecast_v1(
 
         # B. Giữa range -> chưa phải breakout phase
         elif mid_zone:
+            pos_note = "giá chưa ở điểm buy-dip đẹp"
+            try:
+                if rlo is not None and rhi is not None and rhi > rlo:
+                    rp_val = (cp - rlo) / max(1e-9, (rhi - rlo))
+                    if rp_val >= 0.80:
+                        pos_note = "giá đang ở vùng cao / gần kháng cự"
+                    elif rp_val > 0.60:
+                        pos_note = "giá đang ở nửa trên range"
+                    elif 0.40 <= rp_val <= 0.60:
+                        pos_note = "giá đang ở giữa biên độ"
+                    elif rp_val <= 0.20:
+                        pos_note = "giá đang ở vùng thấp / gần hỗ trợ"
+                    else:
+                        pos_note = "giá đang ở nửa dưới range"
+            except Exception:
+                pass
+
             out["priority_action"] = "CHỜ về hỗ trợ để BUY hoặc break rõ rồi mới BUY"
             out["action_note"] = (
-                "Context vẫn BUY nhưng giá đang ở giữa biên độ / chưa có điểm vào đẹp. "
+                f"Context vẫn BUY nhưng {pos_note}, chưa có điểm vào đẹp. "
                 "Không BUY giữa đường, ưu tiên chờ hồi về support."
             )
 
@@ -2081,9 +2098,26 @@ def _path_forecast_v1(
             )
         # B. Giữa range -> chưa phải breakdown phase
         elif mid_zone:
+            pos_note = "giá chưa ở điểm sell-rally đẹp"
+            try:
+                if rlo is not None and rhi is not None and rhi > rlo:
+                    rp_val = (cp - rlo) / max(1e-9, (rhi - rlo))
+                    if rp_val >= 0.80:
+                        pos_note = "giá đang ở vùng cao / gần kháng cự"
+                    elif rp_val > 0.60:
+                        pos_note = "giá đang ở nửa trên range"
+                    elif 0.40 <= rp_val <= 0.60:
+                        pos_note = "giá đang ở giữa biên độ"
+                    elif rp_val <= 0.20:
+                        pos_note = "giá đang ở vùng thấp / gần hỗ trợ"
+                    else:
+                        pos_note = "giá đang ở nửa dưới range"
+            except Exception:
+                pass
+
             out["priority_action"] = "CHỜ lên kháng cự để SELL hoặc break rõ rồi mới SELL"
             out["action_note"] = (
-                "Context vẫn SELL nhưng giá đang ở giữa biên độ / chưa có điểm vào đẹp. "
+                f"Context vẫn SELL nhưng {pos_note}, chưa có điểm vào đẹp. "
                 "Không SELL giữa đường, ưu tiên chờ hồi lên resistance."
             )
         # C. Gần hỗ trợ
@@ -2120,11 +2154,31 @@ def _path_forecast_v1(
             out["priority_action"] = "ƯU TIÊN ĐỨNG NGOÀI / CHỜ NẾN M15 RÕ"
             out["action_note"] = "Thị trường đang ở vùng khó, chưa có lợi thế rõ."
 
-    # ===== Reasoning bổ sung cho action =====
+
+    # ===== Reasoning bổ sung cho forecast =====
+    rp_hint = None
+    try:
+        if rlo is not None and rhi is not None and rhi > rlo:
+            rp_val = (cp - rlo) / max(1e-9, (rhi - rlo))
+            if rp_val >= 0.80:
+                rp_hint = "đang sát vùng cao / gần kháng cự"
+            elif rp_val <= 0.20:
+                rp_hint = "đang sát vùng thấp / gần hỗ trợ"
+            elif 0.40 <= rp_val <= 0.60:
+                rp_hint = "đang giữa biên độ"
+            elif rp_val > 0.60:
+                rp_hint = "đang ở nửa trên range"
+            else:
+                rp_hint = "đang ở nửa dưới range"
+    except Exception:
+        rp_hint = None
+
     if near_sup:
         reasons.append("gần hỗ trợ")
     elif near_res:
         reasons.append("gần kháng cự")
+    elif rp_hint:
+        reasons.append(rp_hint)
     else:
         reasons.append("đang giữa biên độ")
 
@@ -11492,17 +11546,37 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
-    if scenario.get("base_case"):
-        push_conclusion(f"- {scenario.get('base_case')}")
-    elif pf1 and pf1.get("priority_action"):
-        push_conclusion(f"- {pf1.get('priority_action')}")
-        if pf1.get("action_note"):
-            push_conclusion(f"- {pf1.get('action_note')}")
-    elif wait_lines:
-        for s in wait_lines[:2]:
-            push_conclusion(f"- {s}")
+
+    base_case = str(scenario.get("base_case") or "").strip()
+    best_zone = str(scenario.get("best_zone") or "").strip()
+
+    if base_case:
+        base_case = re.sub(r"^\s*Base case:\s*", "", base_case, flags=re.I)
+        push_conclusion(f"- {base_case}")
+
+        if best_zone and "vùng" not in base_case.lower():
+            push_conclusion(f"- Vùng ưu tiên: {best_zone}")
+
+        if final_side == "BUY":
+            if wait_lines:
+                for s in wait_lines[:2]:
+                    push_conclusion(f"- Trigger BUY: {s}")
+            else:
+                push_conclusion("- Chờ sweep low giữ được hoặc break high có follow-through")
+
+        elif final_side == "SELL":
+            if wait_lines:
+                for s in wait_lines[:2]:
+                    push_conclusion(f"- Trigger SELL: {s}")
+            else:
+                push_conclusion("- Chờ sweep high giữ được hoặc break low có follow-through")
+
     else:
-        push_conclusion("- Chờ thị trường rõ hơn")
+        if wait_lines:
+            for s in wait_lines[:2]:
+                push_conclusion(f"- {s}")
+        else:
+            push_conclusion("- Chờ thị trường rõ hơn")
     
     # PROBE + SETUP CLASS
     for s in _render_probe_block_v1(sig):
