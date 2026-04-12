@@ -8276,28 +8276,41 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     session_v4 = {}
     htf_pressure_v4 = {}
     macro_v4 = {}
+    
+
     # ---- Safety / normalize candles
-    if not m15 or not m30 or not h1:
+    m15c = _safe_candles(m15)
+    m30c = _safe_candles(m30)
+    h1c = _safe_candles(h1)
+    h4c = _safe_candles(h4)
+    
+    # define ATR sớm để mọi early-return đều dùng được
+    atr15 = _atr(m15c, 14) or 0.0 if m15c else 0.0
+    
+    if not m15c or not m30c or not h1c:
         base["note_lines"].append("⚠️ Thiếu dữ liệu M15/M30/H1 → không phân tích được.")
         base["short_hint"] = ["- Chưa đủ dữ liệu → CHỜ KÈO"]
-        # Context vẫn phải có để telegram không bị n/a trống
         base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
         _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
         base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
         return base
-
-    # derive major_bearish for gating logic
+    
+    # inject structure trước rồi mới derive major_bearish
+    _inject_meta_structure_and_levels(base, m15c, m30c, h1c, h4c)
+    
     try:
         h1_tag = ((base.get("meta") or {}).get("structure") or {}).get("H1")
         major_bearish = str(h1_tag) in ("LL-LH", "LH–LL", "LH-LL")
     except Exception:
         major_bearish = False
-
-
-    m15c = _safe_candles(m15)
-    m30c = _safe_candles(m30)
-    h1c = _safe_candles(h1)
-    h4c = _safe_candles(h4)
+    
+    if not m15c or not m30c:
+        base["note_lines"].append("⚠️ Không đọc được nến M15/M30 sau khi chuẩn hoá dữ liệu.")
+        base["short_hint"] = ["- Dữ liệu nến lỗi / thiếu → CHỜ KÈO"]
+        base["context_lines"] = ["Thị trường: n/a", "H1: n/a"]
+        _inject_meta_structure_and_levels(base, m15, m30, h1, h4)
+        base = _inject_wait_levels_v1(base, bias_guess, m15c, m30c, h1c, atr15)
+        return base
 
     if not m15c or not m30c:
         base["note_lines"].append("⚠️ Không đọc được nến M15/M30 sau khi chuẩn hoá dữ liệu.")
