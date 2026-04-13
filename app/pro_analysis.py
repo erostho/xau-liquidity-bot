@@ -6396,13 +6396,23 @@ def _attach_vnext_meta(
         meta = base.setdefault("meta", {}) or {}
         k = (meta.get("key_levels") or {}) if isinstance(meta.get("key_levels"), dict) else {}
         struct_for_pbc = (meta.get("structure") or {}) if isinstance(meta.get("structure"), dict) else {}
-        
+
         # fallback current price an toàn
         try:
-            pbc_current_price = float(last_px) if 'last_px' in locals() and last_px is not None else float(current_price)
+            pbc_current_price = None
+        
+            if 'last_px' in locals() and last_px is not None:
+                pbc_current_price = float(last_px)
+        
+            elif current_price is not None:
+                pbc_current_price = float(current_price)
+        
+            elif m15c and len(m15c) > 0:
+                pbc_current_price = float(_c_val(m15c[-1], "close", 0.0) or 0.0)
+        
         except Exception:
             try:
-                pbc_current_price = float(current_price)
+                pbc_current_price = float(_c_val(m15c[-1], "close", 0.0) or 0.0) if m15c else None
             except Exception:
                 pbc_current_price = None
         
