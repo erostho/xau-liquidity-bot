@@ -6424,7 +6424,7 @@ def _attach_vnext_meta(
             if k.get("M15_RANGE_HIGH") is not None
             else k.get("H1_HH")
         )
-        
+        _dbg("PBC checkpoint: before build")
         continuity_v1 = _post_break_continuity_engine_v1(
             current_price=pbc_current_price,
             bos_level=pbc_bos,
@@ -6496,7 +6496,9 @@ def _attach_vnext_meta(
             pass
     except Exception as e:
         base.setdefault("meta", {})["vnext_error"] = str(e)
-
+        _dbg(f"VNEXT EXCEPTION: {e}")
+        logger.exception("VNEXT EXCEPTION STACK")
+    
     _dbg(f"PBC BEFORE RETURN: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
     return base
 
