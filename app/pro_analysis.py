@@ -8395,6 +8395,262 @@ def _inject_wait_levels_v1(base: dict, bias_side: str, m15c, m30c, h1c, atr15: f
 
     except Exception:
         return base
+
+def _post_break_continuity_engine_v1(
+    current_price,
+    bos_level,
+    range_low,
+    range_high,
+    struct,
+    close_confirm_v4,
+    liquidity_map_v1,
+    trigger_engine_v3,
+    absorption_v1=None,
+):
+    """
+    POST-BREAK CONTINUITY V1
+    ------------------------
+    Mục tiêu:
+    - xác định trạng thái quanh mốc break
+    - tránh kiểu "break rồi lại chờ break tiếp"
+    - absorption chỉ dùng để chỉnh action, không tự đảo state chính
+
+    Output keys cố định:
+    {
+        "state": "WAIT_BREAK" | "AT_LEVEL" | "BREAK_HOLD" | "BREAK_FAIL" | "NONE",
+        "side": "BUY" | "SELL" | "NONE",
+        "reference": float | None,
+        "action": str,
+        "reason": list[str],
+    }
+    """
+
+    out = {
+        "state": "NONE",
+        "side": "NONE",
+        "reference": None,
+        "action": "WAIT",
+        "reason": [],
+    }
+
+    # =========================
+    # normalize input
+    # =========================
+    try:
+        cp = float(current_price) if current_price is not None else None
+    except Exception:
+        cp = None
+
+    try:
+        bos = float(bos_level) if bos_level is not None else None
+    except Exception:
+        bos = None
+
+    try:
+        rlo = float(range_low) if range_low is not None else None
+    except Exception:
+        rlo = None
+
+    try:
+        rhi = float(range_high) if range_high is not None else None
+    except Exception:
+        rhi = None
+
+    struct = struct if isinstance(struct, dict) else {}
+    cc4 = close_confirm_v4 if isinstance(close_confirm_v4, dict) else {}
+    liq = liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {}
+    tg3 = trigger_engine_v3 if isinstance(trigger_engine_v3, dict) else {}
+    abs1 = absorption_v1 if isinstance(absorption_v1, dict) else {}
+
+    if cp is None:
+        out["reason"] = ["missing current_price"]
+        return out
+
+    # =========================
+    # side inference
+    # =========================
+    tg_side = str(
+        tg3.get("entry_side")
+        or tg3.get("side")
+        or "NONE"
+    ).upper()
+
+    m15_tag = str(struct.get("M15") or "").upper()
+    h1_tag = str(struct.get("H1") or "").upper()
+
+    inferred_side = "NONE"
+
+    if tg_side in ("BUY", "SELL"):
+        inferred_side = tg_side
+    elif ("HH" in m15_tag or "HL" in m15_tag or "HH" in h1_tag or "HL" in h1_tag):
+        inferred_side = "BUY"
+    elif ("LL" in m15_tag or "LH" in m15_tag or "LL" in h1_tag or "LH" in h1_tag):
+        inferred_side = "SELL"
+    else:
+        sweep_bias = str(liq.get("sweep_bias") or "").upper()
+        if "DOWN → UP" in sweep_bias:
+            inferred_side = "BUY"
+        elif "UP → DOWN" in sweep_bias:
+            inferred_side = "SELL"
+
+    out["side"] = inferred_side
+
+    # =========================
+    # reference level
+    # =========================
+    ref = bos
+
+    if ref is None:
+        if inferred_side == "BUY":
+            ref = rhi
+        elif inferred_side == "SELL":
+            ref = rlo
+        else:
+            candidates = [x for x in [rlo, rhi] if x is not None]
+            if candidates:
+                ref = min(candidates, key=lambda x: abs(cp - x))
+
+    out["reference"] = ref
+
+    if ref is None:
+        out["reason"] = ["missing reference level"]
+        return out
+
+    # =========================
+    # tolerance
+    # =========================
+    span = None
+    if rlo is not None and rhi is not None and rhi > rlo:
+        span = rhi - rlo
+
+    # nếu có range thì dùng theo range, không thì fallback theo giá tuyệt đối
+    tol = max(
+        0.000001,
+        (span * 0.015) if span is not None else abs(ref) * 0.0015
+    )
+
+    above = cp > ref + tol
+    below = cp < ref - tol
+    at_level = not above and not below
+
+    # =========================
+    # confirm / absorption
+    # =========================
+    cc_strength = str(cc4.get("strength") or "NO").upper()
+    cc_hold = str(cc4.get("hold") or "NO").upper()
+
+    abs_active = bool(abs1.get("active"))
+    abs_side = str(abs1.get("side") or "NONE").upper()
+    abs_strength = str(abs1.get("strength") or "LOW").upper()
+    abs_location = str(abs1.get("location") or "UNKNOWN").upper()
+
+    # =========================
+    # no clear side
+    # =========================
+    if inferred_side not in ("BUY", "SELL"):
+        out["state"] = "NONE"
+        out["action"] = "WAIT"
+        out["reason"] = ["không xác định được side"]
+        return out
+
+    # =========================
+    # BUY logic
+    # =========================
+    if inferred_side == "BUY":
+
+        # 1) break hold: đã nằm trên mốc
+        if above:
+            out["state"] = "BREAK_HOLD"
+            out["action"] = "BUY_PULLBACK"
+            out["reason"] = ["đã break lên và đang giữ trên mốc"]
+
+            # absorption ngược chiều -> hạ action
+            if abs_active and abs_side == "SELL" and abs_strength in ("MEDIUM", "HIGH"):
+                out["action"] = "WAIT_RETEST"
+                out["reason"].append("gặp SELL absorption phía trên")
+            elif cc_strength in ("NO", "N/A"):
+                out["action"] = "WAIT_RETEST"
+                out["reason"].append("break có nhưng close confirm chưa rõ")
+
+            return out
+
+        # 2) test level
+        if at_level:
+            out["state"] = "AT_LEVEL"
+            out["action"] = "WAIT_REACTION"
+            out["reason"] = ["đang test lại mốc BUY"]
+
+            if abs_active and abs_side == "SELL":
+                out["reason"].append("đang có hấp thụ ngược chiều")
+            return out
+
+        # 3) fail break: đã mất lại mốc sau khi đáng lẽ phải giữ
+        if below and cc_strength in ("WEAK", "STRONG") and cc_hold == "NO":
+            out["state"] = "BREAK_FAIL"
+            out["action"] = "WAIT"
+            out["reason"] = ["break BUY thất bại, mất lại mốc"]
+            return out
+
+        # 4) chưa break
+        out["state"] = "WAIT_BREAK"
+        out["action"] = "WAIT_BREAK_BUY"
+        out["reason"] = ["chưa break được mốc BUY"]
+
+        if abs_active and abs_side == "SELL" and abs_location == "HIGH":
+            out["action"] = "AVOID_BUY_CHASE"
+            out["reason"].append("có SELL absorption ở đỉnh")
+        return out
+
+    # =========================
+    # SELL logic
+    # =========================
+    if inferred_side == "SELL":
+
+        # 1) break hold: đã nằm dưới mốc
+        if below:
+            out["state"] = "BREAK_HOLD"
+            out["action"] = "SELL_PULLBACK"
+            out["reason"] = ["đã break xuống và đang giữ dưới mốc"]
+
+            # absorption ngược chiều -> hạ action
+            if abs_active and abs_side == "BUY" and abs_strength in ("MEDIUM", "HIGH"):
+                out["action"] = "WAIT_RETEST"
+                out["reason"].append("gặp BUY absorption phía dưới")
+            elif cc_strength in ("NO", "N/A"):
+                out["action"] = "WAIT_RETEST"
+                out["reason"].append("break có nhưng close confirm chưa rõ")
+
+            return out
+
+        # 2) test level
+        if at_level:
+            out["state"] = "AT_LEVEL"
+            out["action"] = "WAIT_REACTION"
+            out["reason"] = ["đang test lại mốc SELL"]
+
+            if abs_active and abs_side == "BUY":
+                out["reason"].append("đang có hấp thụ ngược chiều")
+            return out
+
+        # 3) fail break
+        if above and cc_strength in ("WEAK", "STRONG") and cc_hold == "NO":
+            out["state"] = "BREAK_FAIL"
+            out["action"] = "WAIT"
+            out["reason"] = ["break SELL thất bại, mất lại mốc"]
+            return out
+
+        # 4) chưa break
+        out["state"] = "WAIT_BREAK"
+        out["action"] = "WAIT_BREAK_SELL"
+        out["reason"] = ["chưa break được mốc SELL"]
+
+        if abs_active and abs_side == "BUY" and abs_location == "LOW":
+            out["action"] = "AVOID_SELL_CHASE"
+            out["reason"].append("có BUY absorption ở đáy")
+        return out
+
+    return out
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
