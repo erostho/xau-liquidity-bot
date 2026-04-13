@@ -753,16 +753,6 @@ def _absorption_v1(
     range_low: float | None,
     range_high: float | None,
 ) -> dict:
-    """
-    Detect absorption từ candle + volume:
-    - volume spike nhưng giá không đi xa
-    - wick dài
-    - đóng lại trong range
-
-    Output:
-    BUY absorption / SELL absorption / NONE
-    """
-
     out = {
         "active": False,
         "side": "NONE",
@@ -777,7 +767,6 @@ def _absorption_v1(
 
     try:
         last = m15c[-1]
-        prev = m15c[-2]
 
         o = float(_c_val(last, "open", 0.0) or 0.0)
         h = float(_c_val(last, "high", 0.0) or 0.0)
@@ -785,57 +774,45 @@ def _absorption_v1(
         c = float(_c_val(last, "close", 0.0) or 0.0)
 
         body = abs(c - o)
-        full = max(h - l, 1e-6)
-
         upper_wick = h - max(o, c)
         lower_wick = min(o, c) - l
 
-        # ==== volume ====
         vol_spike = False
         vol_strength = "LOW"
 
         if isinstance(volq, dict):
-            vol_spike = bool(volq.get("spike"))
-            vol_strength = str(volq.get("strength") or "LOW").upper()
+            vol_spike = bool(volq.get("spike")) or str(volq.get("state") or "").upper() == "HIGH"
+            vol_strength = str(volq.get("strength") or volq.get("state") or "LOW").upper()
 
-        # ==== location ====
         location = "MID"
-        if range_low is not None and c <= range_low * 1.002:
+        if range_low is not None and c <= float(range_low) * 1.002:
             location = "LOW"
-        elif range_high is not None and c >= range_high * 0.998:
+        elif range_high is not None and c >= float(range_high) * 0.998:
             location = "HIGH"
 
-        # ==== detect absorption ====
-        # SELL absorption (đạp xuống nhưng bị đỡ)
-        if vol_spike and lower_wick > body * 1.5 and c > l:
-            out["active"] = True
-            out["side"] = "BUY"
-            out["type"] = "SELL_ABSORPTION"
-            out["strength"] = vol_strength
-            out["location"] = location
-            out["reason"] = [
-                "volume spike",
-                "lower wick dài",
-                "giá không đóng sâu"
-            ]
+        if vol_spike and lower_wick > max(body * 1.5, 1e-9) and c > l:
+            out.update({
+                "active": True,
+                "side": "BUY",
+                "type": "SELL_ABSORPTION",
+                "strength": vol_strength,
+                "location": location,
+                "reason": ["volume spike", "lower wick dài", "giá không đóng sâu"],
+            })
             return out
 
-        # BUY absorption (kéo lên nhưng bị chặn)
-        if vol_spike and upper_wick > body * 1.5 and c < h:
-            out["active"] = True
-            out["side"] = "SELL"
-            out["type"] = "BUY_ABSORPTION"
-            out["strength"] = vol_strength
-            out["location"] = location
-            out["reason"] = [
-                "volume spike",
-                "upper wick dài",
-                "giá không giữ đỉnh"
-            ]
+        if vol_spike and upper_wick > max(body * 1.5, 1e-9) and c < h:
+            out.update({
+                "active": True,
+                "side": "SELL",
+                "type": "BUY_ABSORPTION",
+                "strength": vol_strength,
+                "location": location,
+                "reason": ["volume spike", "upper wick dài", "giá không giữ đỉnh"],
+            })
             return out
 
         return out
-
     except Exception:
         return out
         
@@ -6456,6 +6433,9 @@ def _attach_vnext_meta(
         )
         
         meta["post_break_continuity_v1"] = continuity_v1
+        notes.append(
+            f"DEBUG PBC: {continuity_v1.get('state','NONE')} | {continuity_v1.get('side','NONE')} | ref={continuity_v1.get('reference')}"
+        )
         # ===== SIGNAL CONSISTENCY SYNC WITH FINAL DECISION =====
         try:
             sce1 = meta.get("signal_consistency_v1") or {}
@@ -9947,7 +9927,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base.setdefault("meta", {})["manual_likelihood_v1"] = manual_likelihood_v1
     base.setdefault("meta", {})["manual_guidance_v1"] = manual_guidance_v1    
     base.setdefault("meta", {})["liquidity_map_v1"] = liquidity_map_v1    
-
+    base.setdefault("meta", {})["absorption_v1"] = absorption_v1
     # ===== PRO DESK META ATTACH =====
     meta = base.setdefault("meta", {})
 
@@ -11734,7 +11714,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
     push_conclusion("")
     # ===== ACTION: Post-break continuity =====
-    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or {})
+    pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or None)
     if pbc1:
         push_conclusion("")
         push_conclusion("🔁 POST-BREAK CONTINUITY:")
