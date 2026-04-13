@@ -409,7 +409,15 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         return f"❌ REVIEW lỗi cho {symbol}: không lấy được dữ liệu nến ({e})."
 
     try:
-        sig = analyze_pro(symbol, m15, m30, h1, h4)
+        current_price = _cget(m15[-1], "close", None) if m15 else None
+        sig = analyze_pro(
+            symbol,
+            m15,
+            m30,
+            h1,
+            h4,
+            current_price=current_price,
+        )
         if not isinstance(sig, dict):
             sig = {
                 "symbol": symbol, "tf": "M30", "session": "", "recommendation": "CHỜ",
@@ -1804,7 +1812,15 @@ async def telegram_webhook(request: Request):
                 # ✅ Regime alert: independent of stars
                 maybe_send_regime_alert(sym, data["m15"], data["h1"], h2=h2, chat_id=ADMIN_CHAT_ID)
                 session = ""
-                sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+                current_price = _cget(data["m15"][-1], "close", None) if data.get("m15") else None
+                sig = analyze_pro(
+                    sym,
+                    data["m15"],
+                    data["m30"],
+                    data["h1"],
+                    data["h4"],
+                    current_price=current_price,
+                )
                 # --- Guard: analyze_pro phải trả dict, nếu không thì fallback để khỏi crash
                 if not isinstance(sig, dict):
                     sig = {
@@ -1882,7 +1898,15 @@ async def cron_run(token: str = "", request: Request = None):
             try:
                 data = _fetch_triplet(sym, limit=260)
                 session = ""
-                sig = analyze_pro(sym, data["m15"], data["m30"], data["h1"], data["h4"])
+                current_price = _cget(data["m15"][-1], "close", None) if data.get("m15") else None
+                sig = analyze_pro(
+                    sym,
+                    data["m15"],
+                    data["m30"],
+                    data["h1"],
+                    data["h4"],
+                    current_price=current_price,
+                )
                 # --- Guard: analyze_pro phải trả dict, nếu không thì fallback để khỏi crash
                 if not isinstance(sig, dict):
                     sig = {
