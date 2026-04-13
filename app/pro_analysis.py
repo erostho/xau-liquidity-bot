@@ -754,7 +754,7 @@ def _divergence_rsi(candles: List[Candle], period: int = 14, lookback: int = 50)
 
     return {"bear": bear, "bull": bull, "txt": txt}
     
-def _absorption_v1(
+def absorption_v1(
     m15c: list | None,
     volq: dict | None,
     range_low: float | None,
