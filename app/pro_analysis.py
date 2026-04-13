@@ -10207,7 +10207,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["liquidity_reaction_v1"] = liquidity_reaction_v1
 
     # ===== ABSORPTION ENGINE =====
-    absorption_v1 = _absorption_v1(
+    absorption_v1 = absorption_v1(
         m15c=m15c,
         volq=volq if 'volq' in locals() else {},
         range_low=(k or {}).get("M15_RANGE_LOW"),
