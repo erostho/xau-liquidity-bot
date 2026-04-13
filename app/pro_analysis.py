@@ -8653,7 +8653,7 @@ def _post_break_continuity_engine_v1(
 
     return out
     
-def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict]) -> dict:
+def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict], current_price: float | None = None) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
     Patch:
@@ -8711,7 +8711,19 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     m30c = _safe_candles(m30)
     h1c = _safe_candles(h1)
     h4c = _safe_candles(h4)
-    
+    # ===== normalize current_price =====
+    try:
+        if current_price is not None:
+            current_price = float(current_price)
+        elif m15c:
+            current_price = float(_c_val(m15c[-1], "close", 0.0) or 0.0)
+        else:
+            current_price = None
+    except Exception:
+        try:
+            current_price = float(_c_val(m15c[-1], "close", 0.0) or 0.0) if m15c else None
+        except Exception:
+            current_price = None
     # define ATR sớm để mọi early-return đều dùng được
     atr15 = _atr(m15c, 14) or 0.0 if m15c else 0.0
     
