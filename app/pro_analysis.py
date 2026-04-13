@@ -6436,17 +6436,19 @@ def _attach_vnext_meta(
             trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() and isinstance(trigger_engine_v3, dict) else {},
             absorption_v1=absorption_v1,
         )
+
         # ===== DEBUG POST BREAK =====
-        notes.append(f"DEBUG PBC RAW: {continuity_v1}")
+        _dbg("PBC checkpoint: built continuity_v1")
+        _dbg(f"PBC RAW: {continuity_v1}")
         
         base.setdefault("meta", {})["post_break_continuity_v1"] = continuity_v1
-        
-        notes.append(
-            f"DEBUG PBC META: {(base.get('meta') or {}).get('post_break_continuity_v1')}"
-        )
         meta["post_break_continuity_v1"] = continuity_v1
-        notes.append(
-            f"DEBUG PBC: {continuity_v1.get('state','NONE')} | {continuity_v1.get('side','NONE')} | ref={continuity_v1.get('reference')}"
+        
+        _dbg(f"PBC META SAVED: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
+        _dbg(
+            f"PBC STATE: {continuity_v1.get('state','NONE')} | "
+            f"SIDE: {continuity_v1.get('side','NONE')} | "
+            f"REF: {continuity_v1.get('reference')}"
         )
         # ===== SIGNAL CONSISTENCY SYNC WITH FINAL DECISION =====
         try:
@@ -6494,6 +6496,8 @@ def _attach_vnext_meta(
             pass
     except Exception as e:
         base.setdefault("meta", {})["vnext_error"] = str(e)
+
+    _dbg(f"PBC BEFORE RETURN: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
     return base
 
 # =========================
