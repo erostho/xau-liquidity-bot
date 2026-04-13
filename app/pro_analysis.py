@@ -6361,18 +6361,6 @@ def _attach_vnext_meta(
             liquidity_map_v1=liquidity_map_v1 if 'liquidity_map_v1' in locals() and isinstance(liquidity_map_v1, dict) else {},
             trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() and isinstance(trigger_engine_v3, dict) else {},
         )
-        except Exception:
-            continuity_v1 = {
-                "state": "NONE",
-                "reference_level": None,
-                "reference_type": "NONE",
-                "side_after_break": "NONE",
-                "role_shift": "NONE",
-                "message": "",
-                "narrative": "",
-                "action": "WAIT",
-                "reasons": [],
-            }
         
         meta["post_break_continuity_v1"] = continuity_v1
         # ===== SIGNAL CONSISTENCY SYNC WITH FINAL DECISION =====
