@@ -11,7 +11,7 @@ import logging
 logger = logging.getLogger("app.pro_analysis")
 
 # --- Safe candle access helpers (dict / dataclass / object) ---
-def _dbg(msg: str):
+def dbg(msg: str): #_dbg
     try:
         logger.info(msg)
     except Exception:
@@ -6434,7 +6434,7 @@ def _attach_vnext_meta(
             if k.get("M15_RANGE_HIGH") is not None
             else k.get("H1_HH")
         )
-
+        _dbg("PBC checkpoint: before build")
         continuity_v1 = _post_break_continuity_engine_v1(
             current_price=pbc_current_price,
             bos_level=pbc_bos,
@@ -6447,6 +6447,19 @@ def _attach_vnext_meta(
             absorption_v1=absorption_v1,
         )
 
+        # ===== DEBUG POST BREAK =====
+        _dbg("PBC checkpoint: built continuity_v1")
+        _dbg(f"PBC RAW: {continuity_v1}")
+        
+        base.setdefault("meta", {})["post_break_continuity_v1"] = continuity_v1
+        meta["post_break_continuity_v1"] = continuity_v1
+        
+        _dbg(f"PBC META SAVED: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
+        _dbg(
+            f"PBC STATE: {continuity_v1.get('state','NONE')} | "
+            f"SIDE: {continuity_v1.get('side','NONE')} | "
+            f"REF: {continuity_v1.get('reference')}"
+        )
         # ===== SIGNAL CONSISTENCY SYNC WITH FINAL DECISION =====
         try:
             sce1 = meta.get("signal_consistency_v1") or {}
@@ -6493,6 +6506,10 @@ def _attach_vnext_meta(
             pass
     except Exception as e:
         base.setdefault("meta", {})["vnext_error"] = str(e)
+        _dbg(f"VNEXT EXCEPTION: {e}")
+        logger.exception("VNEXT EXCEPTION STACK")
+    
+    _dbg(f"PBC BEFORE RETURN: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
     return base
 
 # =========================
@@ -10190,12 +10207,14 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["liquidity_reaction_v1"] = liquidity_reaction_v1
 
     # ===== ABSORPTION ENGINE =====
-    absorption_v1 = absorption_v1(
+    absorption_v1 = _absorption_v1(
         m15c=m15c,
         volq=volq if 'volq' in locals() else {},
         range_low=(k or {}).get("M15_RANGE_LOW"),
         range_high=(k or {}).get("M15_RANGE_HIGH"),
     )
+
+
     base.setdefault("meta", {})["context_verdict_v1"] = context_verdict_v1
     base.setdefault("meta", {})["rsi_context_v1"] = rsi_context_v1
     base.setdefault("meta", {})["fib_confluence_v1"] = fib_confluence_v1
