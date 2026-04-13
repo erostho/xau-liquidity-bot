@@ -779,10 +779,10 @@ def _absorption_v1(
         last = m15c[-1]
         prev = m15c[-2]
 
-        o = float(last["open"])
-        h = float(last["high"])
-        l = float(last["low"])
-        c = float(last["close"])
+        o = float(_c_val(last, "open", 0.0) or 0.0)
+        h = float(_c_val(last, "high", 0.0) or 0.0)
+        l = float(_c_val(last, "low", 0.0) or 0.0)
+        c = float(_c_val(last, "close", 0.0) or 0.0)
 
         body = abs(c - o)
         full = max(h - l, 1e-6)
