@@ -6318,24 +6318,49 @@ def _attach_vnext_meta(
         )
         meta["final_decision_engine_v1"] = final_decision_engine_v1
         # =========================================================
+        # ===== POST-BREAK CONTINUITY INPUT FIX =====
+        meta = base.setdefault("meta", {}) or {}
+        k = (meta.get("key_levels") or {}) if isinstance(meta.get("key_levels"), dict) else {}
+        struct_for_pbc = (meta.get("structure") or {}) if isinstance(meta.get("structure"), dict) else {}
         
+        # fallback current price an toàn
         try:
-            print("=== PBC DEBUG ===")
-            print("M15_BOS =", (k or {}).get("M15_BOS"))
-            print("M15_RANGE_LOW =", (k or {}).get("M15_RANGE_LOW"))
-            print("M15_RANGE_HIGH =", (k or {}).get("M15_RANGE_HIGH"))
-            print("trigger_engine_v3 =", trigger_engine_v3 if 'trigger_engine_v3' in locals() else None)
-            print("close_confirm_v4 =", close_confirm_v4 if 'close_confirm_v4' in locals() else None)
-            continuity_v1 = _post_break_continuity_engine_v1(
-                current_price=float(last_px if 'last_px' in locals() and last_px is not None else current_price),
-                bos_level=(k or {}).get("M15_BOS"),
-                range_low=(k or {}).get("M15_RANGE_LOW"),
-                range_high=(k or {}).get("M15_RANGE_HIGH"),
-                struct=struct if 'struct' in locals() else {},
-                close_confirm_v4=close_confirm_v4 if 'close_confirm_v4' in locals() else {},
-                liquidity_map_v1=liquidity_map_v1 if 'liquidity_map_v1' in locals() else {},
-                trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() else {},
-            )
+            pbc_current_price = float(last_px) if 'last_px' in locals() and last_px is not None else float(current_price)
+        except Exception:
+            try:
+                pbc_current_price = float(current_price)
+            except Exception:
+                pbc_current_price = None
+        
+        # fallback BOS / range levels
+        pbc_bos = (
+            k.get("M15_BOS")
+            if k.get("M15_BOS") is not None
+            else k.get("M15_BOS_LEVEL")
+        )
+        
+        pbc_range_low = (
+            k.get("M15_RANGE_LOW")
+            if k.get("M15_RANGE_LOW") is not None
+            else k.get("M15_PB_EXTREME")
+        )
+        
+        pbc_range_high = (
+            k.get("M15_RANGE_HIGH")
+            if k.get("M15_RANGE_HIGH") is not None
+            else k.get("H1_HH")
+        )
+        
+        continuity_v1 = _post_break_continuity_engine_v1(
+            current_price=pbc_current_price,
+            bos_level=pbc_bos,
+            range_low=pbc_range_low,
+            range_high=pbc_range_high,
+            struct=struct_for_pbc,
+            close_confirm_v4=close_confirm_v4 if 'close_confirm_v4' in locals() and isinstance(close_confirm_v4, dict) else {},
+            liquidity_map_v1=liquidity_map_v1 if 'liquidity_map_v1' in locals() and isinstance(liquidity_map_v1, dict) else {},
+            trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() and isinstance(trigger_engine_v3, dict) else {},
+        )
         except Exception:
             continuity_v1 = {
                 "state": "NONE",
@@ -7983,7 +8008,7 @@ def _f(v):
     except Exception:
         return str(v)
 def _post_break_continuity_engine_v1(
-    current_price: float,
+    current_price: float | None,
     bos_level: float | None,
     range_low: float | None,
     range_high: float | None,
@@ -7993,118 +8018,211 @@ def _post_break_continuity_engine_v1(
     trigger_engine_v3: dict | None,
 ) -> dict:
     """
-    Theo dõi câu chuyện sau khi market break một mốc quan trọng.
-    Ý tưởng:
-    - Nếu mốc BOS/trigger cũ đã bị break -> đừng quên nó
-    - Kiểm tra market đang ở pha:
-        1) PRE_BREAK
-        2) POST_BREAK_HOLD
-        3) POST_BREAK_FAIL
-        4) POST_BREAK_CHOP
-    """
+    Đọc trạng thái sau break:
+    - PRE_BREAK
+    - AT_LEVEL
+    - POST_BREAK_HOLD
+    - POST_BREAK_FAIL
+    - POST_BREAK_CHOP
 
+    Không có persistence thật, nhưng phải suy luận snapshot hiện tại tốt hơn,
+    tránh rơi về NONE vô nghĩa.
+    """
     out = {
         "state": "NONE",
         "reference_level": None,
-        "reference_type": "NONE",
+        "role_shift": "NONE",
         "side_after_break": "NONE",
-        "role_shift": "NONE",   # RES_TO_SUP / SUP_TO_RES / NONE
-        "message": "",
-        "narrative": "",
         "action": "WAIT",
-        "reasons": [],
+        "reason": [],
     }
 
-    px = float(current_price or 0.0)
-    bos = float(bos_level) if bos_level is not None else None
-    lo = float(range_low) if range_low is not None else None
-    hi = float(range_high) if range_high is not None else None
+    # ===== normalize input =====
+    try:
+        cp = float(current_price) if current_price is not None else None
+    except Exception:
+        cp = None
 
-    struct = struct or {}
-    cc = close_confirm_v4 or {}
-    liq = liquidity_map_v1 or {}
-    tg3 = trigger_engine_v3 or {}
+    try:
+        bos = float(bos_level) if bos_level is not None else None
+    except Exception:
+        bos = None
+
+    try:
+        rlo = float(range_low) if range_low is not None else None
+    except Exception:
+        rlo = None
+
+    try:
+        rhi = float(range_high) if range_high is not None else None
+    except Exception:
+        rhi = None
+
+    struct = struct if isinstance(struct, dict) else {}
+    cc4 = close_confirm_v4 if isinstance(close_confirm_v4, dict) else {}
+    liq = liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {}
+    tg3 = trigger_engine_v3 if isinstance(trigger_engine_v3, dict) else {}
+
+    if cp is None:
+        out["reason"] = ["missing current_price"]
+        return out
 
     h1 = str(struct.get("H1") or "").upper()
     m15 = str(struct.get("M15") or "").upper()
 
-    # ưu tiên BOS level làm mốc continuity
-    ref = bos
-    ref_type = "BOS" if bos is not None else "NONE"
+    # trigger side: FIX đọc entry_side trước
+    tg_side = str(
+        tg3.get("entry_side")
+        or tg3.get("side")
+        or "NONE"
+    ).upper()
 
-    # fallback nếu chưa có BOS thì dùng range biên gần nhất
-    if ref is None:
-        if hi is not None and px >= ((lo + hi) / 2 if lo is not None else hi):
-            ref = hi
-            ref_type = "RANGE_HIGH"
-        elif lo is not None:
-            ref = lo
-            ref_type = "RANGE_LOW"
+    cc_strength = str(cc4.get("strength") or "NO").upper()
+    cc_hold = str(cc4.get("hold") or "NO").upper()
+    sweep_bias = str(liq.get("sweep_bias") or "").upper()
 
-    if ref is None:
-        out["message"] = "Không có mốc continuity rõ"
-        return out
+    # ===== suy ra hướng ưu tiên =====
+    inferred_side = "NONE"
+
+    if tg_side in ("BUY", "SELL"):
+        inferred_side = tg_side
+    elif "HH" in m15 or "HL" in m15 or "HH" in h1 or "HL" in h1:
+        inferred_side = "BUY"
+    elif "LH" in m15 or "LL" in m15 or "LH" in h1 or "LL" in h1:
+        inferred_side = "SELL"
+    elif "DOWN → UP" in sweep_bias:
+        inferred_side = "BUY"
+    elif "UP → DOWN" in sweep_bias:
+        inferred_side = "SELL"
+
+    # ===== chọn mốc reference =====
+    ref = None
+
+    if bos is not None:
+        ref = bos
+    else:
+        # fallback theo hướng
+        if inferred_side == "BUY":
+            ref = rhi if rhi is not None else bos
+        elif inferred_side == "SELL":
+            ref = rlo if rlo is not None else bos
+        else:
+            # nếu chưa rõ hướng thì chọn mốc gần giá nhất
+            cands = [x for x in [rlo, rhi] if x is not None]
+            if cands:
+                ref = min(cands, key=lambda x: abs(cp - x))
 
     out["reference_level"] = ref
-    out["reference_type"] = ref_type
+    out["side_after_break"] = inferred_side
 
-    hold = str(cc.get("hold") or "").upper()
-    strength = str(cc.get("strength") or "").upper()
-    tg_side = str((tg3 or {}).get("side") or "NONE").upper()
+    if ref is None:
+        out["reason"] = ["missing reference level"]
+        return out
 
-    # ===== Logic chính =====
-    # 1) Nếu giá đang nằm trên mốc cũ
-    if px > ref:
-        # nếu cấu trúc ngắn hạn đang bullish / chuyển sang HH-HL
-        if "HH" in m15 or "HL" in m15:
+    # ===== tolerance =====
+    span = None
+    if rlo is not None and rhi is not None and rhi > rlo:
+        span = rhi - rlo
+
+    tol = max(0.000001, (span * 0.015) if span is not None else abs(ref) * 0.0015)
+
+    above_ref = cp > ref + tol
+    below_ref = cp < ref - tol
+    at_ref = not above_ref and not below_ref
+
+    # ===== state machine =====
+    if inferred_side == "BUY":
+        # break lên rồi giữ trên
+        if above_ref and cc_strength in ("WEAK", "STRONG") and cc_hold == "YES":
             out["state"] = "POST_BREAK_HOLD"
-            out["side_after_break"] = "BUY"
-            out["role_shift"] = "RES_TO_SUP"
-            out["action"] = "WAIT_RETEST_HOLD"
-            out["reasons"].append("Giá đang đứng trên mốc cũ")
-            out["reasons"].append("M15 đang giữ thiên hướng bullish")
-            if hold == "YES":
-                out["reasons"].append("Đã có dấu hiệu giữ mốc")
-            out["message"] = f"Mốc {ref:.2f} đã bị break lên; giờ phải xem retest giữ được hay không"
-            out["narrative"] = "Break cũ đang có xu hướng chuyển sang hỗ trợ; ưu tiên chờ retest giữ được để xét BUY"
-        else:
-            out["state"] = "POST_BREAK_CHOP"
-            out["side_after_break"] = "NONE"
-            out["role_shift"] = "RES_TO_SUP"
-            out["action"] = "WAIT"
-            out["reasons"].append("Giá ở trên mốc cũ nhưng chưa có follow-through rõ")
-            out["message"] = f"Giá đã vượt {ref:.2f} nhưng chưa xác nhận giữ đẹp"
-            out["narrative"] = "Đã break lên nhưng chưa rõ là break thật hay chỉ đứng lình xình trên vùng"
+            out["role_shift"] = "OLD_RESISTANCE_TO_SUPPORT"
+            out["action"] = "BUY_PULLBACK"
+            out["reason"] = ["đã break lên và đang giữ trên mốc"]
+            return out
 
-    # 2) Nếu giá đang nằm dưới mốc cũ
-    elif px < ref:
-        # nếu trước đó có câu chuyện break lên, giờ fail lại xuống dưới
-        if tg_side == "SELL" or "LL" in m15 or "LH" in m15:
+        # đang đúng tại mốc
+        if at_ref:
+            out["state"] = "AT_LEVEL"
+            out["role_shift"] = "TESTING_OLD_RESISTANCE"
+            out["action"] = "WAIT_REACTION"
+            out["reason"] = ["đang test lại mốc break BUY"]
+            return out
+
+        # fail break
+        if below_ref and cc_strength in ("NO", "WEAK"):
             out["state"] = "POST_BREAK_FAIL"
-            out["side_after_break"] = "SELL"
-            out["role_shift"] = "SUP_TO_RES"
-            out["action"] = "FADE_FAIL_BREAK"
-            out["reasons"].append("Giá đã mất lại mốc cũ")
-            out["reasons"].append("Cấu trúc ngắn hạn nghiêng xuống")
-            out["message"] = f"Cú break qua {ref:.2f} có dấu hiệu fail; ưu tiên xem đây là false break"
-            out["narrative"] = "Mốc cũ không giữ được; breakout có thể là bẫy, nghiêng sang SELL nếu có xác nhận tiếp"
-        else:
-            out["state"] = "PRE_BREAK_OR_REJECT"
-            out["side_after_break"] = "NONE"
-            out["role_shift"] = "NONE"
+            out["role_shift"] = "FAILED_BREAKOUT"
             out["action"] = "WAIT"
-            out["reasons"].append("Giá còn ở dưới mốc continuity")
-            out["message"] = f"Giá vẫn chưa giữ được trên {ref:.2f}"
-            out["narrative"] = "Mốc cũ vẫn chưa bị chinh phục rõ; tiếp tục quan sát"
+            out["reason"] = ["đã mất lại mốc break BUY"]
+            return out
 
-    else:
+        # chưa break
+        out["state"] = "PRE_BREAK"
+        out["role_shift"] = "RESISTANCE"
+        out["action"] = "WAIT_BREAK_BUY"
+        out["reason"] = ["chưa break được mốc BUY"]
+        return out
+
+    elif inferred_side == "SELL":
+        # break xuống rồi giữ dưới
+        if below_ref and cc_strength in ("WEAK", "STRONG") and cc_hold == "YES":
+            out["state"] = "POST_BREAK_HOLD"
+            out["role_shift"] = "OLD_SUPPORT_TO_RESISTANCE"
+            out["action"] = "SELL_PULLBACK"
+            out["reason"] = ["đã break xuống và đang giữ dưới mốc"]
+            return out
+
+        # đang đúng tại mốc
+        if at_ref:
+            out["state"] = "AT_LEVEL"
+            out["role_shift"] = "TESTING_OLD_SUPPORT"
+            out["action"] = "WAIT_REACTION"
+            out["reason"] = ["đang test lại mốc break SELL"]
+            return out
+
+        # fail break
+        if above_ref and cc_strength in ("NO", "WEAK"):
+            out["state"] = "POST_BREAK_FAIL"
+            out["role_shift"] = "FAILED_BREAKDOWN"
+            out["action"] = "WAIT"
+            out["reason"] = ["đã mất lại mốc break SELL"]
+            return out
+
+        # chưa break
+        out["state"] = "PRE_BREAK"
+        out["role_shift"] = "SUPPORT"
+        out["action"] = "WAIT_BREAK_SELL"
+        out["reason"] = ["chưa break được mốc SELL"]
+        return out
+
+    # ===== side chưa rõ =====
+    if at_ref:
         out["state"] = "AT_LEVEL"
-        out["side_after_break"] = "NONE"
-        out["role_shift"] = "NONE"
-        out["action"] = "WATCH_REACTION"
-        out["message"] = f"Giá đang đúng tại mốc {ref:.2f}"
-        out["narrative"] = "Market đang phản ứng ngay tại mốc continuity"
+        out["role_shift"] = "TESTING_LEVEL"
+        out["action"] = "WAIT_REACTION"
+        out["reason"] = ["đang phản ứng ngay tại mốc gần nhất"]
+        return out
 
+    if cc_strength in ("WEAK", "STRONG"):
+        if above_ref:
+            out["state"] = "POST_BREAK_HOLD"
+            out["role_shift"] = "LEVEL_FLIPPED_TO_SUPPORT"
+            out["side_after_break"] = "BUY"
+            out["action"] = "WAIT_PULLBACK_BUY"
+            out["reason"] = ["giá đang giữ trên mốc với close confirm"]
+            return out
+        if below_ref:
+            out["state"] = "POST_BREAK_HOLD"
+            out["role_shift"] = "LEVEL_FLIPPED_TO_RESISTANCE"
+            out["side_after_break"] = "SELL"
+            out["action"] = "WAIT_PULLBACK_SELL"
+            out["reason"] = ["giá đang giữ dưới mốc với close confirm"]
+            return out
+
+    out["state"] = "POST_BREAK_CHOP"
+    out["role_shift"] = "UNCLEAR"
+    out["action"] = "WAIT"
+    out["reason"] = ["chưa đủ cấu trúc để xác định continuity rõ"]
     return out
 
 
