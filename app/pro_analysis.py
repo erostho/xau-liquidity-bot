@@ -7,8 +7,15 @@ import os
 import re
 from app.risk import calc_smart_sl_tp
 from dataclasses import dataclass
+import logging
+logger = logging.getLogger("app.pro_analysis")
 
 # --- Safe candle access helpers (dict / dataclass / object) ---
+def _dbg(msg: str):
+    try:
+        logger.info(msg)
+    except Exception:
+        pass
 def _c_val(c, key: str, default=None):
     try:
         if isinstance(c, dict):
@@ -6034,9 +6041,7 @@ def _attach_vnext_meta(
                 ema_pack=ema_pack,
                 smart_filter_v1=(base.get("meta", {}) or {}).get("fvg_range_plugin_v1") or {},
                 m15c=m15c,
-            )
-            print(f"pf1 = {pf1}")
-    
+            )    
         except Exception as e:
             pf1 = {
                 "down_bias": "KHÔNG RÕ",
