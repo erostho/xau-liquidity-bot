@@ -6431,7 +6431,14 @@ def _attach_vnext_meta(
             trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() and isinstance(trigger_engine_v3, dict) else {},
             absorption_v1=absorption_v1,
         )
+        # ===== DEBUG POST BREAK =====
+        notes.append(f"DEBUG PBC RAW: {continuity_v1}")
         
+        base.setdefault("meta", {})["post_break_continuity_v1"] = continuity_v1
+        
+        notes.append(
+            f"DEBUG PBC META: {(base.get('meta') or {}).get('post_break_continuity_v1')}"
+        )
         meta["post_break_continuity_v1"] = continuity_v1
         notes.append(
             f"DEBUG PBC: {continuity_v1.get('state','NONE')} | {continuity_v1.get('side','NONE')} | ref={continuity_v1.get('reference')}"
@@ -11715,6 +11722,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("")
     # ===== ACTION: Post-break continuity =====
     pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or None)
+    push_conclusion(f"- DEBUG PBC EXISTS: {isinstance(pbc1, dict)}")
+    push_conclusion(f"- DEBUG PBC VALUE: {pbc1}")
     if pbc1:
         push_conclusion("")
         push_conclusion("🔁 POST-BREAK CONTINUITY:")
