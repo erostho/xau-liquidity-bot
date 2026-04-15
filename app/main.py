@@ -1019,13 +1019,17 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             lines.append("- Đã có HL và phá đỉnh → tín hiệu BUY đang mạnh hơn")
     lines.append(f"- {gate.get('txt') or 'Chưa đọc được gate cấu trúc.'}")
 
+    flow1 = meta.get("flow_engine_v1") or {}
     lines.append("")
-    lines.append("🕳 GAP:")
-    if gap_lines:
-        for s in gap_lines:
-            lines.append(f"- {s}")
-    else:
-        lines.append("- Chưa có dấu hiệu GAP / mở cửa bất thường rõ")
+    lines.append("🧠 FLOW / IMBALANCE:")
+    lines.append(f"- State: {flow1.get('state', 'NEUTRAL')}")
+    lines.append(f"- Displacement: {flow1.get('displacement', 'NONE')}")
+    lines.append(f"- Liquidity: {flow1.get('liquidity_state', 'Chưa thấy sweep/spring rõ')}")
+    lines.append(f"- Gap: {flow1.get('gap_text', 'Chưa có dấu hiệu GAP / mở cửa bất thường rõ')}")
+    lines.append(f"- Imbalance: {flow1.get('fvg_text', 'chưa có vùng rõ')}")
+    lines.append(f"- Ý nghĩa: {flow1.get('narrative', 'Flow chưa rõ')}")
+    lines.append(f"- Hành động gợi ý: {flow1.get('action_hint', 'WAIT')}")
+    
     if ema_pack:
         lines.append("")
         lines.append("📉 EMA FILTER:")
