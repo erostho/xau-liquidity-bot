@@ -12001,6 +12001,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_decision("🧠 Market state:")
     push_decision(f"- {market_state or 'N/A'}")
     
+    liq1 = meta.get("liquidity_map_v1") or {}
     playbook_v4 = meta.get("playbook_v2") or {}
     push_decision("🧭 Bias:")
     push_decision(f"- HTF: {playbook_v4.get('htf_bias', final_side or 'WAIT')}")
