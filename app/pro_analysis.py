@@ -3435,6 +3435,198 @@ def _build_liquidity_map_v1(
     out["reasons"] = dedup[:5]
 
     return out
+
+def _detect_session_gap_v1(m15c, atr15: float | None = None) -> dict:
+    """
+    Detect session/open gap thật:
+    - có time gap lớn giữa 2 nến liên tiếp
+    - open nến sau lệch close nến trước đủ lớn so với ATR
+    """
+    out = {
+        "active": False,
+        "type": "NONE",
+        "gap_low": None,
+        "gap_high": None,
+        "size": 0.0,
+        "fill_pct": 0.0,
+        "text": "Chưa có dấu hiệu GAP / mở cửa bất thường rõ",
+    }
+
+    if not m15c or len(m15c) < 3:
+        return out
+
+    closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+    if len(closed) < 2:
+        return out
+
+    try:
+        # median delta để nhận ra nến mở phiên / nhảy session
+        deltas = []
+        for i in range(1, len(closed)):
+            t1 = int(_c_val(closed[i - 1], "ts", 0) or 0)
+            t2 = int(_c_val(closed[i], "ts", 0) or 0)
+            if t1 > 0 and t2 > t1:
+                deltas.append(t2 - t1)
+
+        if not deltas:
+            return out
+
+        med_delta = sorted(deltas)[len(deltas) // 2]
+        a = float(atr15 or 0.0)
+        gap_min = max(0.25 * a, 1e-9) if a > 0 else 0.0
+
+        idx_found = None
+        for i in range(1, len(closed)):
+            t1 = int(_c_val(closed[i - 1], "ts", 0) or 0)
+            t2 = int(_c_val(closed[i], "ts", 0) or 0)
+            if med_delta > 0 and (t2 - t1) >= 1.5 * med_delta:
+                prev_close = float(_c_val(closed[i - 1], "close", 0.0) or 0.0)
+                cur_open = float(_c_val(closed[i], "open", 0.0) or 0.0)
+                if abs(cur_open - prev_close) >= gap_min:
+                    idx_found = i
+                    break
+
+        if idx_found is None:
+            return out
+
+        prev_close = float(_c_val(closed[idx_found - 1], "close", 0.0) or 0.0)
+        cur_open = float(_c_val(closed[idx_found], "open", 0.0) or 0.0)
+        cur_price = float(_c_val(closed[-1], "close", 0.0) or 0.0)
+
+        gap_low = min(prev_close, cur_open)
+        gap_high = max(prev_close, cur_open)
+        gap_size = gap_high - gap_low
+
+        if cur_open > prev_close:
+            gap_type = "GAP_UP"
+            fill_pct = _clamp((gap_high - cur_price) / max(gap_size, 1e-9), 0.0, 1.0)
+        else:
+            gap_type = "GAP_DOWN"
+            fill_pct = _clamp((cur_price - gap_low) / max(gap_size, 1e-9), 0.0, 1.0)
+
+        out.update({
+            "active": True,
+            "type": gap_type,
+            "gap_low": gap_low,
+            "gap_high": gap_high,
+            "size": gap_size,
+            "fill_pct": fill_pct * 100.0,
+            "text": f"{gap_type} | {_fmt(gap_low)} – {_fmt(gap_high)} | fill ~{fill_pct * 100.0:.0f}%",
+        })
+        return out
+
+    except Exception:
+        return out
+
+
+def _build_flow_engine_v1(
+    symbol: str,
+    m15c,
+    current_price: float | None,
+    atr15: float | None,
+    liquidity_map_v1: dict | None,
+    fvg_range_plugin_v1: dict | None,
+    gap_info_v1: dict | None = None,
+) -> dict:
+    """
+    Merge 3 thứ lại:
+    - Liquidity
+    - GAP
+    - FVG / imbalance
+
+    Output dùng chung cho NOW / REVIEW / ALERT.
+    """
+    liq = liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {}
+    fvgp = fvg_range_plugin_v1 if isinstance(fvg_range_plugin_v1, dict) else {}
+    fvg = fvgp.get("fvg") or {}
+    cp = _safe_float(current_price)
+
+    if gap_info_v1 and isinstance(gap_info_v1, dict):
+        gap1 = gap_info_v1
+    else:
+        gap1 = _detect_session_gap_v1(m15c=m15c, atr15=atr15)
+
+    out = {
+        "state": "NEUTRAL",
+        "displacement": "NONE",
+        "liquidity_state": liq.get("state_text", "Chưa thấy sweep/spring rõ"),
+        "liquidity_done": bool(liq.get("done")),
+        "liquidity_bias": str(liq.get("sweep_bias") or "NEUTRAL"),
+        "above_strength": str(liq.get("above_strength") or "LOW"),
+        "below_strength": str(liq.get("below_strength") or "LOW"),
+        "gap_active": bool(gap1.get("active")),
+        "gap_text": str(gap1.get("text") or "Chưa có dấu hiệu GAP / mở cửa bất thường rõ"),
+        "fvg_active": bool(fvg.get("ok")),
+        "fvg_text": str(fvg.get("text") or "chưa có vùng rõ"),
+        "fvg_side": str(fvg.get("type") or "NONE").upper(),
+        "narrative": "Chưa có câu chuyện flow rõ",
+        "action_hint": "WAIT",
+        "reasons": [],
+    }
+
+    reasons = []
+
+    # ---- displacement sơ bộ ----
+    try:
+        closed = list(m15c[:-1] if len(m15c) > 1 else m15c)
+        if len(closed) >= 3:
+            c1 = closed[-1]
+            rng = abs(float(_c_val(c1, "high", 0.0) or 0.0) - float(_c_val(c1, "low", 0.0) or 0.0))
+            body = abs(float(_c_val(c1, "close", 0.0) or 0.0) - float(_c_val(c1, "open", 0.0) or 0.0))
+            a = float(atr15 or 0.0)
+            if a > 0 and rng >= 1.2 * a:
+                if float(_c_val(c1, "close", 0.0) or 0.0) > float(_c_val(c1, "open", 0.0) or 0.0):
+                    out["displacement"] = "STRONG_UP"
+                elif float(_c_val(c1, "close", 0.0) or 0.0) < float(_c_val(c1, "open", 0.0) or 0.0):
+                    out["displacement"] = "STRONG_DOWN"
+            elif body > 0 and rng > 0 and (body / max(rng, 1e-9)) >= 0.55:
+                if float(_c_val(c1, "close", 0.0) or 0.0) > float(_c_val(c1, "open", 0.0) or 0.0):
+                    out["displacement"] = "UP"
+                elif float(_c_val(c1, "close", 0.0) or 0.0) < float(_c_val(c1, "open", 0.0) or 0.0):
+                    out["displacement"] = "DOWN"
+    except Exception:
+        pass
+
+    if out["gap_active"]:
+        reasons.append("có session gap")
+    if out["fvg_active"]:
+        reasons.append("có imbalance / FVG")
+    if not out["liquidity_done"]:
+        reasons.append("thanh khoản chưa hoàn tất")
+
+    # ---- narrative / action ----
+    if out["gap_active"] and out["fvg_active"] and not out["liquidity_done"]:
+        out["state"] = "IMBALANCED"
+        out["narrative"] = "Có gap + imbalance nhưng thanh khoản chưa hoàn tất → dễ còn nhịp fill / quét thêm"
+        out["action_hint"] = "WAIT"
+    elif out["fvg_active"] and not out["liquidity_done"]:
+        out["state"] = "FVG_OPEN"
+        out["narrative"] = "Có FVG nhưng chưa hoàn tất thanh khoản → ưu tiên chờ giá phản ứng / fill"
+        out["action_hint"] = "WAIT_REACTION"
+    elif out["gap_active"] and not out["fvg_active"]:
+        out["state"] = "SESSION_GAP"
+        out["narrative"] = "Có gap đầu phiên → dễ nhiễu đầu phiên, theo dõi khả năng fill gap"
+        out["action_hint"] = "WAIT_FILL"
+    elif out["liquidity_done"] and out["liquidity_bias"] != "NEUTRAL":
+        out["state"] = "FLOW_READY"
+        out["narrative"] = "Thanh khoản đã xử lý xong, có thể chuẩn bị follow nếu có confirm"
+        out["action_hint"] = "WAIT_CONFIRM"
+    else:
+        out["state"] = "NEUTRAL"
+        out["narrative"] = "Flow chưa rõ, chưa có displacement / imbalance đủ mạnh"
+        out["action_hint"] = "WAIT"
+
+    # ---- thêm reason cụ thể ----
+    if out["gap_active"]:
+        reasons.append(out["gap_text"])
+    if out["fvg_active"]:
+        reasons.append(out["fvg_text"])
+    if liq.get("state_text"):
+        reasons.append(str(liq.get("state_text")))
+
+    out["reasons"] = reasons[:4]
+    return out
+
 def _build_mm_real_play_v1(
     liq_map: dict | None,
     range_pos: float | None,
@@ -10213,7 +10405,22 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         range_low=(k or {}).get("M15_RANGE_LOW"),
         range_high=(k or {}).get("M15_RANGE_HIGH"),
     )
-
+    # ===== FLOW ENGINE V1 (merge GAP + FVG + liquidity) =====
+    gap_info_v1 = _detect_session_gap_v1(
+        m15c=m15c,
+        atr15=atr15,
+    )
+    flow_engine_v1 = _build_flow_engine_v1(
+        symbol=symbol,
+        m15c=m15c,
+        current_price=current_price,
+        atr15=atr15,
+        liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
+        fvg_range_plugin_v1=(base.get("meta", {}) or {}).get("fvg_range_plugin_v1") or {},
+        gap_info_v1=gap_info_v1,
+    )
+    base.setdefault("meta", {})["gap_info_v1"] = gap_info_v1
+    base.setdefault("meta", {})["flow_engine_v1"] = flow_engine_v1
 
     base.setdefault("meta", {})["context_verdict_v1"] = context_verdict_v1
     base.setdefault("meta", {})["rsi_context_v1"] = rsi_context_v1
@@ -11625,26 +11832,24 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_info("✅ Xác nhận:")
     push_info(f"- Cấu trúc lớn: H4 {h4_struct if h4_struct is not None else 'n/a'} | H1 {h1_struct if h1_struct is not None else 'n/a'}")
     push_info(f"- Cấu trúc ngắn hạn: M15 {m15_struct if m15_struct is not None else 'n/a'}")
-    
-    liq1 = meta.get("liquidity_map_v1") or {}
-    push_info("💧 Thanh khoản:")
-    push_info(f"- Liquidity trên: {liq1.get('above_strength', 'LOW')}")
-    push_info(f"- Liquidity dưới: {liq1.get('below_strength', 'LOW')}")
-    push_info(f"- Trạng thái: {liq1.get('state_text', 'Chưa thấy sweep/spring rõ')}")
-    push_info(f"- Khả năng quét: {liq1.get('sweep_bias', 'NEUTRAL')}")
-    push_info(f"💧 Liquidity done: {'YES' if liq1.get('done') else 'NO'} | {liq1.get('done_text', 'Thanh khoản chưa hoàn tất')}")
 
-    gap1 = meta.get("gap_info_v1") or {}
-    push_info("🕳 GAP:")
-    push_info(f"- {gap1.get('text', 'Chưa có dấu hiệu GAP / mở cửa bất thường rõ')}")
-    volq = meta.get("volq") or meta.get("vol_quality") or {}
-    candle_pat = meta.get("candle") or {}
-    div = meta.get("div") or {}
-    rsi_show = (
-        meta.get("rsi14")
-        if meta.get("rsi14") is not None
-        else (rsi15 if 'rsi15' in locals() else meta.get("rsi"))
+    flow1 = meta.get("flow_engine_v1") or {}
+    push_info("🧠 FLOW / IMBALANCE:")
+    push_info(f"- State: {flow1.get('state', 'NEUTRAL')}")
+    push_info(f"- Displacement: {flow1.get('displacement', 'NONE')}")
+    push_info(f"- Liquidity: {flow1.get('liquidity_state', 'Chưa thấy sweep/spring rõ')}")
+    push_info(f"- Liquidity bias: {flow1.get('liquidity_bias', 'NEUTRAL')}")
+    push_info(
+        f"- Gap: {flow1.get('gap_text', 'Chưa có dấu hiệu GAP / mở cửa bất thường rõ')}"
     )
+    push_info(
+        f"- Imbalance: {flow1.get('fvg_text', 'chưa có vùng rõ')}"
+    )
+    push_info(f"- Ý nghĩa: {flow1.get('narrative', 'Flow chưa rõ')}")
+    push_info(f"- Hành động gợi ý: {flow1.get('action_hint', 'WAIT')}")
+    for s in (flow1.get("reasons") or [])[:2]:
+        push_info(f"- {s}")
+
     
     volq = meta.get("volq") or meta.get("vol_quality") or {}
     candle_pat = meta.get("candle") or {}
@@ -11986,13 +12191,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
     else:
         push_conclusion("- Chờ trigger rõ hơn")
     push_conclusion("")
-        
-    # SMART ENTRY FILTER
+
+    # FLOW FILTER SUMMARY
     fvgp = meta.get("fvg_range_plugin_v1") or {}
     rf1 = fvgp.get("range_filter") or {}
     ema1 = fvgp.get("ema") or {}
-    fvg1 = fvgp.get("fvg") or {}
-    push_conclusion("🧩 SMART ENTRY FILTER:")
+    flow1 = meta.get("flow_engine_v1") or {}
+    
+    push_conclusion("🧩 FLOW FILTER:")
     pos = rf1.get("position")
     state = rf1.get("state", "UNKNOWN")
     tag = rf1.get("tag", "N/A")
@@ -12003,12 +12209,13 @@ def format_signal(sig: Dict[str, Any]) -> str:
             push_conclusion(f"- Range: {state} | {float(pos):.1f}% | {tag}")
         except Exception:
             push_conclusion(f"- Range: {state} | {pos} | {tag}")
-    for s in (rf1.get("reason") or [])[:2]:
-        push_conclusion(f"- {s}")
+    
     push_conclusion(f"- EMA: {ema1.get('trend', 'N/A')} | Align={ema1.get('alignment', 'NO')} | {ema1.get('zone', 'N/A')}")
-    push_conclusion(f"- FVG: {fvg1.get('text', 'chưa có vùng rõ')}")
-    push_conclusion(f"- Filter state: {fvgp.get('smart_state', 'NEUTRAL')}")
+    push_conclusion(f"- Flow state: {flow1.get('state', 'NEUTRAL')}")
+    push_conclusion(f"- Flow hint: {flow1.get('action_hint', 'WAIT')}")
+    push_conclusion(f"- Narrative: {flow1.get('narrative', 'Flow chưa rõ')}")
     push_conclusion("")
+
     # ===== ACTION: Post-break continuity =====
     pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or None)
     if pbc1:
