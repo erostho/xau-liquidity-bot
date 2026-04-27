@@ -754,7 +754,7 @@ def _divergence_rsi(candles: List[Candle], period: int = 14, lookback: int = 50)
 
     return {"bear": bear, "bull": bull, "txt": txt}
     
-def absorption_v1(
+def _absorption_v1(
     m15c: list | None,
     volq: dict | None,
     range_low: float | None,
@@ -6688,7 +6688,7 @@ def _attach_vnext_meta(
             close_confirm_v4=close_confirm_v4 if 'close_confirm_v4' in locals() and isinstance(close_confirm_v4, dict) else {},
             liquidity_map_v1=liquidity_map_v1 if 'liquidity_map_v1' in locals() and isinstance(liquidity_map_v1, dict) else {},
             trigger_engine_v3=trigger_engine_v3 if 'trigger_engine_v3' in locals() and isinstance(trigger_engine_v3, dict) else {},
-            absorption_v1=absorption_v1,
+            absorption_v1=_absorption_v1,
         )
 
         # ===== DEBUG POST BREAK =====
@@ -10588,7 +10588,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["liquidity_reaction_v1"] = liquidity_reaction_v1
 
     # ===== ABSORPTION ENGINE =====
-    absorption_v1 = absorption_v1(
+    absorption_v1 = _absorption_v1(
         m15c=m15c,
         volq=volq if 'volq' in locals() else {},
         range_low=(k or {}).get("M15_RANGE_LOW"),
