@@ -6248,7 +6248,59 @@ def _attach_vnext_meta(
             }
     
         base.setdefault("meta", {})["path_forecast_v1"] = pf1
+        # ===== ZONE + ACTION ENGINE V1 =====
+        pf1 = base.setdefault("meta", {}).get("path_forecast_v1") or {}
+        priority_action = str(pf1.get("priority_action") or "").upper()
         
+        za_side = "NONE"
+        if "BUY" in priority_action:
+            za_side = "BUY"
+        elif "SELL" in priority_action:
+            za_side = "SELL"
+        else:
+            # fallback theo best_side/final_side nếu priority_action chưa rõ
+            de1_tmp = base.setdefault("meta", {}).get("decision_engine_v1") or {}
+            za_side = str(
+                de1_tmp.get("best_side")
+                or de1_tmp.get("final_side")
+                or "NONE"
+            ).upper()
+        
+        support_zone = pf1.get("sup_near")
+        resistance_zone = pf1.get("res_near")
+        
+        # break level đúng theo side
+        za_break = None
+        if za_side == "BUY":
+            za_break = pf1.get("break_up") or pf1.get("range_high")
+        elif za_side == "SELL":
+            za_break = pf1.get("break_down") or pf1.get("range_low")
+        
+        zone_action_v1 = _zone_action_engine_v1(
+            current_price=current_price,
+            side=za_side,
+            support_zone=support_zone,
+            resistance_zone=resistance_zone,
+            break_level=za_break,
+            atr15=atr15,
+        )
+        
+        base.setdefault("meta", {})["zone_action_v1"] = zone_action_v1
+        
+        # ===== rewrite wait_for_v1 bằng zone action =====
+        old_wait = base.setdefault("meta", {}).get("wait_for_v1") or {}
+        
+        if zone_action_v1.get("ok"):
+            base.setdefault("meta", {})["wait_for_v1"] = {
+                **old_wait,
+                "side": za_side,
+                "zone_type": zone_action_v1.get("zone_type"),
+                "price_state": zone_action_v1.get("price_state"),
+                "action_state": zone_action_v1.get("action_state"),
+                "lines": zone_action_v1.get("lines") or [],
+                "trigger_hint": zone_action_v1.get("trigger"),
+                "invalid": zone_action_v1.get("invalid"),
+            }
         
         
         manual_likelihood_v1 = _manual_likelihood_v1(
@@ -8852,6 +8904,143 @@ def _post_break_continuity_engine_v1(
             out["action"] = "AVOID_SELL_CHASE"
             out["reason"].append("có BUY absorption ở đáy")
         return out
+
+    return out
+def _zone_action_engine_v1(
+    current_price,
+    side,
+    support_zone=None,
+    resistance_zone=None,
+    break_level=None,
+    atr15=None,
+):
+    """
+    ZONE + ACTION ENGINE V1
+
+    Mục tiêu:
+    - BUY thì dùng SUPPORT làm vùng chính
+    - SELL thì dùng RESISTANCE làm vùng chính
+    - biết giá đang ở đâu so với vùng:
+        WAIT   = chưa tới vùng
+        WATCH  = đang ở vùng
+        TRIGGER = đã phản ứng rời vùng theo hướng có lợi
+        CANCEL = xuyên vùng sai hướng
+    """
+
+    out = {
+        "ok": False,
+        "side": str(side or "NONE").upper(),
+        "zone_type": "NONE",
+        "zone_low": None,
+        "zone_high": None,
+        "price_state": "NONE",
+        "action_state": "WAIT",
+        "message": "Chưa có vùng hành động rõ",
+        "trigger": "",
+        "invalid": "",
+        "break_level": break_level,
+        "lines": [],
+    }
+
+    try:
+        cp = float(current_price)
+    except Exception:
+        return out
+
+    side_u = str(side or "NONE").upper()
+
+    # ===== chọn đúng zone theo side =====
+    if side_u == "BUY":
+        z = support_zone
+        out["zone_type"] = "SUPPORT"
+    elif side_u == "SELL":
+        z = resistance_zone
+        out["zone_type"] = "RESISTANCE"
+    else:
+        return out
+
+    if not isinstance(z, (list, tuple)) or len(z) != 2:
+        return out
+
+    try:
+        lo = float(min(z[0], z[1]))
+        hi = float(max(z[0], z[1]))
+    except Exception:
+        return out
+
+    out["ok"] = True
+    out["zone_low"] = lo
+    out["zone_high"] = hi
+
+    a = float(atr15 or 0.0)
+    pad = max(a * 0.10, (hi - lo) * 0.10, 1e-9)
+
+    # ===== BUY logic =====
+    if side_u == "BUY":
+        if cp > hi + pad:
+            out["price_state"] = "ABOVE_ZONE"
+            out["action_state"] = "WAIT"
+            out["message"] = f"Giá còn ở trên vùng BUY {lo:.3f} – {hi:.3f} → chờ hồi về support"
+            out["trigger"] = "Chỉ BUY khi giá về vùng, sweep low/giữ đáy/reclaim rõ"
+            out["invalid"] = f"M15 đóng dưới {lo:.3f} và giữ dưới → huỷ BUY"
+
+        elif lo - pad <= cp <= hi + pad:
+            out["price_state"] = "IN_ZONE"
+            out["action_state"] = "WATCH"
+            out["message"] = f"Giá đang ở vùng BUY {lo:.3f} – {hi:.3f} → không còn là chờ vùng, chuyển sang WATCH"
+            out["trigger"] = "BUY khi sweep low rồi đóng lại trên vùng, hoặc có nến rút chân/giữ đáy rõ"
+            out["invalid"] = f"M15 đóng dưới {lo:.3f} và nến sau không reclaim → huỷ BUY"
+
+        else:  # cp < lo - pad
+            out["price_state"] = "BELOW_ZONE"
+            out["action_state"] = "CANCEL"
+            out["message"] = f"Giá đã thủng vùng BUY {lo:.3f} – {hi:.3f} → không BUY dip nữa"
+            out["trigger"] = "Chờ reclaim lại vùng hoặc setup mới"
+            out["invalid"] = "BUY dip bị vô hiệu ngắn hạn"
+
+    # ===== SELL logic =====
+    elif side_u == "SELL":
+        if cp < lo - pad:
+            out["price_state"] = "BELOW_ZONE"
+            out["action_state"] = "WAIT"
+            out["message"] = f"Giá còn ở dưới vùng SELL {lo:.3f} – {hi:.3f} → chờ hồi lên resistance"
+            out["trigger"] = "Chỉ SELL khi giá hồi lên vùng, fail break/rejection/đóng yếu rõ"
+            out["invalid"] = f"M15 đóng trên {hi:.3f} và giữ trên → huỷ SELL"
+
+        elif lo - pad <= cp <= hi + pad:
+            out["price_state"] = "IN_ZONE"
+            out["action_state"] = "WATCH"
+            out["message"] = f"Giá đang ở vùng SELL {lo:.3f} – {hi:.3f} → không còn là chờ vùng, chuyển sang WATCH"
+            out["trigger"] = "SELL khi fail break, rejection, hoặc nến đỏ xác nhận rời vùng"
+            out["invalid"] = f"M15 đóng trên {hi:.3f} và nến sau giữ trên → huỷ SELL"
+
+        else:  # cp > hi + pad
+            out["price_state"] = "ABOVE_ZONE"
+            out["action_state"] = "CANCEL"
+            out["message"] = f"Giá đã vượt vùng SELL {lo:.3f} – {hi:.3f} → không SELL vùng này nữa"
+            out["trigger"] = "Chờ mất lại vùng hoặc setup mới"
+            out["invalid"] = "SELL rally bị vô hiệu ngắn hạn"
+
+    # ===== thêm breakout option =====
+    if break_level is not None:
+        try:
+            bl = float(break_level)
+            if side_u == "BUY":
+                out["lines"] = [
+                    out["message"],
+                    out["trigger"],
+                    f"Hoặc BUY breakout nếu M15 đóng trên {bl:.3f} và nến sau giữ được",
+                ]
+            elif side_u == "SELL":
+                out["lines"] = [
+                    out["message"],
+                    out["trigger"],
+                    f"Hoặc SELL breakdown nếu M15 đóng dưới {bl:.3f} và nến sau giữ được",
+                ]
+        except Exception:
+            out["lines"] = [out["message"], out["trigger"]]
+    else:
+        out["lines"] = [out["message"], out["trigger"]]
 
     return out
     
@@ -12121,25 +12310,57 @@ def format_signal(sig: Dict[str, Any]) -> str:
                 "action_note": "",
                 "reason": [],
             }
-        meta["path_forecast_v1"] = pf1    
+        meta["path_forecast_v1"] = pf1
+        
     push_conclusion("⚙️ Hành động:")
     de1 = meta.get("decision_engine_v1") or {}
+    za1 = meta.get("zone_action_v1") or {}
     pf_action = (pf1.get("priority_action") if 'pf1' in locals() and pf1 else None) or ""
+
+    # ===== ưu tiên Zone + Action Engine =====
     if ntz.get("active"):
         action_main = "No-trade zone"
+
+    elif za1.get("ok"):
+        zact = za1.get("action_state")
+        if zact == "WAIT":
+            action_main = za1.get("message") or "Chờ vùng"
+        elif zact == "WATCH":
+            action_main = za1.get("message") or "Đang trong vùng → chờ phản ứng"
+        elif zact == "TRIGGER":
+            action_main = za1.get("message") or "Đã rời vùng theo hướng có lợi → chờ follow-through"
+        elif zact == "CANCEL":
+            action_main = za1.get("message") or "Vùng bị vô hiệu"
+        else:
+            action_main = pf_action or "Chưa nên mở lệnh mới"
+
     elif pf_action:
         action_main = pf_action
+
     elif final_side == "BUY":
         action_main = "Chờ trigger BUY rõ"
+
     elif final_side == "SELL":
         action_main = "Chờ trigger SELL rõ"
+
     else:
         action_main = "Chưa nên mở lệnh mới"
+
     push_conclusion(f"- {action_main}")
-    if pf1 and pf1.get("action_note"):
+
+    # ===== dòng giải thích phụ =====
+    if za1.get("ok"):
+        if za1.get("trigger"):
+            push_conclusion(f"- {za1.get('trigger')}")
+        if za1.get("invalid"):
+            push_conclusion(f"- Vô hiệu: {za1.get('invalid')}")
+
+    elif pf1 and pf1.get("action_note"):
         push_conclusion(f"- {pf1.get('action_note')}")
+
     else:
         push_conclusion(f"- {state_line}")
+
     push_conclusion("")
         
     push_conclusion("🧯 Điểm sai kịch bản:")
@@ -12185,13 +12406,20 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("")
     push_conclusion(f"🎯 Decision: {de1.get('decision', 'STAND ASIDE')}")
     push_conclusion("⏳ Wait for:")
-    wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
+    wf1 = meta.get("wait_for_v1") or {}
+    za1 = meta.get("zone_action_v1") or {}
+    
+    if za1.get("ok"):
+        push_conclusion(
+            f"- Zone: {za1.get('zone_type')} | {za1.get('price_state')} | Action={za1.get('action_state')}"
+        )
+    
+    wait_lines = wf1.get("lines") or []
     if wait_lines:
         for s in wait_lines[:3]:
             push_conclusion(f"- {s}")
     else:
-        push_conclusion("- Chờ trigger rõ hơn")
-    push_conclusion("")
+        push_conclusion("- Chưa có vùng hành động rõ")
 
     # FLOW FILTER SUMMARY
     fvgp = meta.get("fvg_range_plugin_v1") or {}
@@ -12329,61 +12557,80 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion("━━━━━━━━━━━")
     
     scenario = meta.get("scenario_v1") or {}
-    wait_lines = (meta.get("wait_for_v1") or {}).get("lines") or []
+    wf1 = meta.get("wait_for_v1") or {}
+    za1 = meta.get("zone_action_v1") or {}
     kl1 = meta.get("key_levels") or {}
-    
-    base_case = str(scenario.get("base_case") or "").strip()
-    best_zone = str(scenario.get("best_zone") or "").strip()
-    
-    # bỏ prefix "Base case:" cho sạch
-    if base_case:
-        try:
-            base_case = re.sub(r"^\s*Base case:\s*", "", base_case, flags=re.I).strip()
-        except Exception:
-            pass
-    
+
     kb_lines = []
-    
-    # ===== Priority 1: scenario.base_case =====
-    if base_case:
-        kb_lines.append(f"- {base_case}")
-    
-        if best_zone and "vùng" not in base_case.lower():
-            kb_lines.append(f"- Vùng ưu tiên: {best_zone}")
-    
-    # ===== Priority 2: wait_for_v1 =====
-    if not kb_lines and wait_lines:
-        for s in wait_lines[:2]:
+
+    # ===== Priority 0: ZONE + ACTION ENGINE =====
+    if za1.get("ok"):
+        msg = str(za1.get("message") or "").strip()
+        trg = str(za1.get("trigger") or "").strip()
+        brk = _safe_float(za1.get("break_level"))
+        side = str(za1.get("side") or "NONE").upper()
+
+        if msg:
+            kb_lines.append(f"- {msg}")
+        if trg:
+            kb_lines.append(f"- {trg}")
+
+        if brk is not None:
+            if side == "BUY":
+                kb_lines.append(f"- Hoặc BUY breakout nếu M15 đóng trên {_fmt(brk)} và giữ được")
+            elif side == "SELL":
+                kb_lines.append(f"- Hoặc SELL breakdown nếu M15 đóng dưới {_fmt(brk)} và giữ được")
+
+    # ===== Priority 1: wait_for_v1 đã được rewrite bởi zone_action_v1 =====
+    if not kb_lines:
+        wait_lines = wf1.get("lines") or []
+        for s in wait_lines[:3]:
             if s and str(s).strip():
                 kb_lines.append(f"- {s}")
-    
-    # ===== Priority 3: fallback từ PATH FORECAST =====
+
+    # ===== Priority 2: scenario.base_case =====
+    if not kb_lines:
+        base_case = str(scenario.get("base_case") or "").strip()
+        best_zone = str(scenario.get("best_zone") or "").strip()
+
+        if base_case:
+            try:
+                base_case = re.sub(r"^\s*Base case:\s*", "", base_case, flags=re.I).strip()
+            except Exception:
+                pass
+
+            kb_lines.append(f"- {base_case}")
+
+            if best_zone and "vùng" not in base_case.lower():
+                kb_lines.append(f"- Vùng ưu tiên: {best_zone}")
+
+    # ===== Priority 3: fallback từ PATH FORECAST, map đúng BUY->support, SELL->resistance =====
     if not kb_lines:
         final_side_kb = str((sce1 or {}).get("final_side") or final_side or "NONE").upper()
-    
+
         if final_side_kb == "BUY":
             sup_zone = pf1.get("sup_near") or pf1.get("sup_far")
             brk = _safe_float(kl1.get("M15_RANGE_HIGH"))
-    
+
             if sup_zone:
-                kb_lines.append(f"- Chờ vùng {_pf_zone_text(sup_zone)}")
+                kb_lines.append(f"- Chờ vùng BUY/support {_pf_zone_text(sup_zone)}")
             if brk is not None:
-                kb_lines.append(f"- Hoặc break {_fmt(brk)}")
-    
+                kb_lines.append(f"- Hoặc BUY breakout nếu M15 đóng trên {_fmt(brk)} và giữ được")
+
         elif final_side_kb == "SELL":
             res_zone = pf1.get("res_near") or pf1.get("res_far")
             brk = _safe_float(kl1.get("M15_RANGE_LOW"))
-    
+
             if res_zone:
-                kb_lines.append(f"- Chờ vùng {_pf_zone_text(res_zone)}")
+                kb_lines.append(f"- Chờ vùng SELL/resistance {_pf_zone_text(res_zone)}")
             if brk is not None:
-                kb_lines.append(f"- Hoặc break {_fmt(brk)}")
-    
+                kb_lines.append(f"- Hoặc SELL breakdown nếu M15 đóng dưới {_fmt(brk)} và giữ được")
+
     # ===== Final fallback =====
     if not kb_lines:
         kb_lines.append("- Chờ thị trường rõ hơn")
-    
-    for s in kb_lines[:2]:
+
+    for s in kb_lines[:3]:
         push_conclusion(s)
     
     # PROBE + SETUP CLASS
