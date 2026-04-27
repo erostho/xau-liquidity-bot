@@ -6277,7 +6277,7 @@ def _attach_vnext_meta(
             za_break = pf1.get("break_down") or pf1.get("range_low")
         
         zone_action_v1 = _zone_action_engine_v1(
-            current_price=current_price,
+            current_price=base.get("current_price") or (base.get("meta") or {}).get("current_price"),
             side=za_side,
             support_zone=support_zone,
             resistance_zone=resistance_zone,
@@ -10602,7 +10602,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     flow_engine_v1 = _build_flow_engine_v1(
         symbol=symbol,
         m15c=m15c,
-        current_price=current_price,
+        current_price=base.get("current_price") or (base.get("meta") or {}).get("current_price"),
         atr15=atr15,
         liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
         fvg_range_plugin_v1=(base.get("meta", {}) or {}).get("fvg_range_plugin_v1") or {},
