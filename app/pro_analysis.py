@@ -10823,6 +10823,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         fvg_range_plugin_v1=(base.get("meta", {}) or {}).get("fvg_range_plugin_v1") or {},
         gap_info_v1=gap_info_v1,
     )
+    base.setdefault("meta", {})["gap_info_v1"] = gap_info_v1
+    base.setdefault("meta", {})["flow_engine_v1"] = flow_engine_v1
     # ===== ELLIOTT PHASE V1 =====
     try:
         meta = base.setdefault("meta", {})
@@ -10857,9 +10859,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "invalid": "n/a",
             "reason": [],
         }
-    
-    base.setdefault("meta", {})["gap_info_v1"] = gap_info_v1
-    base.setdefault("meta", {})["flow_engine_v1"] = flow_engine_v1
+
     base.setdefault("meta", {})["context_verdict_v1"] = context_verdict_v1
     base.setdefault("meta", {})["rsi_context_v1"] = rsi_context_v1
     base.setdefault("meta", {})["fib_confluence_v1"] = fib_confluence_v1
