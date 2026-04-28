@@ -10847,8 +10847,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         )
     
         meta["elliott_phase_v1"] = elliott_phase_v1
-    
+        _dbg(f"ELLIOTT SAVED: {elliott_phase_v1}")
     except Exception as e:
+        _dbg(f"ELLIOTT ERROR: {e}")
         base.setdefault("meta", {})["elliott_phase_v1"] = {
             "ok": False,
             "main_tf": "H1/H4",
