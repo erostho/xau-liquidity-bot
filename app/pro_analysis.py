@@ -9043,7 +9043,222 @@ def _zone_action_engine_v1(
         out["lines"] = [out["message"], out["trigger"]]
 
     return out
-    
+def _elliott_phase_v1(
+    h4_struct=None,
+    h1_struct=None,
+    m15_struct=None,
+    pullback_info=None,
+    ema_filter=None,
+    flow_engine_v1=None,
+    zone_action_v1=None,
+    current_price=None,
+    range_low=None,
+    range_high=None,
+):
+    """
+    Elliott Phase Context V1
+    Không đếm sóng tuyệt đối.
+    Chỉ phân loại xác suất phase:
+    - WAVE_3 / WAVE_4 / WAVE_5
+    - WAVE_A / WAVE_B / WAVE_C
+    - BUY_DIP / SELL_RALLY context
+    """
+
+    out = {
+        "ok": True,
+        "main_tf": "H1/H4",
+        "phase": "UNCLEAR",
+        "direction": "NONE",
+        "confidence": 40,
+        "meaning": "Chưa đủ dữ liệu để xác định phase Elliott rõ",
+        "action": "Đứng ngoài, chờ cấu trúc rõ hơn",
+        "invalid": "Không có mốc vô hiệu rõ",
+        "reason": [],
+    }
+
+    try:
+        h4 = str(h4_struct or "").upper()
+        h1 = str(h1_struct or "").upper()
+        m15 = str(m15_struct or "").upper()
+
+        pb = pullback_info if isinstance(pullback_info, dict) else {}
+        ema = ema_filter if isinstance(ema_filter, dict) else {}
+        flow = flow_engine_v1 if isinstance(flow_engine_v1, dict) else {}
+        za = zone_action_v1 if isinstance(zone_action_v1, dict) else {}
+
+        pb_pct = None
+        for k in ("pct", "pullback_pct", "retrace_pct", "retracement_pct"):
+            if pb.get(k) is not None:
+                try:
+                    pb_pct = float(pb.get(k))
+                    break
+                except Exception:
+                    pass
+
+        # nếu bot đang lưu dạng 0.81 thì đổi sang 81
+        if pb_pct is not None and pb_pct <= 1:
+            pb_pct *= 100.0
+
+        reversal_risk = str(pb.get("reversal_risk") or "").upper()
+        pb_label = str(pb.get("label") or pb.get("state") or pb.get("text") or "").upper()
+
+        ema_trend = str(ema.get("trend") or "UNKNOWN").upper()
+        ema_align = str(ema.get("alignment") or "NO").upper()
+
+        flow_state = str(flow.get("state") or "NEUTRAL").upper()
+        displacement = str(flow.get("displacement") or "NONE").upper()
+
+        zone_state = str(za.get("price_state") or "NONE").upper()
+        zone_side = str(za.get("side") or "NONE").upper()
+
+        htf_up = ("HH" in h4 or "HL" in h4 or "HH" in h1 or "HL" in h1)
+        htf_down = ("LL" in h4 or "LH" in h4 or "LL" in h1 or "LH" in h1)
+
+        m15_up = ("HH" in m15 or "HL" in m15)
+        m15_down = ("LL" in m15 or "LH" in m15)
+
+        # vị trí trong range
+        range_pos = None
+        try:
+            cp = float(current_price)
+            lo = float(range_low)
+            hi = float(range_high)
+            if hi > lo:
+                range_pos = (cp - lo) / (hi - lo) * 100.0
+        except Exception:
+            range_pos = None
+
+        # =========================
+        # CASE 1: HTF up, LTF đang giảm/hồi sâu
+        # Có thể là sóng 4 / A / B tùy mức hồi
+        # =========================
+        if htf_up and m15_down:
+            out["direction"] = "BULLISH_CONTEXT_CORRECTION"
+
+            if pb_pct is not None and pb_pct >= 75:
+                out["phase"] = "POSSIBLE WAVE A / DEEP CORRECTION"
+                out["confidence"] = 62
+                out["meaning"] = "Xu hướng lớn còn thiên tăng nhưng nhịp giảm ngắn hạn đã hồi quá sâu; có nguy cơ không còn là pullback sạch"
+                out["action"] = "Không BUY vội; chỉ BUY nếu có sweep low, reclaim hoặc giữ support rõ"
+                out["invalid"] = "Nếu M15/H1 đóng dưới đáy correction và giữ dưới → chuyển sang rủi ro sóng C giảm"
+                out["reason"] = ["HTF còn tăng", "M15 đã LL-LH", "pullback sâu"]
+                return out
+
+            if pb_pct is not None and 35 <= pb_pct < 75:
+                out["phase"] = "POSSIBLE WAVE 4 / BUY DIP"
+                out["confidence"] = 58
+                out["meaning"] = "Có thể đang là nhịp điều chỉnh trong xu hướng tăng, chưa xác nhận đảo chiều"
+                out["action"] = "Chờ về support; BUY khi có giữ đáy / sweep low / close confirm"
+                out["invalid"] = "Nếu thủng support và không reclaim → huỷ buy-dip"
+                out["reason"] = ["HTF tăng", "pullback vừa phải", "chưa có xác nhận đảo chiều"]
+                return out
+
+            out["phase"] = "EARLY PULLBACK / WAIT BUY DIP"
+            out["confidence"] = 52
+            out["meaning"] = "Nhịp hồi còn sớm, chưa đủ sâu để có entry BUY đẹp"
+            out["action"] = "Không BUY đuổi; chờ giá về vùng hỗ trợ hoặc break lên có follow-through"
+            out["invalid"] = "Nếu phá đáy M15 và giữ dưới → chuyển sang correction sâu"
+            out["reason"] = ["HTF tăng", "pullback còn sớm"]
+            return out
+
+        # =========================
+        # CASE 2: HTF down, LTF hồi lên
+        # Thường là sóng B / sell rally
+        # =========================
+        if htf_down and m15_up:
+            out["direction"] = "BEARISH_CONTEXT_CORRECTION"
+
+            if pb_pct is not None and pb_pct >= 50:
+                out["phase"] = "POSSIBLE WAVE B / SELL RALLY"
+                out["confidence"] = 62
+                out["meaning"] = "Đây có thể là nhịp hồi trong correction, chưa phải đảo chiều thật"
+                out["action"] = "Không BUY đuổi; chờ fail ở resistance hoặc break low để SELL"
+                out["invalid"] = "Nếu break và giữ trên đỉnh sóng 5 / vùng kháng cự chính"
+                out["reason"] = ["HTF giảm", "M15 hồi lên", "pullback đủ sâu để nghi sóng B"]
+                return out
+
+            out["phase"] = "EARLY WAVE B / WEAK BOUNCE"
+            out["confidence"] = 55
+            out["meaning"] = "Có thể là nhịp hồi yếu trong xu hướng giảm"
+            out["action"] = "Chờ hồi lên resistance; SELL khi có rejection / fail break"
+            out["invalid"] = "Nếu M15 break lên và giữ trên resistance → giảm hiệu lực SELL"
+            out["reason"] = ["HTF giảm", "M15 hồi nhưng chưa mạnh"]
+            return out
+
+        # =========================
+        # CASE 3: HTF down + M15 down
+        # Có thể là sóng 3 hoặc C
+        # =========================
+        if htf_down and m15_down:
+            out["direction"] = "BEARISH_IMPULSE"
+
+            if displacement in ("DOWN", "STRONG_DOWN") or flow_state in ("IMBALANCED", "FLOW_READY"):
+                out["phase"] = "POSSIBLE WAVE C / SELL CONTINUATION"
+                out["confidence"] = 66
+                out["meaning"] = "Xu hướng giảm đồng thuận, có thể đang vào nhịp C hoặc continuation giảm"
+                out["action"] = "Ưu tiên SELL theo pullback hoặc breakdown; không BUY bắt đáy"
+                out["invalid"] = "Nếu reclaim mạnh lại vùng breakdown và tạo HL"
+                out["reason"] = ["HTF giảm", "M15 giảm", "có dấu hiệu impulse/flow"]
+                return out
+
+            out["phase"] = "DOWN IMPULSE / WAIT SELL RALLY"
+            out["confidence"] = 60
+            out["meaning"] = "Đang cùng chiều giảm nhưng chưa có displacement đủ rõ"
+            out["action"] = "Không SELL đuổi; chờ hồi lên resistance để SELL"
+            out["invalid"] = "Nếu phá lên tạo HH-HL trên M15"
+            out["reason"] = ["HTF giảm", "M15 giảm", "chưa có flow rõ"]
+            return out
+
+        # =========================
+        # CASE 4: HTF up + M15 up
+        # Có thể là sóng 3 hoặc 5
+        # =========================
+        if htf_up and m15_up:
+            out["direction"] = "BULLISH_IMPULSE"
+
+            if range_pos is not None and range_pos >= 80:
+                out["phase"] = "POSSIBLE WAVE 5 / LATE BUY"
+                out["confidence"] = 60
+                out["meaning"] = "Giá đang ở vùng cao của range, có thể là pha đẩy cuối; rủi ro FOMO tăng"
+                out["action"] = "Không BUY đuổi; chờ pullback hoặc breakout giữ được"
+                out["invalid"] = "Nếu sweep high rồi đóng ngược xuống → nghi bắt đầu ABC"
+                out["reason"] = ["HTF tăng", "M15 tăng", "giá ở vùng cao"]
+                return out
+
+            if displacement in ("UP", "STRONG_UP"):
+                out["phase"] = "POSSIBLE WAVE 3 / BUY CONTINUATION"
+                out["confidence"] = 65
+                out["meaning"] = "Có thể đang trong pha mở rộng theo xu hướng tăng"
+                out["action"] = "Ưu tiên BUY theo pullback; không short ngược trend"
+                out["invalid"] = "Nếu phá HL gần nhất và giữ dưới"
+                out["reason"] = ["HTF tăng", "M15 tăng", "có impulse lên"]
+                return out
+
+            out["phase"] = "BULLISH CONTINUATION / WAIT PULLBACK"
+            out["confidence"] = 58
+            out["meaning"] = "Xu hướng tăng còn giữ nhưng chưa có điểm vào sạch"
+            out["action"] = "Chờ pullback về support hoặc breakout có follow-through"
+            out["invalid"] = "Nếu M15 mất HL và chuyển LL-LH"
+            out["reason"] = ["HTF tăng", "M15 tăng"]
+            return out
+
+        # =========================
+        # Transition / mixed
+        # =========================
+        out["phase"] = "TRANSITION / UNCLEAR WAVE"
+        out["confidence"] = 45
+        out["meaning"] = "Cấu trúc đang chuyển pha, chưa đủ rõ để gán Elliott wave"
+        out["action"] = "Giảm size hoặc đứng ngoài; chờ break structure rõ"
+        out["invalid"] = "Không áp dụng Elliott khi cấu trúc nhiễu"
+        out["reason"] = ["HTF/M15 chưa đồng thuận"]
+        return out
+
+    except Exception as e:
+        out["ok"] = False
+        out["phase"] = "ERROR"
+        out["meaning"] = f"Elliott engine lỗi: {e}"
+        out["action"] = "Bỏ qua Elliott context"
+        return out    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict], current_price: float | None = None) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -10608,9 +10823,43 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         fvg_range_plugin_v1=(base.get("meta", {}) or {}).get("fvg_range_plugin_v1") or {},
         gap_info_v1=gap_info_v1,
     )
+    # ===== ELLIOTT PHASE V1 =====
+    try:
+        meta = base.setdefault("meta", {})
+    
+        k = meta.get("key_levels") or {}
+        flow1 = meta.get("flow_engine_v1") or {}
+        za1 = meta.get("zone_action_v1") or {}
+    
+        elliott_phase_v1 = _elliott_phase_v1(
+            h4_struct=(struct.get("H4") if isinstance(struct, dict) else None),
+            h1_struct=(struct.get("H1") if isinstance(struct, dict) else None),
+            m15_struct=(struct.get("M15") if isinstance(struct, dict) else None),
+            pullback_info=pb if "pb" in locals() and isinstance(pb, dict) else {},
+            ema_filter=ema_filter if "ema_filter" in locals() and isinstance(ema_filter, dict) else {},
+            flow_engine_v1=flow1,
+            zone_action_v1=za1,
+            current_price=current_price,
+            range_low=k.get("M15_RANGE_LOW"),
+            range_high=k.get("M15_RANGE_HIGH"),
+        )
+    
+        meta["elliott_phase_v1"] = elliott_phase_v1
+    
+    except Exception as e:
+        base.setdefault("meta", {})["elliott_phase_v1"] = {
+            "ok": False,
+            "main_tf": "H1/H4",
+            "phase": "ERROR",
+            "confidence": 0,
+            "meaning": f"Elliott phase lỗi: {e}",
+            "action": "Bỏ qua Elliott context",
+            "invalid": "n/a",
+            "reason": [],
+        }
+    
     base.setdefault("meta", {})["gap_info_v1"] = gap_info_v1
     base.setdefault("meta", {})["flow_engine_v1"] = flow_engine_v1
-
     base.setdefault("meta", {})["context_verdict_v1"] = context_verdict_v1
     base.setdefault("meta", {})["rsi_context_v1"] = rsi_context_v1
     base.setdefault("meta", {})["fib_confluence_v1"] = fib_confluence_v1
@@ -12443,8 +12692,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"- Flow state: {flow1.get('state', 'NEUTRAL')}")
     push_conclusion(f"- Flow hint: {flow1.get('action_hint', 'WAIT')}")
     push_conclusion(f"- Narrative: {flow1.get('narrative', 'Flow chưa rõ')}")
-    push_conclusion("")
-
+    
+    # ===== ELLIOTT PHASE =====
+    elli1 = (meta.get("elliott_phase_v1") or {})
+    if elli1:
+        push_conclusion("")
+        push_conclusion("🌊 ELLIOTT PHASE:")
+        push_conclusion(f"- Main TF: {elli1.get('main_tf', 'H1/H4')}")
+        push_conclusion(f"- Phase: {elli1.get('phase', 'UNCLEAR')}")
+        push_conclusion(f"- Confidence: {elli1.get('confidence', 0)}%")
+        push_conclusion(f"- Ý nghĩa: {elli1.get('meaning', 'Chưa rõ phase Elliott')}")
+        push_conclusion(f"- Hành động: {elli1.get('action', 'Đứng ngoài, chờ rõ hơn')}")
+        push_conclusion(f"- Vô hiệu: {elli1.get('invalid', 'n/a')}")
+        
     # ===== ACTION: Post-break continuity =====
     pbc1 = ((sig.get("meta") or {}).get("post_break_continuity_v1") or None)
     if pbc1:
