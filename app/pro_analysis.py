@@ -6774,13 +6774,26 @@ def _attach_vnext_meta(
             final_side_sync = str(sce1.get("final_side") or "NONE").upper()
 
             if fd_decision == "NO_TRADE" or master_state == "NO_TRADE":
-                sce1["action_mode"] = "NO_TRADE"
-                if str(sce1.get("current_move") or "").upper() == "TREND":
-                    sce1["current_move"] = "CHOP"
-                if final_side_sync in ("BUY", "SELL"):
-                    sce1["narrative"] = "Đúng hướng nhưng market chưa lộ mặt → ưu tiên chờ xác nhận"
+                mm1 = meta.get("market_mode_v1") or {}
+                mm_mode = str(mm1.get("mode") or "").upper()
+
+                # Nếu là trend day thì KHÔNG ép current_move về CHOP.
+                # Vì đây là lỗi làm bot đọc sai tổng quan: trend rõ nhưng output lại như market nhiễu.
+                if mm_mode in ("TREND_DAY_DOWN", "TREND_DAY_UP"):
+                    sce1["action_mode"] = mm1.get("action_mode") or "FOLLOW_TREND_CONDITIONAL"
+                    sce1["current_move"] = "TREND"
+                    sce1["final_side"] = mm1.get("side") or final_side_sync
+                    sce1["narrative"] = (
+                        "Trend day đang chạy; chưa có entry đẹp nhưng vẫn theo dõi continuation có điều kiện"
+                    )
                 else:
-                    sce1["narrative"] = "Thị trường đang nhiễu / chưa có edge rõ → ưu tiên đứng ngoài"
+                    sce1["action_mode"] = "NO_TRADE"
+                    if str(sce1.get("current_move") or "").upper() == "TREND":
+                        sce1["current_move"] = "CHOP"
+                    if final_side_sync in ("BUY", "SELL"):
+                        sce1["narrative"] = "Đúng hướng nhưng market chưa lộ mặt → ưu tiên chờ xác nhận"
+                    else:
+                        sce1["narrative"] = "Thị trường đang nhiễu / chưa có edge rõ → ưu tiên đứng ngoài"
 
             meta["signal_consistency_v1"] = sce1
         except Exception:
@@ -9313,7 +9326,285 @@ def _elliott_phase_v1(
         out["phase"] = "ERROR"
         out["meaning"] = f"Elliott engine lỗi: {e}"
         out["action"] = "Bỏ qua Elliott context"
-        return out    
+        return out   
+
+# ============================================================
+# MARKET MODE V1 - Context reader for analysis-only bot
+# Purpose:
+# - Đọc market theo cụm nến, không đọc từng nến rời rạc
+# - Phân biệt: NO SETUP vs TREND DAY nhưng timing chưa đẹp
+# - Không auto trade, chỉ tạo meta + output guidance
+# ============================================================
+
+def _safe_last_closed(candles):
+    try:
+        if not candles:
+            return []
+        return list(candles[:-1] if len(candles) > 1 else candles)
+    except Exception:
+        return []
+
+def _count_dir_bars(candles):
+    bull = bear = 0
+    for c in candles or []:
+        try:
+            o = float(_c_val(c, "open", 0.0) or 0.0)
+            cl = float(_c_val(c, "close", 0.0) or 0.0)
+            if cl > o:
+                bull += 1
+            elif cl < o:
+                bear += 1
+        except Exception:
+            pass
+    return bull, bear
+
+def _avg_body_range(candles):
+    bodies = []
+    ranges = []
+    for c in candles or []:
+        try:
+            o = float(_c_val(c, "open", 0.0) or 0.0)
+            h = float(_c_val(c, "high", 0.0) or 0.0)
+            l = float(_c_val(c, "low", 0.0) or 0.0)
+            cl = float(_c_val(c, "close", 0.0) or 0.0)
+            bodies.append(abs(cl - o))
+            ranges.append(max(1e-9, h - l))
+        except Exception:
+            pass
+    if not bodies or not ranges:
+        return 0.0, 0.0
+    return sum(bodies) / len(bodies), sum(ranges) / len(ranges)
+
+def _detect_market_mode_v1(
+    symbol: str,
+    m15c,
+    h1c,
+    h4c,
+    ema_pack: dict | None = None,
+    pullback_engine: dict | None = None,
+    range_pos=None,
+    market_state_v2: str | None = None,
+    playbook_v2: dict | None = None,
+    post_break_continuity: dict | None = None,
+) -> dict:
+    """
+    Analysis-only market context.
+    Return:
+    {
+      mode, side, action_mode, confidence, summary,
+      read_window, warnings, playbook_lines, reasons
+    }
+    """
+    out = {
+        "mode": "UNKNOWN",
+        "side": "NONE",
+        "action_mode": "WAIT_CONTEXT",
+        "confidence": 0,
+        "summary": "Chưa đủ dữ liệu để đọc market mode.",
+        "read_window": {
+            "htf": "H1/H4 50-100 nến",
+            "mtf": "M15 30-50 nến",
+            "momentum": "M15 10-15 nến gần nhất",
+        },
+        "warnings": [],
+        "playbook_lines": [],
+        "reasons": [],
+        "range_pos": None,
+    }
+
+    try:
+        ema_pack = ema_pack or {}
+        pullback_engine = pullback_engine or {}
+        playbook_v2 = playbook_v2 or {}
+        post_break_continuity = post_break_continuity or {}
+
+        m15_closed = _safe_last_closed(m15c)
+        h1_closed = _safe_last_closed(h1c)
+        h4_closed = _safe_last_closed(h4c)
+
+        if len(m15_closed) < 30 or len(h1_closed) < 30:
+            return out
+
+        # ===== 1) HTF context =====
+        h1_trend = _trend_label(h1_closed)
+        h4_trend = _trend_label(h4_closed) if h4_closed else "sideways"
+
+        htf_bear = h1_trend == "bearish" and h4_trend in ("bearish", "sideways")
+        htf_bull = h1_trend == "bullish" and h4_trend in ("bullish", "sideways")
+
+        # ===== 2) M15 structure / momentum =====
+        recent_40 = m15_closed[-40:] if len(m15_closed) >= 40 else m15_closed
+        recent_15 = m15_closed[-15:] if len(m15_closed) >= 15 else m15_closed
+        recent_8 = m15_closed[-8:] if len(m15_closed) >= 8 else m15_closed
+
+        bull15, bear15 = _count_dir_bars(recent_15)
+
+        first_close = float(_c_val(recent_15[0], "close", 0.0) or 0.0)
+        last_close = float(_c_val(recent_15[-1], "close", 0.0) or 0.0)
+        move_15 = last_close - first_close
+
+        atr15 = _atr(m15_closed, 14) or 0.0
+        move_atr = abs(move_15) / max(float(atr15 or 0.0), 1e-9)
+
+        avg_body_8, avg_range_8 = _avg_body_range(recent_8)
+        avg_body_40, avg_range_40 = _avg_body_range(recent_40)
+
+        body_expand = avg_body_8 > 1.15 * max(avg_body_40, 1e-9)
+        range_expand = avg_range_8 > 1.10 * max(avg_range_40, 1e-9)
+
+        ema_trend = str(ema_pack.get("trend") or "").upper()
+        ema_zone = str(ema_pack.get("zone") or "").upper()
+        ema_bear = ema_trend == "BEARISH" and ("DƯỚI EMA89" in ema_zone or "DƯỚI" in ema_zone)
+        ema_bull = ema_trend == "BULLISH" and ("TRÊN" in ema_zone)
+
+        # ===== 3) Pullback depth =====
+        pb_pct = None
+        try:
+            pb_pct = float(pullback_engine.get("pullback_pct") or 0.0)
+        except Exception:
+            pb_pct = None
+
+        shallow_pullback = pb_pct is not None and pb_pct <= 0.25
+
+        # ===== 4) Range position =====
+        rp = None
+        try:
+            if range_pos is not None:
+                rp = float(range_pos)
+            elif playbook_v2.get("range_pos") is not None:
+                rp = float(playbook_v2.get("range_pos"))
+        except Exception:
+            rp = None
+        out["range_pos"] = rp
+
+        near_low = rp is not None and rp <= 0.20
+        near_high = rp is not None and rp >= 0.80
+        mid_range = rp is not None and 0.30 <= rp <= 0.70
+
+        # ===== 5) Post-break continuity =====
+        pbc_state = str(post_break_continuity.get("state") or "").upper()
+        pbc_side = str(post_break_continuity.get("side") or "").upper()
+        break_hold_sell = pbc_side == "SELL" and "HOLD" in pbc_state
+        break_hold_buy = pbc_side == "BUY" and "HOLD" in pbc_state
+
+        # ===== 6) Scoring =====
+        down_score = 0
+        up_score = 0
+        reasons = []
+
+        if htf_bear:
+            down_score += 2
+            reasons.append("H1/H4 nghiêng giảm")
+        if htf_bull:
+            up_score += 2
+            reasons.append("H1/H4 nghiêng tăng")
+
+        if ema_bear:
+            down_score += 2
+            reasons.append("EMA bearish + giá dưới EMA")
+        if ema_bull:
+            up_score += 2
+            reasons.append("EMA bullish + giá trên EMA")
+
+        if bear15 >= 9 and move_15 < 0:
+            down_score += 2
+            reasons.append("M15 gần đây nhiều nến giảm")
+        if bull15 >= 9 and move_15 > 0:
+            up_score += 2
+            reasons.append("M15 gần đây nhiều nến tăng")
+
+        if move_15 < 0 and move_atr >= 1.5:
+            down_score += 2
+            reasons.append(f"momentum giảm mạnh ~{move_atr:.1f} ATR")
+        if move_15 > 0 and move_atr >= 1.5:
+            up_score += 2
+            reasons.append(f"momentum tăng mạnh ~{move_atr:.1f} ATR")
+
+        if body_expand or range_expand:
+            if move_15 < 0:
+                down_score += 1
+                reasons.append("biên độ/body đang mở rộng theo hướng giảm")
+            elif move_15 > 0:
+                up_score += 1
+                reasons.append("biên độ/body đang mở rộng theo hướng tăng")
+
+        if break_hold_sell:
+            down_score += 2
+            reasons.append("post-break đang giữ dưới mốc SELL")
+        if break_hold_buy:
+            up_score += 2
+            reasons.append("post-break đang giữ trên mốc BUY")
+
+        # ===== 7) Classification =====
+        if down_score >= 6 and down_score >= up_score + 3:
+            out["mode"] = "TREND_DAY_DOWN"
+            out["side"] = "SELL"
+            out["confidence"] = min(95, 55 + down_score * 5)
+            out["summary"] = "Giá đang đi một chiều trong xu hướng giảm; pullback nông là đặc điểm của trend mạnh, không phải lỗi."
+            out["action_mode"] = "FOLLOW_TREND_CONDITIONAL"
+            out["playbook_lines"] = [
+                "Ưu tiên SELL continuation, không phải bắt đáy BUY.",
+                "Không SELL ngay đáy cây dump lớn.",
+                "Chờ 1 trong 2: hồi nhỏ lên resistance gần rồi fail, hoặc break low + giữ dưới + nến sau không reclaim.",
+            ]
+            if shallow_pullback:
+                out["warnings"].append("Pullback nông → nếu chỉ chờ hồi sâu có thể bỏ lỡ toàn bộ move.")
+            if near_low:
+                out["warnings"].append("Giá đang sát đáy range → không SELL đuổi; chỉ canh continuation sau nhịp nghỉ/break giữ dưới.")
+            if mid_range:
+                out["warnings"].append("Giá giữa biên độ → dễ nhiễu, cần trigger rõ.")
+            out["reasons"] = reasons[:6]
+            return out
+
+        if up_score >= 6 and up_score >= down_score + 3:
+            out["mode"] = "TREND_DAY_UP"
+            out["side"] = "BUY"
+            out["confidence"] = min(95, 55 + up_score * 5)
+            out["summary"] = "Giá đang đi một chiều trong xu hướng tăng; pullback nông là đặc điểm của trend mạnh, không phải lỗi."
+            out["action_mode"] = "FOLLOW_TREND_CONDITIONAL"
+            out["playbook_lines"] = [
+                "Ưu tiên BUY continuation, không phải bắt đỉnh SELL.",
+                "Không BUY ngay đỉnh cây pump lớn.",
+                "Chờ 1 trong 2: hồi nhỏ về support gần rồi giữ, hoặc break high + giữ trên + nến sau không reclaim.",
+            ]
+            if shallow_pullback:
+                out["warnings"].append("Pullback nông → nếu chỉ chờ hồi sâu có thể bỏ lỡ toàn bộ move.")
+            if near_high:
+                out["warnings"].append("Giá đang sát đỉnh range → không BUY đuổi; chỉ canh continuation sau nhịp nghỉ/break giữ trên.")
+            if mid_range:
+                out["warnings"].append("Giá giữa biên độ → dễ nhiễu, cần trigger rõ.")
+            out["reasons"] = reasons[:6]
+            return out
+
+        # Range / chop / reversal risk
+        ms = str(market_state_v2 or "").upper()
+        if ms in ("CHOP", "TRANSITION") or mid_range:
+            out["mode"] = "RANGE_OR_CHOP"
+            out["side"] = "NONE"
+            out["confidence"] = 55
+            out["action_mode"] = "WAIT_EDGE"
+            out["summary"] = "Market đang nhiễu/giữa biên độ; ưu tiên chờ về biên hoặc break có giữ."
+            out["playbook_lines"] = [
+                "Không đánh giữa range.",
+                "Chờ chạm hỗ trợ/kháng cự có phản ứng rõ.",
+                "Hoặc chờ break + retest rồi mới đánh theo hướng break.",
+            ]
+            out["reasons"] = reasons[:6] or ["market chưa lệch rõ"]
+            return out
+
+        out["mode"] = "NORMAL_WAIT"
+        out["side"] = "NONE"
+        out["confidence"] = 45
+        out["action_mode"] = "WAIT_CONTEXT"
+        out["summary"] = "Market chưa đủ điều kiện để xếp trend day/range day rõ."
+        out["reasons"] = reasons[:6] or ["thiếu đồng thuận đa khung"]
+        return out
+
+    except Exception as e:
+        out["mode"] = "ERROR"
+        out["summary"] = f"Market mode lỗi: {e}"
+        return out
+        
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict], current_price: float | None = None) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -9722,7 +10013,39 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         _build_narrative_v3(symbol, bias_guess, market_state_v2, flow_state, liquidation_evt, playbook_v2, no_trade_zone),
         _build_scenario_v3(bias_guess, playbook_v2, base.get("meta", {}).get("key_levels", {}), flow_state, market_state_v2, no_trade_zone),
     )
+    # ===== MARKET MODE V1 =====
+    # Đọc ngữ cảnh thị trường theo cụm nến:
+    # HTF: H1/H4, MTF: M15 30-50 nến, Momentum: M15 10-15 nến
+    try:
+        meta = base.setdefault("meta", {})
+        market_mode_v1 = _detect_market_mode_v1(
+            symbol=symbol,
+            m15c=m15c,
+            h1c=h1c,
+            h4c=h4c,
+            ema_pack=meta.get("ema") or base.get("ema") or {},
+            pullback_engine=meta.get("pullback_engine_v1") or {},
+            range_pos=range_pos,
+            market_state_v2=market_state_v2,
+            playbook_v2=playbook_v2,
+            post_break_continuity=meta.get("post_break_continuity_v1") or {},
+        )
+        meta["market_mode_v1"] = market_mode_v1
 
+        # Sync nhẹ sang signal consistency: không biến WAIT thành lệnh,
+        # chỉ đổi cách diễn giải để bot không nói "NO_TRADE" cụt ngủn trong trend day.
+        sce1 = meta.get("signal_consistency_v1") or {}
+        if market_mode_v1.get("mode") in ("TREND_DAY_DOWN", "TREND_DAY_UP"):
+            sce1["market_mode"] = market_mode_v1.get("mode")
+            sce1["context_side"] = market_mode_v1.get("side")
+            sce1["action_mode"] = market_mode_v1.get("action_mode")
+            sce1["narrative"] = (
+                "Trend day đang chạy; không có entry đẹp nhưng vẫn có thể theo dõi continuation có điều kiện"
+            )
+            meta["signal_consistency_v1"] = sce1
+
+    except Exception as e:
+        base.setdefault("meta", {})["market_mode_v1_error"] = str(e)
     if flow_state.get("state"):
         context_lines.append(f"Flow proxy: {flow_state.get('state')} | Ưu tiên {flow_state.get('favored_side') or 'n/a'}")
     if market_state_v2:
@@ -12867,7 +13190,56 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"🎯 Hành động: {pf1.get('priority_action', 'ƯU TIÊN ĐỨNG NGOÀI')}")
     if pf1.get("action_note"):
         push_conclusion(f"- {pf1.get('action_note')}")
+    # ===== MARKET MODE V1 OUTPUT - BLOCK 3 =====
+    try:
+        mm1 = meta.get("market_mode_v1") or {}
+        if mm1:
+            mode = str(mm1.get("mode") or "UNKNOWN").upper()
+            side = str(mm1.get("side") or "NONE").upper()
+            action_mode = str(mm1.get("action_mode") or "WAIT_CONTEXT").upper()
+            conf = mm1.get("confidence", 0)
 
+            push_conclusion("")
+            push_conclusion("🔥 MARKET MODE / NGỮ CẢNH HÔM NAY:")
+            push_conclusion(f"- Mode: {mode}")
+            push_conclusion(f"- Side context: {side}")
+            push_conclusion(f"- Action mode: {action_mode}")
+            push_conclusion(f"- Confidence: {conf}%")
+
+            summary = str(mm1.get("summary") or "").strip()
+            if summary:
+                push_conclusion(f"- Ý nghĩa: {summary}")
+
+            reasons = mm1.get("reasons") or []
+            if reasons:
+                push_conclusion("- Lý do đọc ngữ cảnh:")
+                for r in reasons[:4]:
+                    push_conclusion(f"  • {r}")
+
+            warnings = mm1.get("warnings") or []
+            if warnings:
+                push_conclusion("⚠️ Cảnh báo:")
+                for w in warnings[:3]:
+                    push_conclusion(f"- {w}")
+
+            playbook_lines = mm1.get("playbook_lines") or []
+            if playbook_lines:
+                push_conclusion("🎯 Playbook theo market mode:")
+                for line in playbook_lines[:4]:
+                    push_conclusion(f"- {line}")
+
+            if mode in ("TREND_DAY_DOWN", "TREND_DAY_UP"):
+                push_conclusion("📌 Kết luận ngữ cảnh:")
+                if side == "SELL":
+                    push_conclusion("- Đây là ngày ưu tiên SELL context, nhưng chỉ SELL khi có nhịp nghỉ / retest / break giữ dưới.")
+                    push_conclusion("- Không gọi là mất kèo chỉ vì pullback nông; trend mạnh thường không cho hồi đẹp.")
+                elif side == "BUY":
+                    push_conclusion("- Đây là ngày ưu tiên BUY context, nhưng chỉ BUY khi có nhịp nghỉ / retest / break giữ trên.")
+                    push_conclusion("- Không gọi là mất kèo chỉ vì pullback nông; trend mạnh thường không cho hồi đẹp.")
+
+    except Exception as e:
+        push_conclusion("")
+        push_conclusion(f"🔥 MARKET MODE: lỗi render ({e})")
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
