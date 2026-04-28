@@ -332,7 +332,229 @@ def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
             out.append(r)
 
     return cls, round(score, 1), out[:6]
+# ============================================================
+# FINAL SCORE V2 - Context + Entry + Probe
+# Analysis-only: KHÔNG auto trade, chỉ sửa điểm/output cho đồng bộ
+# ============================================================
 
+def _probe_status_v1(meta: dict) -> dict:
+    pe = (meta or {}).get("probe_engine_v1") or {}
+
+    result = str(pe.get("result") or pe.get("status") or "INACTIVE").upper()
+    main_ok = bool(pe.get("main_entry_ok"))
+
+    # Normalize SUCCESS
+    success = (
+        result in ("SUCCESS", "OK", "PASS")
+        or main_ok is True
+        or "CÓ THỂ" in str(pe.get("summary") or "").upper()
+    )
+
+    side = str(pe.get("side") or "NONE").upper()
+    entry_status = str(pe.get("entry_status") or "N/A").upper()
+
+    return {
+        "raw": pe,
+        "success": success,
+        "result": result,
+        "side": side,
+        "entry_status": entry_status,
+        "summary": str(pe.get("summary") or ""),
+    }
+
+
+def _entry_score_v2(meta: dict) -> tuple[int, str, list[str]]:
+    """
+    Entry Grade riêng:
+    - Close confirm / trigger vẫn là chính
+    - Probe SUCCESS nâng entry tối thiểu lên C
+    - Không để Probe SUCCESS mà Entry Grade = D nữa
+    """
+    meta = meta or {}
+    cc1 = meta.get("close_confirm_v4") or {}
+    tg3 = meta.get("trigger_engine_v3") or {}
+    ntz = meta.get("no_trade_zone") or {}
+    pe = _probe_status_v1(meta)
+
+    score = 0
+    reasons = []
+
+    cc_strength = str(cc1.get("strength") or "NO").upper()
+    tg_state = str(tg3.get("state") or "WAIT").upper()
+    tg_quality = str(tg3.get("quality") or "LOW").upper()
+
+    if cc_strength == "STRONG":
+        score += 40
+        reasons.append("close confirm mạnh")
+    elif cc_strength == "WEAK":
+        score += 25
+        reasons.append("close confirm yếu")
+    else:
+        reasons.append("chưa có close confirm")
+
+    if tg_state == "TRIGGERED":
+        score += 40
+        reasons.append("trigger đã kích hoạt")
+    elif tg_state == "READY":
+        score += 25
+        reasons.append("trigger gần sẵn sàng")
+    else:
+        reasons.append("trigger chưa sẵn sàng")
+
+    if tg_quality == "HIGH":
+        score += 10
+        reasons.append("trigger quality cao")
+    elif tg_quality == "MEDIUM":
+        score += 5
+        reasons.append("trigger quality trung bình")
+
+    # Probe SUCCESS = có phản ứng vùng / vùng được bảo vệ
+    if pe["success"]:
+        score = max(score, 35)
+        reasons.append("probe xác nhận vùng / có phản ứng thuận hướng")
+        if pe["entry_status"] == "AGGRESSIVE":
+            reasons.append("entry type = AGGRESSIVE, cần giảm size / đợi nến đóng chắc hơn")
+        elif pe["entry_status"] not in ("", "N/A", "NONE"):
+            reasons.append(f"entry status = {pe['entry_status']}")
+
+    # no-trade zone chỉ kéo entry, không giết context
+    if ntz.get("active"):
+        score -= 10
+        reasons.append("no-trade zone còn active")
+
+    score = max(0, min(100, int(round(score))))
+
+    if score >= 70:
+        grade = "A"
+    elif score >= 50:
+        grade = "B"
+    elif score >= 30:
+        grade = "C"
+    else:
+        grade = "D"
+
+    # dedupe
+    out = []
+    seen = set()
+    for r in reasons:
+        r = str(r).strip()
+        if r and r not in seen:
+            seen.add(r)
+            out.append(r)
+
+    return score, grade, out[:6]
+
+
+def _compute_final_score_v2(sig: dict) -> dict:
+    """
+    Final Score mới:
+    - Context Score: lấy từ Setup Class / Market Mode
+    - Entry Score: close confirm + trigger + probe
+    - Risk penalty: no-trade zone, SELL quá thấp / BUY quá cao
+    => Không còn cảnh Context A nhưng Final Score 35 vô lý.
+    """
+    sig = sig or {}
+    meta = sig.get("meta") or {}
+
+    # Context score từ setup class hiện có
+    try:
+        context_cls, context_score, context_reasons = _setup_class_score_v3(sig)
+        context_score = float(context_score or 0)
+    except Exception:
+        context_cls, context_score, context_reasons = "D", 0.0, []
+
+    entry_score, entry_grade, entry_reasons = _entry_score_v2(meta)
+
+    mm1 = meta.get("market_mode_v1") or {}
+    ntz = meta.get("no_trade_zone") or {}
+    flow_filter = meta.get("smart_filter_v1") or meta.get("fvg_range_plugin_v1") or {}
+    range_filter = flow_filter.get("range_filter") or {}
+
+    mode = str(mm1.get("mode") or "").upper()
+    side = str(mm1.get("side") or "NONE").upper()
+    action_mode = str(mm1.get("action_mode") or "").upper()
+
+    risk_penalty = 0
+    risk_reasons = []
+
+    # no-trade zone không còn cap 35, nhưng vẫn trừ risk
+    if ntz.get("active"):
+        risk_penalty += 8
+        risk_reasons.append("no-trade zone active")
+
+    rf_tag = str(range_filter.get("tag") or "").upper()
+    rf_state = str(range_filter.get("state") or "").upper()
+
+    if side == "SELL" and ("SELL_TOO_LOW" in rf_tag or rf_state == "BLOCK"):
+        risk_penalty += 7
+        risk_reasons.append("SELL đang thấp trong range")
+    elif side == "BUY" and ("BUY_TOO_HIGH" in rf_tag or rf_state == "BLOCK"):
+        risk_penalty += 7
+        risk_reasons.append("BUY đang cao trong range")
+
+    # Trend day: context quan trọng hơn entry, vì entry đẹp thường không xuất hiện
+    if mode in ("TREND_DAY_DOWN", "TREND_DAY_UP"):
+        raw_score = context_score * 0.60 + entry_score * 0.40
+    else:
+        raw_score = context_score * 0.50 + entry_score * 0.50
+
+    final_score = max(0.0, min(100.0, raw_score - risk_penalty))
+    final_score = round(final_score, 1)
+
+    # Tradeable label
+    pe = _probe_status_v1(meta)
+    if final_score >= 70 and entry_score >= 50 and not ntz.get("active"):
+        tradeable = "YES"
+    elif (
+        mode in ("TREND_DAY_DOWN", "TREND_DAY_UP")
+        and side in ("BUY", "SELL")
+        and final_score >= 45
+    ):
+        tradeable = "CONDITIONAL"
+    elif pe["success"] and final_score >= 45:
+        tradeable = "CONDITIONAL"
+    else:
+        tradeable = "NO"
+
+    if final_score >= 80:
+        grade = "A"
+    elif final_score >= 65:
+        grade = "B"
+    elif final_score >= 50:
+        grade = "C"
+    else:
+        grade = "D"
+
+    reasons = []
+    reasons.extend(context_reasons[:3])
+    reasons.extend(entry_reasons[:3])
+    reasons.extend(risk_reasons[:3])
+
+    # dedupe
+    clean_reasons = []
+    seen = set()
+    for r in reasons:
+        r = str(r).strip()
+        if r and r not in seen:
+            seen.add(r)
+            clean_reasons.append(r)
+
+    return {
+        "context_class": context_cls,
+        "context_score": round(context_score, 1),
+        "entry_grade": entry_grade,
+        "entry_score": entry_score,
+        "final_score": final_score,
+        "grade": grade,
+        "tradeable": tradeable,
+        "risk_penalty": risk_penalty,
+        "reasons": clean_reasons[:6],
+        "entry_reasons": entry_reasons,
+        "risk_reasons": risk_reasons,
+        "action_mode": action_mode,
+        "mode": mode,
+        "side": side,
+    }
 def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -> list[str]:
     """
     Render mới:
@@ -355,9 +577,12 @@ def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -
     cc_strength = str(cc1.get("strength") or "NO").upper()
     tg_state = str(tg3.get("state") or "WAIT").upper()
 
-    # Entry grade riêng
-    entry_score = 0
-    entry_reasons = []
+
+    # Entry grade riêng - lấy từ V2, có tính Probe SUCCESS
+    fs2 = _compute_final_score_v2(sig)
+    entry_score = int(fs2.get("entry_score") or 0)
+    entry_grade = str(fs2.get("entry_grade") or "D")
+    entry_reasons = list(fs2.get("entry_reasons") or [])
 
     if cc_strength == "STRONG":
         entry_score += 40
@@ -408,10 +633,16 @@ def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -
     for s in entry_reasons[:4]:
         lines.append(f"- {s}")
 
+    pe = _probe_status_v1(meta)
+
     if mode in ("TREND_DAY_DOWN", "TREND_DAY_UP") and entry_grade in ("C", "D"):
         lines.append("📌 Diễn giải:")
-        lines.append("- Context đúng hướng nhưng timing chưa đẹp.")
-        lines.append("- Không phải kèo rác; đây là kèo chờ trigger continuation/retest.")
+        if pe["success"]:
+            lines.append("- Context đúng hướng và probe đã xác nhận vùng, nhưng entry vẫn cần quản trị rủi ro.")
+            lines.append("- Đây là kèo continuation/retest có điều kiện, không phải entry sạch tuyệt đối.")
+        else:
+            lines.append("- Context đúng hướng nhưng timing chưa đẹp.")
+            lines.append("- Không phải kèo rác; đây là kèo chờ trigger continuation/retest.")
 
     return lines
 
@@ -3696,8 +3927,37 @@ def _build_flow_engine_v1(
         reasons.append(out["fvg_text"])
     if liq.get("state_text"):
         reasons.append(str(liq.get("state_text")))
-
+    
     out["reasons"] = reasons[:4]
+    # ===== FLOW STATE FIX V2 =====
+    # Nếu displacement mạnh thì không được để state = NEUTRAL.
+    try:
+        disp = str(out.get("displacement") or "NONE").upper()
+        cur_state = str(out.get("state") or "NEUTRAL").upper()
+
+        if disp == "STRONG_DOWN" and cur_state in ("NEUTRAL", "NONE", "N/A", ""):
+            out["state"] = "TRENDING_DOWN"
+            out["action_hint"] = "FOLLOW_SELL_CONDITIONAL"
+            out["narrative"] = (
+                "Có displacement giảm mạnh → flow thực tế nghiêng SELL; "
+                "không SELL đuổi đáy, chỉ canh continuation/retest."
+            )
+            reasons = list(out.get("reasons") or [])
+            reasons.insert(0, "displacement giảm mạnh")
+            out["reasons"] = reasons[:4]
+
+        elif disp == "STRONG_UP" and cur_state in ("NEUTRAL", "NONE", "N/A", ""):
+            out["state"] = "TRENDING_UP"
+            out["action_hint"] = "FOLLOW_BUY_CONDITIONAL"
+            out["narrative"] = (
+                "Có displacement tăng mạnh → flow thực tế nghiêng BUY; "
+                "không BUY đuổi đỉnh, chỉ canh continuation/retest."
+            )
+            reasons = list(out.get("reasons") or [])
+            reasons.insert(0, "displacement tăng mạnh")
+            out["reasons"] = reasons[:4]
+    except Exception:
+        pass
     return out
 
 def _build_mm_real_play_v1(
@@ -12187,7 +12447,8 @@ def format_signal(sig: Dict[str, Any]) -> str:
     def _market_summary_line(score, tradeable_label, session_v4, htf_pressure_v4):
         htf = str(htf_pressure_v4.get("state") or "").upper()
         sess = str(session_v4.get("session_tag") or "").upper()
-    
+        if str(tradeable_label).upper() == "CONDITIONAL":
+            return "Có context tốt nhưng entry cần trigger/confirmation; chỉ theo dõi kèo có điều kiện, không vào bừa."
         if tradeable_label == "NO":
             if "CHOP" in sess:
                 return "Môi trường đang nhiễu → chưa tradeable"
@@ -13474,38 +13735,55 @@ def format_signal(sig: Dict[str, Any]) -> str:
     for s in _render_setup_class_block_v4(sig, final_score, tradeable_label):
         add(conclusion_lines, s)
     
-    # SCORE LOGIC COPY FROM OLD OUTPUT
-    final_score, tradeable_label, score_reasons, tradeable_reasons = _final_score_now(
-        sig, meta, struct, playbook, ntz, session_v4, htf_pressure_v4
-    )
-    grade = _score_to_grade_v2(final_score)
-    
+
+    # SCORE LOGIC V2 - Context + Entry + Probe
+    fs2 = _compute_final_score_v2(sig)
+
+    final_score = fs2.get("final_score", 0)
+    tradeable_label = fs2.get("tradeable", "NO")
+    grade = fs2.get("grade", "D")
+    score_reasons = fs2.get("reasons", [])
+    tradeable_reasons = fs2.get("risk_reasons", [])
+
     fd1 = meta.get("final_decision_engine_v1") or {}
     me1 = meta.get("master_engine_v1") or {}
     sce1 = meta.get("signal_consistency_v1") or {}
-    
-    fd_decision = str(fd1.get("decision") or "").upper()
-    master_state = str(me1.get("state") or "").upper()
-    final_side = str(sce1.get("final_side") or "NONE").upper()
-    
-    if (
-        fd_decision == "NO_TRADE"
-        or master_state == "NO_TRADE"
-        or final_side == "NONE"
-    ):
-        try:
-            final_score = min(float(final_score or 0), 35.0)
-        except Exception:
-            final_score = 35.0
-        tradeable_label = "NO"
-        grade = _score_to_grade_v2(final_score)
+
+    # Đồng bộ master engine cho output
+    try:
+        if tradeable_label == "CONDITIONAL":
+            me1["state"] = "WAIT_TIMING"
+            me1["tradeable_final"] = "CONDITIONAL"
+            me1["best_side"] = fs2.get("side") or me1.get("best_side") or "NONE"
+            me1["confidence"] = "MEDIUM"
+            me1["reason"] = [
+                "context có lợi thế",
+                "entry cần trigger/confirmation",
+                "tradeable dạng conditional, không phải auto-entry",
+            ]
+            meta["master_engine_v1"] = me1
+        elif tradeable_label == "YES":
+            me1["state"] = "READY"
+            me1["tradeable_final"] = "YES"
+            me1["best_side"] = fs2.get("side") or me1.get("best_side") or "NONE"
+            me1["confidence"] = "HIGH"
+            meta["master_engine_v1"] = me1
+    except Exception:
+        pass
     
     push_conclusion("")
     push_conclusion(f"📊 Chất lượng cơ hội: {grade} | {symbol}")
     push_conclusion(f"🔥 Final Score: {final_score}/100")
     push_conclusion(f"→ Tradeable: {tradeable_label}")
-    
-    summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
+    push_conclusion(
+        f"- Score V2: Context {fs2.get('context_score')}/100 | "
+        f"Entry {fs2.get('entry_score')}/100 | "
+        f"Risk penalty -{fs2.get('risk_penalty')}"
+    )
+    if str(tradeable_label).upper() == "CONDITIONAL":
+        summary_line = "Có context tốt nhưng entry cần trigger/confirmation; chỉ theo dõi kèo có điều kiện, không vào bừa."
+    else:
+        summary_line = _market_summary_line(final_score, tradeable_label, session_v4, htf_pressure_v4)
     push_conclusion(f"- {summary_line}")
     
     if score_reasons:
