@@ -196,105 +196,133 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
 
 def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
     """
-    Score riêng cho SETUP CLASS.
-    KHÔNG dùng final_score.
-    KHÔNG để no-trade zone kéo setup xuống quá mạnh.
-    Setup Class = độ đẹp setup
-    Entry/Tradeable = timing
+    SETUP CLASS V4:
+    - Context Grade: thị trường có đúng hướng không?
+    - Entry Grade: hiện tại có điểm vào đẹp chưa?
+    => Không để trend day SELL bị chấm D chỉ vì chưa có close confirm.
     """
-    meta = (sig.get("meta") or {})
+    meta = sig.get("meta") or {}
     reasons = []
     score = 0.0
 
-    # 1) Final side
     sce1 = meta.get("signal_consistency_v1") or {}
-    final_side = str(sce1.get("final_side") or "NONE").upper()
+    mm1 = meta.get("market_mode_v1") or {}
+    pb1 = meta.get("pullback_engine_v1") or {}
+    cc1 = meta.get("close_confirm_v4") or {}
+    tg3 = meta.get("trigger_engine_v3") or {}
+    pbc = meta.get("post_break_continuity_v1") or {}
+    ema = meta.get("ema") or sig.get("ema") or {}
+    ntz = meta.get("no_trade_zone") or {}
+
+    final_side = str(
+        sce1.get("final_side")
+        or sce1.get("context_side")
+        or mm1.get("side")
+        or "NONE"
+    ).upper()
+
+    market_mode = str(mm1.get("mode") or "").upper()
+    action_mode = str(mm1.get("action_mode") or "").upper()
+    ema_trend = str(ema.get("trend") or "").upper()
+    ema_align = str(ema.get("alignment") or "").upper()
+    cc_strength = str(cc1.get("strength") or "NO").upper()
+    tg_state = str(tg3.get("state") or "WAIT").upper()
+    pbc_side = str(pbc.get("side") or "").upper()
+    pbc_state = str(pbc.get("state") or "").upper()
+
+    # =========================
+    # 1) CONTEXT SCORE
+    # =========================
     if final_side in ("BUY", "SELL"):
         score += 20
-        reasons.append(f"final side = {final_side}")
+        reasons.append(f"context side = {final_side}")
     else:
-        reasons.append("final side = NONE")
+        reasons.append("context side = NONE")
 
-    # 2) Pullback
-    pb1 = meta.get("pullback_engine_v1") or {}
+    if market_mode in ("TREND_DAY_DOWN", "TREND_DAY_UP"):
+        score += 25
+        reasons.append(f"market mode = {market_mode}")
+
+    if final_side == "SELL" and ema_trend == "BEARISH" and ema_align == "YES":
+        score += 15
+        reasons.append("EMA ủng hộ SELL")
+    elif final_side == "BUY" and ema_trend == "BULLISH" and ema_align == "YES":
+        score += 15
+        reasons.append("EMA ủng hộ BUY")
+    elif ema_align == "YES":
+        score += 5
+        reasons.append("EMA có alignment nhưng chưa cùng side")
+
+    if pbc_side == final_side and "HOLD" in pbc_state:
+        score += 15
+        reasons.append("post-break giữ đúng hướng")
+
+    # Pullback: trong trend day, pullback nông không được phạt nặng
+    try:
+        pb_pct = float(pb1.get("pullback_pct") or 0.0)
+    except Exception:
+        pb_pct = 0.0
+
+    pb_label = str(pb1.get("label") or "CHƯA RÕ")
     if pb1.get("ok"):
-        try:
-            pb_pct = float(pb1.get("pullback_pct") or 0.0)
-        except Exception:
-            pb_pct = 0.0
-
-        pb_label = str(pb1.get("label") or "CHƯA RÕ")
-        rr = str(pb1.get("reversal_risk") or "LOW").upper()
-
-        # vùng pullback đẹp
-        if 0.40 <= pb_pct <= 0.62:
-            score += 30
-        elif 0.25 <= pb_pct < 0.40 or 0.62 < pb_pct <= 0.78:
-            score += 22
-        elif 0.15 <= pb_pct < 0.25:
-            score += 15
+        if market_mode in ("TREND_DAY_DOWN", "TREND_DAY_UP") and pb_pct <= 0.25:
+            score += 10
+            reasons.append(f"pullback nông ({pb1.get('pullback_pct_text', 'n/a')}) = đặc điểm trend day")
+        elif 0.35 <= pb_pct <= 0.70:
+            score += 18
+            reasons.append(f"pullback đẹp ({pb1.get('pullback_pct_text', 'n/a')})")
         else:
             score += 8
+            reasons.append(f"pullback {pb_label.lower()} ({pb1.get('pullback_pct_text', 'n/a')})")
 
-        reasons.append(f"pullback {pb_label.lower()} ({pb1.get('pullback_pct_text', 'n/a')})")
+    # =========================
+    # 2) ENTRY / TIMING SCORE
+    # =========================
+    entry_bonus = 0
 
-        # reversal risk
-        if rr == "LOW":
-            score += 15
-        elif rr == "MEDIUM":
-            score += 8
-        else:
-            score -= 5
-
-        reasons.append(f"reversal risk = {rr}")
-
-    # 3) Close confirm
-    cc1 = meta.get("close_confirm_v4") or {}
-    cc_strength = str(cc1.get("strength") or "NO").upper()
     if cc_strength == "STRONG":
-        score += 20
+        entry_bonus += 20
         reasons.append("close confirm = STRONG")
     elif cc_strength == "WEAK":
-        score += 10
+        entry_bonus += 10
         reasons.append("close confirm = WEAK")
     else:
-        reasons.append("chưa có close confirm rõ")
+        reasons.append("entry chưa có close confirm rõ")
 
-    # 4) Trigger
-    tg3 = meta.get("trigger_engine_v3") or {}
-    tg_state = str(tg3.get("state") or "WAIT").upper()
-    if tg_state == "READY":
-        score += 10
-        reasons.append("trigger = READY")
-    elif tg_state == "TRIGGERED":
-        score += 15
+    if tg_state == "TRIGGERED":
+        entry_bonus += 15
         reasons.append("trigger = TRIGGERED")
+    elif tg_state == "READY":
+        entry_bonus += 10
+        reasons.append("trigger = READY")
     else:
         reasons.append("trigger chưa sẵn sàng")
 
-    # 5) Liquidity completion
-    ld1 = meta.get("liquidity_completion_v1") or {}
-    ld_state = str(ld1.get("state") or "").upper()
-    if ld_state == "YES":
-        score += 10
-        reasons.append("liquidity = YES")
-    elif ld_state == "PARTIAL":
-        score += 5
-        reasons.append("liquidity = PARTIAL")
+    score += entry_bonus
 
-    # clamp
+    # No-trade zone chỉ kéo Entry, không giết Context
+    if ntz.get("active"):
+        score -= 8
+        reasons.append("timing bị chặn bởi no-trade zone")
+
     score = max(0.0, min(100.0, score))
 
     if score >= 80:
         cls = "A"
-    elif score >= 60:
+    elif score >= 65:
         cls = "B"
-    elif score >= 40:
+    elif score >= 45:
         cls = "C"
     else:
         cls = "D"
 
-    # dedupe
+    # Trend day có context rõ thì không cho rớt D.
+    if market_mode in ("TREND_DAY_DOWN", "TREND_DAY_UP") and final_side in ("BUY", "SELL"):
+        if cls == "D":
+            cls = "C"
+            score = max(score, 45.0)
+            reasons.append("context trend day rõ → không xếp D, chỉ là entry chưa tới")
+
     out = []
     seen = set()
     for r in reasons:
@@ -303,42 +331,87 @@ def _setup_class_score_v3(sig: dict) -> tuple[str, float, list[str]]:
             seen.add(r)
             out.append(r)
 
-    return cls, round(score, 1), out[:4]
+    return cls, round(score, 1), out[:6]
 
 def _render_setup_class_block_v4(sig: dict, final_score, tradeable_label: str) -> list[str]:
-    meta = (sig.get("meta") or {})
-    sc3 = meta.get("setup_class_v3") or {}
+    """
+    Render mới:
+    - Context Grade: đúng hướng / đúng market chưa
+    - Entry Grade: hiện tại có bấm được chưa
+    """
+    meta = sig.get("meta") or {}
+    mm1 = meta.get("market_mode_v1") or {}
+    sce1 = meta.get("signal_consistency_v1") or {}
+    cc1 = meta.get("close_confirm_v4") or {}
+    tg3 = meta.get("trigger_engine_v3") or {}
+    ntz = meta.get("no_trade_zone") or {}
 
-    if sc3:
-        cls = str(sc3.get("class") or "D").upper()
-        try:
-            setup_score = float(sc3.get("score") or 0.0)
-        except Exception:
-            setup_score = 0.0
-        reasons = list(sc3.get("reasons") or [])
+    cls, setup_score, reasons = _setup_class_score_v3(sig)
+
+    mode = str(mm1.get("mode") or "UNKNOWN").upper()
+    side = str(mm1.get("side") or sce1.get("final_side") or "NONE").upper()
+    action_mode = str(mm1.get("action_mode") or sce1.get("action_mode") or "WAIT").upper()
+
+    cc_strength = str(cc1.get("strength") or "NO").upper()
+    tg_state = str(tg3.get("state") or "WAIT").upper()
+
+    # Entry grade riêng
+    entry_score = 0
+    entry_reasons = []
+
+    if cc_strength == "STRONG":
+        entry_score += 40
+        entry_reasons.append("close confirm mạnh")
+    elif cc_strength == "WEAK":
+        entry_score += 25
+        entry_reasons.append("close confirm yếu")
     else:
-        cls, setup_score, reasons = _setup_class_score_v3(sig)
+        entry_reasons.append("chưa có close confirm")
 
-    plan = _build_setup_plan_v1(sig, cls)
-    score_txt = f"{setup_score:.1f}".rstrip("0").rstrip(".")
+    if tg_state == "TRIGGERED":
+        entry_score += 40
+        entry_reasons.append("trigger đã kích hoạt")
+    elif tg_state == "READY":
+        entry_score += 25
+        entry_reasons.append("trigger gần sẵn sàng")
+    else:
+        entry_reasons.append("trigger chưa sẵn sàng")
+
+    if ntz.get("active"):
+        entry_score -= 15
+        entry_reasons.append("no-trade zone còn active")
+
+    entry_score = max(0, min(100, entry_score))
+
+    if entry_score >= 70:
+        entry_grade = "A"
+    elif entry_score >= 50:
+        entry_grade = "B"
+    elif entry_score >= 30:
+        entry_grade = "C"
+    else:
+        entry_grade = "D"
 
     lines = []
     lines.append("")
-    lines.append(f"📊 SETUP CLASS: {cls} ({score_txt}/100)")
-    lines.append("Lý do:")
-    for s in reasons:
+    lines.append(f"📊 SETUP CLASS: {cls} ({setup_score:.1f}/100)")
+    lines.append(f"- Context side: {side}")
+    lines.append(f"- Market mode: {mode}")
+    lines.append(f"- Action mode: {action_mode}")
+
+    lines.append("Lý do context:")
+    for s in reasons[:5]:
         lines.append(f"- {s}")
 
-    if not plan.get("show"):
-        return lines
+    lines.append("")
+    lines.append(f"🎯 ENTRY GRADE NOW: {entry_grade} ({entry_score}/100)")
+    for s in entry_reasons[:4]:
+        lines.append(f"- {s}")
 
-    lines.append(f"🎯 Entry: {plan.get('entry', 'n/a')}")
-    lines.append(f"🎯 TP: {plan.get('tp', 'n/a')}")
-    lines.append(f"🛑 SL: {plan.get('sl', 'n/a')}")
-
-    entry_val = str(plan.get("entry") or "").strip().lower()
-    if cls in ("A", "B") and entry_val not in ("", "n/a", "wait_trigger"):
-        lines.append(f"📌 Entry status: {plan.get('entry_status', 'WAIT_CONFIRM')}")
+    if mode in ("TREND_DAY_DOWN", "TREND_DAY_UP") and entry_grade in ("C", "D"):
+        lines.append("📌 Diễn giải:")
+        lines.append("- Context đúng hướng nhưng timing chưa đẹp.")
+        lines.append("- Không phải kèo rác; đây là kèo chờ trigger continuation/retest.")
 
     return lines
 
@@ -6776,13 +6849,15 @@ def _attach_vnext_meta(
             if fd_decision == "NO_TRADE" or master_state == "NO_TRADE":
                 mm1 = meta.get("market_mode_v1") or {}
                 mm_mode = str(mm1.get("mode") or "").upper()
-
-                # Nếu là trend day thì KHÔNG ép current_move về CHOP.
-                # Vì đây là lỗi làm bot đọc sai tổng quan: trend rõ nhưng output lại như market nhiễu.
-                if mm_mode in ("TREND_DAY_DOWN", "TREND_DAY_UP"):
-                    sce1["action_mode"] = mm1.get("action_mode") or "FOLLOW_TREND_CONDITIONAL"
+                mm_side = str(mm1.get("side") or "NONE").upper()
+            
+                if mm_mode in ("TREND_DAY_DOWN", "TREND_DAY_UP") and mm_side in ("BUY", "SELL"):
+                    # Trend day rõ: không được ép thành CHOP / NO_TRADE cụt ngủn
+                    sce1["action_mode"] = "FOLLOW_TREND_CONDITIONAL"
                     sce1["current_move"] = "TREND"
-                    sce1["final_side"] = mm1.get("side") or final_side_sync
+                    sce1["final_side"] = mm_side
+                    sce1["context_side"] = mm_side
+                    sce1["market_mode"] = mm_mode
                     sce1["narrative"] = (
                         "Trend day đang chạy; chưa có entry đẹp nhưng vẫn theo dõi continuation có điều kiện"
                     )
@@ -6798,24 +6873,47 @@ def _attach_vnext_meta(
             meta["signal_consistency_v1"] = sce1
         except Exception:
             pass
-        
+
         # ===== MASTER ENGINE OVERRIDE =====
         try:
             me1 = meta.get("master_engine_v1") or {}
-            if me1.get("tradeable_final") is False:
-                base["tradeable"] = False
-    
-            # score cap khi master chặn
-            if str(me1.get("state") or "").upper() == "NO_TRADE":
-                try:
-                    base["final_score"] = min(float(base.get("final_score", 0) or 0), 58.0)
-                except Exception:
-                    pass
-            elif str(me1.get("state") or "").upper() == "WAIT":
-                try:
-                    base["final_score"] = min(float(base.get("final_score", 0) or 0), 68.0)
-                except Exception:
-                    pass
+            mm1 = meta.get("market_mode_v1") or {}
+            mm_mode = str(mm1.get("mode") or "").upper()
+            mm_side = str(mm1.get("side") or "NONE").upper()
+        
+            if mm_mode in ("TREND_DAY_DOWN", "TREND_DAY_UP") and mm_side in ("BUY", "SELL"):
+                # Không biến trend day thành NO_TRADE.
+                # Ý nghĩa đúng: có context, nhưng timing chưa đẹp.
+                me1["state"] = "WAIT_TIMING"
+                me1["best_side"] = mm_side
+                me1["tradeable_final"] = "CONDITIONAL"
+                me1["confidence"] = "MEDIUM"
+                old_reasons = list(me1.get("reason") or [])
+                me1["reason"] = [
+                    "context trend day rõ",
+                    "chưa có entry confirmation",
+                    "chờ continuation/retest thay vì đứng ngoài tuyệt đối",
+                ] + old_reasons[:2]
+                meta["master_engine_v1"] = me1
+        
+                base["tradeable"] = False  # vẫn không auto-entry
+                base["final_score"] = max(float(base.get("final_score", 0) or 0), 45.0)
+                base["final_score"] = min(float(base.get("final_score", 0) or 0), 68.0)
+        
+            else:
+                if me1.get("tradeable_final") is False:
+                    base["tradeable"] = False
+        
+                if str(me1.get("state") or "").upper() == "NO_TRADE":
+                    try:
+                        base["final_score"] = min(float(base.get("final_score", 0) or 0), 58.0)
+                    except Exception:
+                        pass
+                elif str(me1.get("state") or "").upper() == "WAIT":
+                    try:
+                        base["final_score"] = min(float(base.get("final_score", 0) or 0), 68.0)
+                    except Exception:
+                        pass
         except Exception:
             pass
     except Exception as e:
@@ -12847,14 +12945,17 @@ def format_signal(sig: Dict[str, Any]) -> str:
     if me1:
         push_decision("")
         push_decision("🧠 MASTER ENGINE:")
-        push_decision(f"- State: {me1.get('state', 'NO_TRADE')}")
+        push_decision(f"- State: {me1.get('state', 'WAIT')}")
         push_decision(f"- Best side: {me1.get('best_side', 'NONE')}")
-        push_decision(f"- Tradeable final: {'YES' if me1.get('tradeable_final') else 'NO'}")
-        push_decision(f"- Confidence: {me1.get('confidence', 'HIGH')}")
-        if me1.get("reason"):
-            push_decision("- Lý do:")
-            for s in (me1.get("reason") or [])[:3]:
-                push_decision(f"  • {s}")
+        
+        tf = me1.get("tradeable_final")
+        if isinstance(tf, str):
+            tf_txt = tf.upper()
+        else:
+            tf_txt = "YES" if tf else "NO"
+        
+        push_decision(f"- Tradeable final: {tf_txt}")
+        push_decision(f"- Confidence: {me1.get('confidence', 'LOW')}")
     
     if sce1:
         push_decision("🧠 SIGNAL CONSISTENCY:")
@@ -13240,6 +13341,52 @@ def format_signal(sig: Dict[str, Any]) -> str:
     except Exception as e:
         push_conclusion("")
         push_conclusion(f"🔥 MARKET MODE: lỗi render ({e})")
+
+    # ===== PRACTICAL SUMMARY - BLOCK 3 =====
+    try:
+        mm1 = meta.get("market_mode_v1") or {}
+        pf1 = meta.get("path_forecast_v1") or {}
+        playbook = meta.get("playbook_v2") or {}
+        mode = str(mm1.get("mode") or "").upper()
+        side = str(mm1.get("side") or "NONE").upper()
+    
+        zlo = playbook.get("zone_low")
+        zhi = playbook.get("zone_high")
+    
+        def _fmt_zone(a, b):
+            try:
+                return f"{float(a):.3f} – {float(b):.3f}"
+            except Exception:
+                return "vùng kháng cự/hỗ trợ gần"
+    
+        if mode in ("TREND_DAY_DOWN", "TREND_DAY_UP"):
+            push_conclusion("")
+            push_conclusion("📌 KẾT LUẬN THỰC CHIẾN:")
+    
+            if side == "SELL":
+                if zlo is not None and zhi is not None:
+                    push_conclusion(f"- Không SELL đuổi tại giá thấp; vùng SELL đẹp hơn: {_fmt_zone(zlo, zhi)}.")
+                else:
+                    push_conclusion("- Không SELL đuổi tại giá thấp; ưu tiên chờ hồi về kháng cự gần.")
+    
+                push_conclusion("- Context hôm nay vẫn ưu tiên SELL.")
+                push_conclusion("- Nếu giá hồi lên rồi fail/rejection/đóng yếu → SELL đẹp nhất.")
+                push_conclusion("- Nếu không hồi: chỉ xét SELL continuation khi break low và giữ dưới.")
+                push_conclusion("- Không chờ hồi sâu quá lâu vì trend day thường không cho pullback đẹp.")
+    
+            elif side == "BUY":
+                if zlo is not None and zhi is not None:
+                    push_conclusion(f"- Không BUY đuổi tại giá cao; vùng BUY đẹp hơn: {_fmt_zone(zlo, zhi)}.")
+                else:
+                    push_conclusion("- Không BUY đuổi tại giá cao; ưu tiên chờ hồi về hỗ trợ gần.")
+    
+                push_conclusion("- Context hôm nay vẫn ưu tiên BUY.")
+                push_conclusion("- Nếu giá hồi xuống rồi giữ/rejection/đóng mạnh → BUY đẹp nhất.")
+                push_conclusion("- Nếu không hồi: chỉ xét BUY continuation khi break high và giữ trên.")
+                push_conclusion("- Không chờ hồi sâu quá lâu vì trend day thường không cho pullback đẹp.")
+    
+    except Exception as e:
+        push_conclusion(f"📌 KẾT LUẬN THỰC CHIẾN: lỗi render ({e})")
     push_conclusion("━━━━━━━━━━━")
     push_conclusion("🎯 KỊCH BẢN CHÍNH")
     push_conclusion("━━━━━━━━━━━")
