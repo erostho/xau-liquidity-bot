@@ -6750,10 +6750,8 @@ def _attach_vnext_meta(
             pass
     except Exception as e:
         base.setdefault("meta", {})["vnext_error"] = str(e)
-        _dbg(f"VNEXT EXCEPTION: {e}")
         logger.exception("VNEXT EXCEPTION STACK")
-    
-    _dbg(f"PBC BEFORE RETURN: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
+
     return base
 
 # =========================
