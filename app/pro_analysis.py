@@ -6636,6 +6636,63 @@ def _attach_vnext_meta(
         )
         meta["final_decision_engine_v1"] = final_decision_engine_v1
         # =========================================================
+        # ===== ELLIOTT PHASE V1 for EARLY RETURN / VNEXT =====
+        try:
+            meta = base.setdefault("meta", {})
+            k = meta.get("key_levels") or {}
+
+            flow1 = meta.get("flow_engine_v1") or {}
+            if not flow1:
+                gap1 = _detect_session_gap_v1(m15c=m15c, atr15=atr15)
+                flow1 = _build_flow_engine_v1(
+                    symbol=symbol,
+                    m15c=m15c,
+                    current_price=(
+                        base.get("current_price")
+                        or meta.get("current_price")
+                        or (_c_val(m15c[-1], "close", None) if m15c else None)
+                    ),
+                    atr15=atr15,
+                    liquidity_map_v1=liquidity_map_v1 if isinstance(liquidity_map_v1, dict) else {},
+                    fvg_range_plugin_v1=meta.get("fvg_range_plugin_v1") or {},
+                    gap_info_v1=gap1,
+                )
+                meta["gap_info_v1"] = gap1
+                meta["flow_engine_v1"] = flow1
+
+            elliott_phase_v1 = _elliott_phase_v1(
+                h4_struct=h4_trend,
+                h1_struct=h1_trend,
+                m15_struct=(m15_struct or {}).get("tag"),
+                pullback_info=meta.get("pullback_engine_v1") or {},
+                ema_filter=ema_pack if isinstance(ema_pack, dict) else {},
+                flow_engine_v1=flow1,
+                zone_action_v1=meta.get("zone_action_v1") or {},
+                current_price=(
+                    base.get("current_price")
+                    or meta.get("current_price")
+                    or (_c_val(m15c[-1], "close", None) if m15c else None)
+                ),
+                range_low=k.get("M15_RANGE_LOW"),
+                range_high=k.get("M15_RANGE_HIGH"),
+            )
+
+            meta["elliott_phase_v1"] = elliott_phase_v1
+            _dbg(f"ELLIOTT VNEXT SAVED: {elliott_phase_v1}")
+
+        except Exception as e:
+            _dbg(f"ELLIOTT VNEXT ERROR: {e}")
+            base.setdefault("meta", {})["elliott_phase_v1"] = {
+                "ok": False,
+                "main_tf": "H1/H4",
+                "phase": "ERROR",
+                "confidence": 0,
+                "meaning": f"Elliott phase lỗi: {e}",
+                "action": "Bỏ qua Elliott context",
+                "invalid": "n/a",
+                "reason": [],
+            }
+        
         # ===== POST-BREAK CONTINUITY INPUT FIX =====
         meta = base.setdefault("meta", {}) or {}
         k = (meta.get("key_levels") or {}) if isinstance(meta.get("key_levels"), dict) else {}
