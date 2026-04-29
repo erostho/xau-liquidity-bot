@@ -1735,8 +1735,13 @@ def _build_short_hint(
 
     return lines
 
-def _fmt(x: float) -> str:
-    return f"{x:.3f}".rstrip("0").rstrip(".")
+def _fmt(x, nd=3, default="n/a"):
+    try:
+        if x is None:
+            return default
+        return f"{float(x):.{nd}f}".rstrip("0").rstrip(".")
+    except Exception:
+        return default
 
 
 
