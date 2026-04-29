@@ -13675,9 +13675,27 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion("")
         push_conclusion(f"🔥 MARKET MODE: lỗi render ({e})")
 
+
+    # ===== DEBUG NEWS / MACRO =====
+    push_conclusion("")
+    push_conclusion("🧪 DEBUG MACRO:")
+    
+    news_items = meta.get("news_items") or []
+    macro = meta.get("macro_v2") or {}
+    
+    push_conclusion(f"- News count: {len(news_items)}")
+    
+    if news_items:
+        for n in news_items[:2]:
+            push_conclusion(f"  • {n.get('title')[:60]}")
+            push_conclusion(f"    tags={n.get('tags')} impact={n.get('impact')}")
+    else:
+        push_conclusion("- ❌ NO NEWS DATA")
+    
+    push_conclusion(f"- Macro raw: {str(macro)[:120]}")
+
     macro = meta.get("macro_v2") or {}
     news_items = meta.get("news_items") or []
-    
     push_conclusion("")
     push_conclusion("🌍 MACRO ENGINE V2:")
     push_conclusion(f"- Mode: {macro.get('macro_mode', 'NEUTRAL')}")
