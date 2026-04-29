@@ -8,7 +8,8 @@ import re
 from app.risk import calc_smart_sl_tp
 from dataclasses import dataclass
 import logging
-from app.news_fetcher_v1 import build_news_items_safe
+#from app.news_fetcher_v1 import build_news_items_safe
+from app.news_fetcher_v1 import build_news_items
 from app.macro_engine_v2 import build_macro_engine_v2
 logger = logging.getLogger("app.pro_analysis")
 
