@@ -11817,52 +11817,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["wait_for_v1"] = wait_for_v1
 
     # ===== AUTO NEWS + MACRO ENGINE V2 =====
-    # ===== AUTO NEWS + MACRO ENGINE V2 =====
-    try:
-        meta = base.setdefault("meta", {})
-    
-        try:
-            news_items = build_news_items()
-            logger.info(f"[NEWS] fetched: {len(news_items)}")
-        
-            for n in news_items[:3]:
-                logger.info(f"[NEWS] {n.get('title')} | impact={n.get('impact')}")
-        
-        except Exception as e:
-            logger.error(f"[NEWS ERROR] {e}")
-            news_items = []
-    
-        if not isinstance(news_items, list):
-            news_items = []
-    
-        macro_ctx = build_macro_engine_v2(news_items)
-        logger.info(f"[MACRO] ctx = {macro_ctx}")
-        if not isinstance(macro_ctx, dict):
-            macro_ctx = {}
-    
-        macro_ctx.setdefault("macro_mode", "NEUTRAL")
-        macro_ctx.setdefault("usd_strength", 0)
-        macro_ctx.setdefault("risk_mode", "NEUTRAL")
-        macro_ctx.setdefault("gold_bias", "NEUTRAL")
-        macro_ctx.setdefault("btc_bias", "NEUTRAL")
-        macro_ctx.setdefault("confidence", 0)
-        macro_ctx.setdefault("drivers", [])
-    
-        meta["news_items"] = news_items
-        meta["macro_v2"] = macro_ctx
-    
-    except Exception as e:
-        meta = base.setdefault("meta", {})
-        meta["news_items"] = []
-        meta["macro_v2"] = {
-            "macro_mode": "ERROR",
-            "usd_strength": 0,
-            "risk_mode": "NEUTRAL",
-            "gold_bias": "NEUTRAL",
-            "btc_bias": "NEUTRAL",
-            "confidence": 0,
-            "drivers": [f"macro error: {e}"],
-        }
+
 
     # ===== VNEXT RENDER APPEND =====
     try:
@@ -11976,6 +11931,53 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         entry_sniper=(locals().get("entry_sniper") or {}),
         playbook_v4=(locals().get("playbook_v4") or {}),
     )
+
+    # ===== AUTO NEWS + MACRO ENGINE V2 =====
+    try:
+        meta = base.setdefault("meta", {})
+    
+        try:
+            news_items = build_news_items()
+            logger.info(f"[NEWS] fetched: {len(news_items)}")
+        
+            for n in news_items[:3]:
+                logger.info(f"[NEWS] {n.get('title')} | impact={n.get('impact')}")
+        
+        except Exception as e:
+            logger.error(f"[NEWS ERROR] {e}")
+            news_items = []
+    
+        if not isinstance(news_items, list):
+            news_items = []
+    
+        macro_ctx = build_macro_engine_v2(news_items)
+        logger.info(f"[MACRO] ctx = {macro_ctx}")
+        if not isinstance(macro_ctx, dict):
+            macro_ctx = {}
+    
+        macro_ctx.setdefault("macro_mode", "NEUTRAL")
+        macro_ctx.setdefault("usd_strength", 0)
+        macro_ctx.setdefault("risk_mode", "NEUTRAL")
+        macro_ctx.setdefault("gold_bias", "NEUTRAL")
+        macro_ctx.setdefault("btc_bias", "NEUTRAL")
+        macro_ctx.setdefault("confidence", 0)
+        macro_ctx.setdefault("drivers", [])
+    
+        meta["news_items"] = news_items
+        meta["macro_v2"] = macro_ctx
+    
+    except Exception as e:
+        meta = base.setdefault("meta", {})
+        meta["news_items"] = []
+        meta["macro_v2"] = {
+            "macro_mode": "ERROR",
+            "usd_strength": 0,
+            "risk_mode": "NEUTRAL",
+            "gold_bias": "NEUTRAL",
+            "btc_bias": "NEUTRAL",
+            "confidence": 0,
+            "drivers": [f"macro error: {e}"],
+        }
     return base
     # =========================
     # Formatter (MUST be named format_signal for main.py import)
@@ -13677,23 +13679,52 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
 
     # ===== DEBUG NEWS / MACRO =====
-    push_conclusion("")
-    push_conclusion("🧪 DEBUG MACRO:")
+    # ===== AUTO NEWS + MACRO ENGINE V2 =====
+    try:
+        meta = base.setdefault("meta", {})
     
-    news_items = meta.get("news_items") or []
-    macro = meta.get("macro_v2") or {}
+        try:
+            news_items = build_news_items()
+            logger.info(f"[NEWS] fetched: {len(news_items)}")
+        
+            for n in news_items[:3]:
+                logger.info(f"[NEWS] {n.get('title')} | impact={n.get('impact')}")
+        
+        except Exception as e:
+            logger.error(f"[NEWS ERROR] {e}")
+            news_items = []
     
-    push_conclusion(f"- News count: {len(news_items)}")
+        if not isinstance(news_items, list):
+            news_items = []
     
-    if news_items:
-        for n in news_items[:2]:
-            push_conclusion(f"  • {n.get('title')[:60]}")
-            push_conclusion(f"    tags={n.get('tags')} impact={n.get('impact')}")
-    else:
-        push_conclusion("- ❌ NO NEWS DATA")
+        macro_ctx = build_macro_engine_v2(news_items)
+        logger.info(f"[MACRO] ctx = {macro_ctx}")
+        if not isinstance(macro_ctx, dict):
+            macro_ctx = {}
     
-    push_conclusion(f"- Macro raw: {str(macro)[:120]}")
-
+        macro_ctx.setdefault("macro_mode", "NEUTRAL")
+        macro_ctx.setdefault("usd_strength", 0)
+        macro_ctx.setdefault("risk_mode", "NEUTRAL")
+        macro_ctx.setdefault("gold_bias", "NEUTRAL")
+        macro_ctx.setdefault("btc_bias", "NEUTRAL")
+        macro_ctx.setdefault("confidence", 0)
+        macro_ctx.setdefault("drivers", [])
+    
+        meta["news_items"] = news_items
+        meta["macro_v2"] = macro_ctx
+    
+    except Exception as e:
+        meta = base.setdefault("meta", {})
+        meta["news_items"] = []
+        meta["macro_v2"] = {
+            "macro_mode": "ERROR",
+            "usd_strength": 0,
+            "risk_mode": "NEUTRAL",
+            "gold_bias": "NEUTRAL",
+            "btc_bias": "NEUTRAL",
+            "confidence": 0,
+            "drivers": [f"macro error: {e}"],
+        }
     macro = meta.get("macro_v2") or {}
     news_items = meta.get("news_items") or []
     push_conclusion("")
