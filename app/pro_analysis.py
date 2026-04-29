@@ -467,7 +467,13 @@ def _compute_final_score_v2(sig: dict) -> dict:
         context_cls, context_score, context_reasons = "D", 0.0, []
 
     entry_score, entry_grade, entry_reasons = _entry_score_v2(meta)
-
+    final_side = str(
+        sig.get("final_side")
+        or sig.get("side")
+        or (sig.get("meta") or {}).get("context_side")
+        or (sig.get("meta") or {}).get("bias_side")
+        or "NONE"
+    ).upper()
     mm1 = meta.get("market_mode_v1") or {}
     ntz = meta.get("no_trade_zone") or {}
     flow_filter = meta.get("smart_filter_v1") or meta.get("fvg_range_plugin_v1") or {}
