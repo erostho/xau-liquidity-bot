@@ -379,7 +379,7 @@ def _entry_score_v2(meta: dict) -> tuple[int, str, list[str]]:
     ntz = meta.get("no_trade_zone") or {}
     pe = _probe_status_v1(meta)
 
-    score = 0
+    score = 0.0
     reasons = []
 
     cc_strength = str(cc1.get("strength") or "NO").upper()
@@ -458,7 +458,7 @@ def _compute_final_score_v2(sig: dict) -> dict:
     """
     sig = sig or {}
     meta = sig.get("meta") or {}
-
+    score = 0.0
     # Context score từ setup class hiện có
     try:
         context_cls, context_score, context_reasons = _setup_class_score_v3(sig)
