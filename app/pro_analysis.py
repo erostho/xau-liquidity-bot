@@ -11823,15 +11823,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     
         try:
             news_items = build_news_items()
-            print("DEBUG NEWS:", len(news_items))
-        except Exception:
+            logger.info(f"[NEWS] fetched: {len(news_items)}")
+        
+            for n in news_items[:3]:
+                logger.info(f"[NEWS] {n.get('title')} | impact={n.get('impact')}")
+        
+        except Exception as e:
+            logger.error(f"[NEWS ERROR] {e}")
             news_items = []
     
         if not isinstance(news_items, list):
             news_items = []
     
         macro_ctx = build_macro_engine_v2(news_items)
-        print("DEBUG MACRO:", macro_ctx)
+        logger.info(f"[MACRO] ctx = {macro_ctx}")
         if not isinstance(macro_ctx, dict):
             macro_ctx = {}
     
@@ -11847,7 +11852,6 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         meta["macro_v2"] = macro_ctx
     
     except Exception as e:
-        print("MACRO ERROR:", e)
         meta = base.setdefault("meta", {})
         meta["news_items"] = []
         meta["macro_v2"] = {
