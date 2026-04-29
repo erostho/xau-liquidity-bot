@@ -11822,6 +11822,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     
         # gọi news
         news_items = build_news_items_safe()
+        print("DEBUG NEWS ITEMS:", news_items)
     
         # đảm bảo luôn là list
         if not isinstance(news_items, list):
@@ -11829,6 +11830,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     
         # build macro
         macro_ctx = build_macro_engine_v2(news_items)
+        print("DEBUG MACRO RAW:", macro_ctx)
     
         # fallback tránh None
         if not isinstance(macro_ctx, dict):
@@ -11847,6 +11849,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         meta["macro_v2"] = macro_ctx
     
     except Exception as e:
+        print("DEBUG MACRO ERROR:", e)
         meta = base.setdefault("meta", {})
         meta["news_items"] = []
         meta["macro_v2"] = {
