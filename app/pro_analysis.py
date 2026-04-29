@@ -8,6 +8,7 @@ import re
 from app.risk import calc_smart_sl_tp
 from dataclasses import dataclass
 import logging
+from app.macro_engine_v2 import build_macro_engine_v2
 logger = logging.getLogger("app.pro_analysis")
 
 # --- Safe candle access helpers (dict / dataclass / object) ---
@@ -469,14 +470,17 @@ def _compute_final_score_v2(sig: dict) -> dict:
     ntz = meta.get("no_trade_zone") or {}
     flow_filter = meta.get("smart_filter_v1") or meta.get("fvg_range_plugin_v1") or {}
     range_filter = flow_filter.get("range_filter") or {}
-
     mode = str(mm1.get("mode") or "").upper()
     side = str(mm1.get("side") or "NONE").upper()
     action_mode = str(mm1.get("action_mode") or "").upper()
-
     risk_penalty = 0
     risk_reasons = []
-
+    macro = meta.get("macro_v2") or {}
+    if macro.get("macro_mode") == "STRONG_THEME":
+        if macro.get("gold_bias") == final_side or macro.get("btc_bias") == final_side:
+            score += 5
+        elif macro.get("gold_bias") not in ("NEUTRAL", final_side):
+            score -= 7
     # no-trade zone không còn cap 35, nhưng vẫn trừ risk
     if ntz.get("active"):
         risk_penalty += 8
@@ -11757,6 +11761,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["decision_engine_v1"] = decision_engine_v1
     meta["wait_for_v1"] = wait_for_v1
 
+    # ===== MACRO ENGINE V2 =====
+    try:
+        news_items = base.get("news_items") or []  # hoặc bạn tự fetch
+        macro_ctx = build_macro_engine_v2(news_items)
+        base["meta"]["macro_v2"] = macro_ctx
+    except Exception:
+        base["meta"]["macro_v2"] = {}
     
     # ===== PRO DESK ADD =====
     market_state_machine_v1 = _market_state_machine_v1(
@@ -13616,6 +13627,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion("")
         push_conclusion(f"🔥 MARKET MODE: lỗi render ({e})")
 
+    macro = meta.get("macro_v2") or {}
+    push_conclusion("")
+    push_conclusion("🌍 MACRO ENGINE V2:")
+    push_conclusion(f"- Mode: {macro.get('macro_mode')}")
+    push_conclusion(f"- USD strength: {macro.get('usd_strength')}")
+    push_conclusion(f"- Risk mode: {macro.get('risk_mode')}")
+    push_conclusion(f"- Gold bias: {macro.get('gold_bias')}")
+    push_conclusion(f"- BTC bias: {macro.get('btc_bias')}")
+    push_conclusion(f"- Confidence: {macro.get('confidence')}%")
+    
+    drivers = macro.get("drivers") or []
+    if drivers:
+        push_conclusion(f"- Drivers: {', '.join(drivers[:3])}")
     # ===== PRACTICAL SUMMARY - BLOCK 3 =====
     try:
         mm1 = meta.get("market_mode_v1") or {}
