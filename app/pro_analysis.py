@@ -9989,7 +9989,66 @@ def _detect_market_mode_v1(
         out["summary"] = f"Market mode lỗi: {e}"
         return out
         
+def macro_conflict_filter_v1(symbol: str, final_side: str, macro: dict) -> dict:
+    symbol = str(symbol or "").upper()
+    side = str(final_side or "NONE").upper()
+    macro = macro or {}
 
+    out = {
+        "conflict": False,
+        "severity": "NONE",
+        "macro_bias": "NEUTRAL",
+        "action": "ALLOW",
+        "score_adjust": 0,
+        "block_add": False,
+        "reason": [],
+    }
+
+    if side not in ("BUY", "SELL"):
+        out["reason"].append("final_side chưa rõ")
+        return out
+
+    mode = str(macro.get("macro_mode") or "NEUTRAL").upper()
+    conf = float(macro.get("confidence") or 0)
+
+    if "XAU" in symbol or "GOLD" in symbol:
+        mb = str(macro.get("gold_bias") or "NEUTRAL").upper()
+    elif "BTC" in symbol:
+        mb = str(macro.get("btc_bias") or "NEUTRAL").upper()
+    else:
+        mb = "NEUTRAL"
+
+    out["macro_bias"] = mb
+
+    if mode not in ("STRONG_THEME", "WEAK_THEME") or mb in ("NEUTRAL", "MIXED", "NONE"):
+        out["reason"].append("macro chưa đủ rõ để can thiệp")
+        return out
+
+    if mb == side:
+        out["severity"] = "ALIGN"
+        out["score_adjust"] = 5 if mode == "STRONG_THEME" else 2
+        out["reason"].append(f"macro cùng chiều {side}")
+        return out
+
+    # macro ngược chart
+    out["conflict"] = True
+    out["block_add"] = True
+
+    if mode == "STRONG_THEME" and conf >= 75:
+        out["severity"] = "HIGH"
+        out["action"] = "BLOCK_AGGRESSIVE_ENTRY"
+        out["score_adjust"] = -12
+        out["reason"].append(f"macro {mb} ngược final_side {side}")
+        out["reason"].append("theme vĩ mô mạnh → không add/không vào đuổi")
+    else:
+        out["severity"] = "MEDIUM"
+        out["action"] = "REDUCE_SIZE_WAIT_CONFIRM"
+        out["score_adjust"] = -6
+        out["reason"].append(f"macro {mb} ngược final_side {side}")
+        out["reason"].append("chỉ trade nếu có confirmation rất rõ")
+
+    return out
+    
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict], current_price: float | None = None) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -10112,6 +10171,31 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "confidence": 0,
             "drivers": [f"macro error: {e}"],
         }
+
+    try:
+        meta = base.setdefault("meta", {})
+        macro = meta.get("macro_v2") or {}
+    
+        fs = str(
+            meta.get("final_side")
+            or meta.get("signal_consistency_v1", {}).get("final_side")
+            or meta.get("master_engine_v1", {}).get("best_side")
+            or base.get("side")
+            or "NONE"
+        ).upper()
+    
+        mcf = macro_conflict_filter_v1(symbol, fs, macro)
+        meta["macro_conflict_filter_v1"] = mcf
+    
+        cur_score = float(base.get("final_score") or 0)
+        base["final_score"] = max(0, min(100, cur_score + float(mcf.get("score_adjust") or 0)))
+    
+        if mcf.get("conflict") and mcf.get("severity") == "HIGH":
+            base["tradeable"] = False
+            meta["macro_block_reason"] = "Macro ngược hướng kỹ thuật mạnh"
+    
+    except Exception as e:
+        _dbg(f"[MACRO CONFLICT ERROR] {e}")
     # ---- Safety / normalize candles
     m15c = _safe_candles(m15)
     m30c = _safe_candles(m30)
@@ -13721,6 +13805,19 @@ def format_signal(sig: Dict[str, Any]) -> str:
     drivers = macro.get("drivers") or []
     if drivers:
         push_conclusion(f"- Drivers: {', '.join(str(x) for x in drivers[:3])}")
+    mcf = meta.get("macro_conflict_filter_v1") or {}
+    if mcf:
+        push_conclusion("")
+        push_conclusion("⚠️ MACRO CONFLICT FILTER:")
+        push_conclusion(f"- Conflict: {'YES' if mcf.get('conflict') else 'NO'}")
+        push_conclusion(f"- Macro bias: {mcf.get('macro_bias', 'NEUTRAL')}")
+        push_conclusion(f"- Severity: {mcf.get('severity', 'NONE')}")
+        push_conclusion(f"- Action: {mcf.get('action', 'ALLOW')}")
+        push_conclusion(f"- Score adjust: {mcf.get('score_adjust', 0)}")
+        if mcf.get("block_add"):
+            push_conclusion("- Add position: BLOCK")
+        for r in (mcf.get("reason") or [])[:3]:
+            push_conclusion(f"- {r}")
     # ===== PRACTICAL SUMMARY - BLOCK 3 =====
     try:
         mm1 = meta.get("market_mode_v1") or {}
