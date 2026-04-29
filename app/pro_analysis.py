@@ -7031,10 +7031,10 @@ def _attach_vnext_meta(
             )
 
             meta["elliott_phase_v1"] = elliott_phase_v1
-            _dbg(f"ELLIOTT VNEXT SAVED: {elliott_phase_v1}")
+
 
         except Exception as e:
-            _dbg(f"ELLIOTT VNEXT ERROR: {e}")
+
             base.setdefault("meta", {})["elliott_phase_v1"] = {
                 "ok": False,
                 "main_tf": "H1/H4",
@@ -7088,7 +7088,7 @@ def _attach_vnext_meta(
             if k.get("M15_RANGE_HIGH") is not None
             else k.get("H1_HH")
         )
-        _dbg("PBC checkpoint: before build")
+
         continuity_v1 = _post_break_continuity_engine_v1(
             current_price=pbc_current_price,
             bos_level=pbc_bos,
@@ -7102,14 +7102,14 @@ def _attach_vnext_meta(
         )
 
         # ===== DEBUG POST BREAK =====
-        _dbg("PBC checkpoint: built continuity_v1")
-        _dbg(f"PBC RAW: {continuity_v1}")
+        #_dbg("PBC checkpoint: built continuity_v1")
+        #_dbg(f"PBC RAW: {continuity_v1}")
         
         base.setdefault("meta", {})["post_break_continuity_v1"] = continuity_v1
         meta["post_break_continuity_v1"] = continuity_v1
         
-        _dbg(f"PBC META SAVED: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
-        _dbg(
+        #_dbg(f"PBC META SAVED: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
+        #_dbg(
             f"PBC STATE: {continuity_v1.get('state','NONE')} | "
             f"SIDE: {continuity_v1.get('side','NONE')} | "
             f"REF: {continuity_v1.get('reference')}"
@@ -11607,9 +11607,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         )
     
         meta["elliott_phase_v1"] = elliott_phase_v1
-        _dbg(f"ELLIOTT SAVED: {elliott_phase_v1}")
+
     except Exception as e:
-        _dbg(f"ELLIOTT ERROR: {e}")
+
         base.setdefault("meta", {})["elliott_phase_v1"] = {
             "ok": False,
             "main_tf": "H1/H4",
