@@ -11817,39 +11817,27 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["wait_for_v1"] = wait_for_v1
 
     # ===== AUTO NEWS + MACRO ENGINE V2 =====
+    # ===== MACRO ENGINE V2 =====
     try:
         meta = base.setdefault("meta", {})
     
-        # gọi news
-        news_items = build_news_items_safe()
-        print("DEBUG NEWS ITEMS:", news_items)
+        # 🔥 FETCH NEWS REAL
+        news_items = build_news_items()
     
-        # đảm bảo luôn là list
-        if not isinstance(news_items, list):
-            news_items = []
+        # DEBUG
+        print("DEBUG NEWS:", len(news_items))
     
-        # build macro
         macro_ctx = build_macro_engine_v2(news_items)
-        print("DEBUG MACRO RAW:", macro_ctx)
     
-        # fallback tránh None
-        if not isinstance(macro_ctx, dict):
-            macro_ctx = {}
+        # DEBUG
+        print("DEBUG MACRO:", macro_ctx)
     
-        macro_ctx.setdefault("macro_mode", "NEUTRAL")
-        macro_ctx.setdefault("usd_strength", 0)
-        macro_ctx.setdefault("risk_mode", "NEUTRAL")
-        macro_ctx.setdefault("gold_bias", "NEUTRAL")
-        macro_ctx.setdefault("btc_bias", "NEUTRAL")
-        macro_ctx.setdefault("confidence", 0)
-        macro_ctx.setdefault("drivers", [])
-    
-        # save vào meta
         meta["news_items"] = news_items
         meta["macro_v2"] = macro_ctx
     
     except Exception as e:
-        print("DEBUG MACRO ERROR:", e)
+        print("MACRO ERROR:", e)
+    
         meta = base.setdefault("meta", {})
         meta["news_items"] = []
         meta["macro_v2"] = {
@@ -11859,7 +11847,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "gold_bias": "NEUTRAL",
             "btc_bias": "NEUTRAL",
             "confidence": 0,
-            "drivers": [f"macro error: {e}"],
+            "drivers": [str(e)],
         }
         
     # ===== VNEXT RENDER APPEND =====
