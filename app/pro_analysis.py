@@ -1382,6 +1382,9 @@ def _sweep_grade(sw: Dict[str, Any]) -> str:
 
 def _entry_zone_v6(side: str, k: Dict[str, Any], atr15: float) -> Tuple[Optional[float], Optional[float]]:
     """Refine entry zone around BOS + pullback extreme / wick area."""
+    # FIX: key_levels phải luôn được khởi tạo trước khi dùng
+    meta = base.setdefault("meta", {})
+    k = meta.get("key_levels") or {}
     bos = _safe_float((k or {}).get("M15_BOS"))
     pbx = _safe_float((k or {}).get("M15_PB_EXT"))
     hi = _safe_float((k or {}).get("M15_RANGE_HIGH"))
@@ -11545,6 +11548,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["liquidity_reaction_v1"] = liquidity_reaction_v1
 
     # ===== ABSORPTION ENGINE =====
+    # FIX: key_levels phải luôn được khởi tạo trước khi dùng
+    meta = base.setdefault("meta", {})
+    k = meta.get("key_levels") or {}
     absorption_v1 = _absorption_v1(
         m15c=m15c,
         volq=volq if 'volq' in locals() else {},
