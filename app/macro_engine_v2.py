@@ -13,7 +13,18 @@ TAG_EXPLANATION_MAP = {
 
     "CRYPTO": "Tin tức crypto → ảnh hưởng trực tiếp BTC",
 }
+def explain_tags_v1(news_items: list) -> list:
+    explanations = []
 
+    for item in news_items:
+        tags = item.get("tags") or []
+
+        for t in tags:
+            exp = TAG_EXPLANATION_MAP.get(t)
+            if exp and exp not in explanations:
+                explanations.append(exp)
+
+    return explanations
 def build_macro_engine_v2(news_items: list) -> dict:
     ctx = {
         "macro_mode": "NEUTRAL",
