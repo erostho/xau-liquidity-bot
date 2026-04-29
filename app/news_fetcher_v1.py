@@ -1,13 +1,19 @@
 # app/news_fetcher_v1.py
 from __future__ import annotations
-
 import os
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
-
 from app.news_tagger_v1 import tag_news_item
 
+import logging
+logger = logging.getLogger("app.news_fetcher")
+
+def _dbg(msg):
+    try:
+        logger.info(msg)
+    except Exception:
+        pass
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "").strip()
 
@@ -46,6 +52,8 @@ def fetch_news_api(page_size: int = 20) -> List[Dict[str, Any]]:
         }
 
         r = requests.get(url, params=params, timeout=8)
+        _dbg(f"[NEWS API] status={res.status_code}")
+        _dbg(f"[NEWS API] text={res.text[:300]}")
         data = r.json() if r is not None else {}
 
         if data.get("status") != "ok":
@@ -70,71 +78,44 @@ def _impact_from_tags(tags: List[str]) -> str:
     return "LOW"
 
 
-def build_news_items(max_items: int = 8, lookback_hours: int = 12) -> List[Dict[str, Any]]:
-    """
-    Output chuẩn cho macro_engine_v2:
+def build_news_items():
+    import requests
 
-    [
-      {
-        "title": "...",
-        "source": "...",
-        "published_at": "...",
-        "url": "...",
-        "tags": ["FED_HAWKISH"],
-        "impact": "HIGH"
-      }
-    ]
-    """
-    raw = fetch_news_api(page_size=30)
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=max(1, int(lookback_hours)))
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": "gold OR bitcoin OR fed OR inflation OR war",
+        "language": "en",
+        "sortBy": "publishedAt",
+        "apiKey": os.getenv("NEWS_API_KEY")
+    }
 
-    out: List[Dict[str, Any]] = []
-    seen = set()
+    try:
+        _dbg(f"[NEWS API] calling...")
 
-    for art in raw:
-        try:
-            title = str(art.get("title") or "").strip()
-            if not title:
-                continue
+        res = requests.get(url, params=params, timeout=10)
 
-            published_at = art.get("publishedAt")
-            dt = _parse_dt_utc(published_at)
+        _dbg(f"[NEWS API] status = {res.status_code}")
+        _dbg(f"[NEWS API] text = {res.text[:300]}")  # 🔥 QUAN TRỌNG
 
-            # Nếu có timestamp thì lọc theo lookback.
-            if dt is not None and dt < cutoff:
-                continue
+        data = res.json()
 
-            tags = tag_news_item(title)
-            if not tags:
-                continue
+        articles = data.get("articles") or []
 
-            key = title.lower()
-            if key in seen:
-                continue
-            seen.add(key)
+        _dbg(f"[NEWS API] articles count = {len(articles)}")
 
-            source_obj = art.get("source") or {}
-            source = source_obj.get("name") if isinstance(source_obj, dict) else ""
+        items = []
+        for a in articles:
+            items.append({
+                "title": a.get("title"),
+                "desc": a.get("description"),
+                "source": a.get("source", {}).get("name"),
+            })
 
-            out.append(
-                {
-                    "title": title,
-                    "source": source or "newsapi",
-                    "published_at": published_at,
-                    "url": art.get("url"),
-                    "tags": tags,
-                    "impact": _impact_from_tags(tags),
-                }
-            )
+        return items
 
-            if len(out) >= int(max_items):
-                break
-
-        except Exception:
-            continue
-
-    return out
+    except Exception as e:
+        _dbg(f"[NEWS API ERROR] {e}")
+        return []
 
 
 def build_news_items_safe() -> List[Dict[str, Any]]:
