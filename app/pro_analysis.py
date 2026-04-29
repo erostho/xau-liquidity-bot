@@ -11810,13 +11810,49 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["decision_engine_v1"] = decision_engine_v1
     meta["wait_for_v1"] = wait_for_v1
 
-    # ===== MACRO ENGINE V2 =====
+    # ===== AUTO NEWS + MACRO ENGINE V2 =====
     try:
-        news_items = base.get("news_items") or []  # hoặc bạn tự fetch
+        meta = base.setdefault("meta", {})
+    
+        # gọi news
+        news_items = build_news_items_safe()
+    
+        # đảm bảo luôn là list
+        if not isinstance(news_items, list):
+            news_items = []
+    
+        # build macro
         macro_ctx = build_macro_engine_v2(news_items)
-        base["meta"]["macro_v2"] = macro_ctx
-    except Exception:
-        base["meta"]["macro_v2"] = {}
+    
+        # fallback tránh None
+        if not isinstance(macro_ctx, dict):
+            macro_ctx = {}
+    
+        macro_ctx.setdefault("macro_mode", "NEUTRAL")
+        macro_ctx.setdefault("usd_strength", 0)
+        macro_ctx.setdefault("risk_mode", "NEUTRAL")
+        macro_ctx.setdefault("gold_bias", "NEUTRAL")
+        macro_ctx.setdefault("btc_bias", "NEUTRAL")
+        macro_ctx.setdefault("confidence", 0)
+        macro_ctx.setdefault("drivers", [])
+    
+        # save vào meta
+        meta["news_items"] = news_items
+        meta["macro_v2"] = macro_ctx
+    
+    except Exception as e:
+        meta = base.setdefault("meta", {})
+        meta["news_items"] = []
+        meta["macro_v2"] = {
+            "macro_mode": "ERROR",
+            "usd_strength": 0,
+            "risk_mode": "NEUTRAL",
+            "gold_bias": "NEUTRAL",
+            "btc_bias": "NEUTRAL",
+            "confidence": 0,
+            "drivers": [f"macro error: {e}"],
+        }
+        
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
@@ -13629,6 +13665,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"🔥 MARKET MODE: lỗi render ({e})")
 
     macro = meta.get("macro_v2") or {}
+    news_items = meta.get("news_items") or []
     push_conclusion("")
     push_conclusion("🌍 MACRO ENGINE V2:")
     push_conclusion(f"- Mode: {macro.get('macro_mode')}")
@@ -13637,7 +13674,7 @@ def format_signal(sig: Dict[str, Any]) -> str:
     push_conclusion(f"- Gold bias: {macro.get('gold_bias')}")
     push_conclusion(f"- BTC bias: {macro.get('btc_bias')}")
     push_conclusion(f"- Confidence: {macro.get('confidence')}%")
-    
+    push_conclusion(f"- News items: {len(news_items)}")
     drivers = macro.get("drivers") or []
     if drivers:
         push_conclusion(f"- Drivers: {', '.join(drivers[:3])}")
