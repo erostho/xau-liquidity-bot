@@ -1,3 +1,19 @@
+TAG_EXPLANATION_MAP = {
+    "WAR": "Chiến tranh/căng thẳng → dòng tiền trú ẩn → hỗ trợ GOLD",
+    "GEOPOLITICS": "Rủi ro địa chính trị → market chuyển sang RISK_OFF",
+    
+    "FED_HAWKISH": "FED hawkish → lãi suất cao → USD mạnh → áp lực lên crypto",
+    "FED_DOVISH": "FED dovish → nới lỏng → hỗ trợ tài sản rủi ro",
+
+    "INFLATION_HIGH": "Lạm phát cao → nhu cầu hedge tăng → GOLD được hỗ trợ",
+    "CPI": "Dữ liệu CPI → ảnh hưởng kỳ vọng lãi suất",
+
+    "RATE_HIKE": "Tăng lãi suất → giảm thanh khoản → tài sản rủi ro bị bán",
+    "RATE_CUT": "Giảm lãi suất → tăng thanh khoản → hỗ trợ crypto và stocks",
+
+    "CRYPTO": "Tin tức crypto → ảnh hưởng trực tiếp BTC",
+}
+
 def build_macro_engine_v2(news_items: list) -> dict:
     ctx = {
         "macro_mode": "NEUTRAL",
