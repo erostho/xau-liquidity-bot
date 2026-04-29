@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from app.data_source import get_candles, ingest_mt5_candles
-from app.pro_analysis import analyze_pro, format_signal, build_scale_plan_v2, format_scale_plan_v2, get_now_status, _setup_class_score_v3
+from app.pro_analysis import analyze_pro, format_signal, build_scale_plan_v2, format_scale_plan_v2, get_now_status, _setup_class_score_v3, build_review_decision_engine_v2
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
@@ -367,118 +367,7 @@ def _trade_management_5_10_15(
         lines.append("Có rejection candle gần đây → cân nhắc harvest bớt vị thế.")
     return {"stage": "15", "label": "Harvest", "lines": lines}
 
-def build_review_decision_engine_v2(sig: dict) -> dict:
-    meta = sig.get("meta") or {}
 
-    # ===== INPUT =====
-    ex1 = meta.get("execution_engine_v1") or {}
-    gate = meta.get("confirmation_gate_v1") or {}
-    trig = meta.get("trigger_engine_v3") or {}
-    sc = meta.get("signal_consistency_v1") or {}
-    pf1 = meta.get("path_forecast_v1") or {}
-
-    side = str(ex1.get("side") or sc.get("final_side") or "NONE").upper()
-    ex_state = str(ex1.get("state") or "WAIT").upper()
-    pos = ex1.get("position_pct")  # 0 → 1
-    entry = ex1.get("entry_price")
-    current = ex1.get("current_price")
-
-    # ===== DEFAULT =====
-    decision = "WAIT"
-    add_action = "NO_ADD"
-    entry_status = "UNKNOWN"
-    risk_note = []
-    wait_conditions = []
-    wrong_reasons = []
-
-    # ===== ENTRY QUALITY =====
-    if isinstance(pos, (int, float)):
-        if side == "SELL":
-            if pos < 0.25:
-                entry_status = "TRỄ (SELL thấp)"
-            elif pos > 0.7:
-                entry_status = "ĐẸP"
-            else:
-                entry_status = "GIỮA"
-        elif side == "BUY":
-            if pos > 0.75:
-                entry_status = "TRỄ (BUY cao)"
-            elif pos < 0.3:
-                entry_status = "ĐẸP"
-            else:
-                entry_status = "GIỮA"
-
-    # ===== DECISION =====
-    if ex_state == "EXIT_NOW":
-        decision = "EXIT"
-    elif ex_state == "REDUCE_RISK":
-        decision = "REDUCE"
-    elif ex_state in ("HOLD", "HOLD_LIGHT"):
-        decision = "HOLD"
-    else:
-        decision = "WAIT"
-
-    # ===== ADD LOGIC =====
-    trig_state = str(trig.get("state") or "WAIT").upper()
-
-    if decision != "HOLD":
-        add_action = "❌ Không add"
-    else:
-        if trig_state == "TRIGGERED":
-            add_action = "✅ Có thể add nhẹ"
-        elif trig_state == "READY":
-            add_action = "⚠️ Chỉ add khi confirm"
-        else:
-            add_action = "❌ Không add (chưa trigger)"
-
-    # ===== WRONG REASONS =====
-    if isinstance(pos, (int, float)):
-        if side == "SELL" and pos < 0.2:
-            wrong_reasons.append("SELL tại vùng thấp")
-        if side == "BUY" and pos > 0.8:
-            wrong_reasons.append("BUY tại vùng cao")
-
-    if side == "SELL" and not gate.get("lh"):
-        wrong_reasons.append("chưa có LH")
-    if side == "BUY" and not gate.get("hl"):
-        wrong_reasons.append("chưa có HL")
-
-    # ===== WAIT CONDITIONS =====
-    if decision != "HOLD":
-        if side == "SELL":
-            if not gate.get("lh"):
-                wait_conditions.append("chưa có LH")
-            if not gate.get("break_dn"):
-                wait_conditions.append("chưa break low")
-        elif side == "BUY":
-            if not gate.get("hl"):
-                wait_conditions.append("chưa có HL")
-            if not gate.get("break_up"):
-                wait_conditions.append("chưa break high")
-
-    # ===== RISK NOTE =====
-    try:
-        if side == "SELL" and current and entry:
-            if current > entry:
-                risk_note.append("đang âm → cần kiểm soát SL")
-            elif (entry - current) > 0:
-                risk_note.append("đang lời → cân nhắc dời SL")
-        elif side == "BUY" and current and entry:
-            if current < entry:
-                risk_note.append("đang âm → cần kiểm soát SL")
-            elif (current - entry) > 0:
-                risk_note.append("đang lời → cân nhắc dời SL")
-    except Exception:
-        pass
-
-    return {
-        "decision": decision,
-        "add_action": add_action,
-        "entry_status": entry_status,
-        "wait_conditions": wait_conditions,
-        "wrong_reasons": wrong_reasons,
-        "risk_note": risk_note
-    }
 
 def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float, tp: float | None, sl: float | None) -> str:
     symbol = str(symbol or "").strip().upper()
@@ -497,13 +386,11 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
             return f"{int(round(float(x) * 100))}%"
         except Exception:
             return default
-
     def _safe_float(x, default: float = 0.0) -> float:
         try:
             return float(x) if x is not None else default
         except Exception:
             return default
-
     try:
         entry_lo = float(entry_lo)
         entry_hi = float(entry_hi)
