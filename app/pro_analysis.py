@@ -10036,7 +10036,76 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     htf_pressure_v4 = {}
     macro_v4 = {}
     
-
+    # ===== AUTO NEWS + MACRO ENGINE V2 =====
+    try:
+        meta = base.setdefault("meta", {})
+    
+        _dbg("[NEWS] START build_news_items()")
+    
+        try:
+            news_items = build_news_items()
+            _dbg(f"[NEWS] fetched: {len(news_items) if isinstance(news_items, list) else 'BAD_TYPE'}")
+    
+            if isinstance(news_items, list):
+                for n in news_items[:3]:
+                    _dbg(
+                        f"[NEWS] item: {n.get('title')} | "
+                        f"tags={n.get('tags')} | impact={n.get('impact')}"
+                    )
+            else:
+                _dbg(f"[NEWS] bad return type: {type(news_items)}")
+                news_items = []
+    
+        except Exception as e:
+            _dbg(f"[NEWS ERROR] build_news_items failed: {e}")
+            news_items = []
+    
+        if not isinstance(news_items, list):
+            news_items = []
+    
+        _dbg(f"[MACRO] input news count = {len(news_items)}")
+    
+        try:
+            macro_ctx = build_macro_engine_v2(news_items)
+            _dbg(f"[MACRO] raw ctx = {macro_ctx}")
+        except Exception as e:
+            _dbg(f"[MACRO ERROR] build_macro_engine_v2 failed: {e}")
+            macro_ctx = {}
+    
+        if not isinstance(macro_ctx, dict):
+            macro_ctx = {}
+    
+        macro_ctx.setdefault("macro_mode", "NEUTRAL")
+        macro_ctx.setdefault("usd_strength", 0)
+        macro_ctx.setdefault("risk_mode", "NEUTRAL")
+        macro_ctx.setdefault("gold_bias", "NEUTRAL")
+        macro_ctx.setdefault("btc_bias", "NEUTRAL")
+        macro_ctx.setdefault("confidence", 0)
+        macro_ctx.setdefault("drivers", [])
+    
+        meta["news_items"] = news_items
+        meta["macro_v2"] = macro_ctx
+    
+        _dbg(
+            f"[MACRO] SAVED mode={macro_ctx.get('macro_mode')} "
+            f"gold={macro_ctx.get('gold_bias')} "
+            f"btc={macro_ctx.get('btc_bias')} "
+            f"news={len(news_items)}"
+        )
+    
+    except Exception as e:
+        _dbg(f"[MACRO FATAL] {e}")
+        meta = base.setdefault("meta", {})
+        meta["news_items"] = []
+        meta["macro_v2"] = {
+            "macro_mode": "ERROR",
+            "usd_strength": 0,
+            "risk_mode": "NEUTRAL",
+            "gold_bias": "NEUTRAL",
+            "btc_bias": "NEUTRAL",
+            "confidence": 0,
+            "drivers": [f"macro error: {e}"],
+        }
     # ---- Safety / normalize candles
     m15c = _safe_candles(m15)
     m30c = _safe_candles(m30)
@@ -11817,76 +11886,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["wait_for_v1"] = wait_for_v1
 
     # ===== AUTO NEWS + MACRO ENGINE V2 =====
-    # ===== AUTO NEWS + MACRO ENGINE V2 =====
-    try:
-        meta = base.setdefault("meta", {})
-    
-        _dbg("[NEWS] START build_news_items()")
-    
-        try:
-            news_items = build_news_items()
-            _dbg(f"[NEWS] fetched: {len(news_items) if isinstance(news_items, list) else 'BAD_TYPE'}")
-    
-            if isinstance(news_items, list):
-                for n in news_items[:3]:
-                    _dbg(
-                        f"[NEWS] item: {n.get('title')} | "
-                        f"tags={n.get('tags')} | impact={n.get('impact')}"
-                    )
-            else:
-                _dbg(f"[NEWS] bad return type: {type(news_items)}")
-                news_items = []
-    
-        except Exception as e:
-            _dbg(f"[NEWS ERROR] build_news_items failed: {e}")
-            news_items = []
-    
-        if not isinstance(news_items, list):
-            news_items = []
-    
-        _dbg(f"[MACRO] input news count = {len(news_items)}")
-    
-        try:
-            macro_ctx = build_macro_engine_v2(news_items)
-            _dbg(f"[MACRO] raw ctx = {macro_ctx}")
-        except Exception as e:
-            _dbg(f"[MACRO ERROR] build_macro_engine_v2 failed: {e}")
-            macro_ctx = {}
-    
-        if not isinstance(macro_ctx, dict):
-            macro_ctx = {}
-    
-        macro_ctx.setdefault("macro_mode", "NEUTRAL")
-        macro_ctx.setdefault("usd_strength", 0)
-        macro_ctx.setdefault("risk_mode", "NEUTRAL")
-        macro_ctx.setdefault("gold_bias", "NEUTRAL")
-        macro_ctx.setdefault("btc_bias", "NEUTRAL")
-        macro_ctx.setdefault("confidence", 0)
-        macro_ctx.setdefault("drivers", [])
-    
-        meta["news_items"] = news_items
-        meta["macro_v2"] = macro_ctx
-    
-        _dbg(
-            f"[MACRO] SAVED mode={macro_ctx.get('macro_mode')} "
-            f"gold={macro_ctx.get('gold_bias')} "
-            f"btc={macro_ctx.get('btc_bias')} "
-            f"news={len(news_items)}"
-        )
-    
-    except Exception as e:
-        _dbg(f"[MACRO FATAL] {e}")
-        meta = base.setdefault("meta", {})
-        meta["news_items"] = []
-        meta["macro_v2"] = {
-            "macro_mode": "ERROR",
-            "usd_strength": 0,
-            "risk_mode": "NEUTRAL",
-            "gold_bias": "NEUTRAL",
-            "btc_bias": "NEUTRAL",
-            "confidence": 0,
-            "drivers": [f"macro error: {e}"],
-        }
+
 
     # ===== VNEXT RENDER APPEND =====
     try:
