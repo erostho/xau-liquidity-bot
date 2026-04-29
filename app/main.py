@@ -376,7 +376,7 @@ def build_review_decision_engine_v2(
     entry=None,
     cur=None,
 ):
-    #meta = sig.get("meta") or {}
+    meta = base.setdefault("meta") or {}
 
     # ===== INPUT =====
     ex1 = meta.get("execution_engine_v1") or {}
