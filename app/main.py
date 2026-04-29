@@ -1275,61 +1275,70 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
     if a > 0:
         lines.append("")
         lines.append("🎯 TP/SL THAM KHẢO THEO VÙNG:")
-    
         # lấy vùng gần từ M15 range / gate
         near_support = lo
         near_resistance = hi
-    
         try:
             move_atr = ((entry - cur) / a) if side == "SELL" else ((cur - entry) / a)
         except Exception:
             move_atr = 0.0
-    
         if side == "SELL":
-            tp_near = near_support if near_support is not None else tp1_s
-            tp_far = tp2_s
-    
-            # SL bảo vệ lời
+            # ===== FIX TP ORDER =====
+            candidates = [x for x in [near_support, tp1_s, tp2_s] if x is not None]
+            if candidates:
+                candidates_sorted = sorted(candidates, reverse=True)  # cao → thấp
+                tp_near = candidates_sorted[0]
+                tp_far = candidates_sorted[-1]
+            else:
+                tp_near = tp_far = None
+        
+            # ===== SL bảo vệ lời =====
             sl_near = max(cur + 0.45 * a, entry - 0.10 * a) if move_atr > 0.8 else entry + 0.30 * a
             sl_far = entry + 0.80 * a
-    
+        
             lines.append(f"- Side: SELL")
             lines.append(f"- TP gần: {_f(tp_near)}")
             lines.append(f"- TP xa: {_f(tp_far)}")
             lines.append(f"- SL bảo vệ lời gần: {_f(sl_near)}")
             lines.append(f"- SL bảo vệ lời xa: {_f(sl_far)}")
-    
+        
             if move_atr >= 1.2:
                 lines.append("- Lệnh đang lời tốt → ưu tiên trailing theo high 3 nến M15.")
             elif move_atr >= 0.8:
                 lines.append("- Lệnh đã đủ lợi thế → cân nhắc dời SL về BE / khóa một phần lời.")
             else:
                 lines.append("- Lệnh chưa chạy đủ xa → chưa nên trailing quá sát.")
-    
+        
             lines.append("- Không add SELL nếu giá đã rơi xa; chỉ add khi break low + retest giữ dưới.")
-    
         else:
-            tp_near = near_resistance if near_resistance is not None else tp1_s
-            tp_far = tp2_s
-    
+            # ===== FIX TP ORDER =====
+            candidates = [x for x in [near_resistance, tp1_s, tp2_s] if x is not None]
+        
+            if candidates:
+                candidates_sorted = sorted(candidates)  # thấp → cao
+                tp_near = candidates_sorted[0]
+                tp_far = candidates_sorted[-1]
+            else:
+                tp_near = tp_far = None
+        
+            # ===== SL bảo vệ lời =====
             sl_near = min(cur - 0.45 * a, entry + 0.10 * a) if move_atr > 0.8 else entry - 0.30 * a
             sl_far = entry - 0.80 * a
-    
+        
             lines.append(f"- Side: BUY")
             lines.append(f"- TP gần: {_f(tp_near)}")
             lines.append(f"- TP xa: {_f(tp_far)}")
             lines.append(f"- SL bảo vệ lời gần: {_f(sl_near)}")
             lines.append(f"- SL bảo vệ lời xa: {_f(sl_far)}")
-    
+        
             if move_atr >= 1.2:
                 lines.append("- Lệnh đang lời tốt → ưu tiên trailing theo low 3 nến M15.")
             elif move_atr >= 0.8:
                 lines.append("- Lệnh đã đủ lợi thế → cân nhắc dời SL về BE / khóa một phần lời.")
             else:
                 lines.append("- Lệnh chưa chạy đủ xa → chưa nên trailing quá sát.")
-    
+        
             lines.append("- Không add BUY nếu giá đã bay xa; chỉ add khi break high + retest giữ trên.")
-
     
     if session_v4 or htf_pressure_v4 or close_confirm_v4 or macro_v4 or playbook_v4:
         lines.append("")
