@@ -66,13 +66,13 @@ def _build_setup_plan_v1(sig: dict, cls: str) -> dict:
         except Exception:
             return None
 
-    def _fmt(x):
+    def _fmt(x, nd=3, default="n/a"):
         try:
             if x is None:
-                return "n/a"
-            return nf(float(x))
+                return default
+            return f"{float(x):.{nd}f}".rstrip("0").rstrip(".")
         except Exception:
-            return "n/a"
+            return default
 
     if cls == "D":
         return {"show": False, "entry": None, "sl": None, "tp": None, "entry_status": None}
@@ -5579,14 +5579,20 @@ def _probe_detect_zone_v1(
                 "reason": ["giá đang touch EMA200", "case đặc biệt"],
             })
 
-    # -------------------------
     # 5) RANGE BOUNDARY
     # -------------------------
     try:
         rp = float(range_pos) if range_pos is not None else None
     except Exception:
         rp = None
-
+    
+    # FIX: đảm bảo k luôn tồn tại trước khi dùng
+    try:
+        meta = sig.get("meta") or {}
+    except Exception:
+        meta = {}
+    
+    k = meta.get("key_levels") or {}
     rlo = _safe_float(k.get("M15_RANGE_LOW"))
     rhi = _safe_float(k.get("M15_RANGE_HIGH"))
     if rp is not None and rlo is not None and rhi is not None and a > 0:
