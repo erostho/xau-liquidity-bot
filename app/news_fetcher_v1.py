@@ -5,7 +5,6 @@ import requests
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 from app.news_tagger_v1 import tag_news_item
-
 import logging
 logger = logging.getLogger("app.news_fetcher")
 
@@ -78,39 +77,68 @@ def _impact_from_tags(tags: List[str]) -> str:
     return "LOW"
 
 
-def build_news_items():
+def build_news_items(max_items: int = 8):
+    import os
     import requests
+    from app.news_tagger_v1 import tag_news_item
 
     url = "https://newsapi.org/v2/everything"
     params = {
-        "q": "gold OR bitcoin OR fed OR inflation OR war",
+        "q": "gold OR XAU OR bitcoin OR BTC OR fed OR federal reserve OR inflation OR CPI OR war OR oil",
         "language": "en",
         "sortBy": "publishedAt",
-        "apiKey": os.getenv("NEWS_API_KEY")
+        "pageSize": 30,
+        "apiKey": os.getenv("NEWS_API_KEY", "")
     }
 
     try:
-        _dbg(f"[NEWS API] calling...")
+        _dbg("[NEWS API] calling...")
 
         res = requests.get(url, params=params, timeout=10)
 
         _dbg(f"[NEWS API] status = {res.status_code}")
-        _dbg(f"[NEWS API] text = {res.text[:300]}")  # 🔥 QUAN TRỌNG
+        _dbg(f"[NEWS API] text = {res.text[:300]}")
 
         data = res.json()
-
         articles = data.get("articles") or []
 
         _dbg(f"[NEWS API] articles count = {len(articles)}")
 
         items = []
+
         for a in articles:
+            title = a.get("title") or ""
+            desc = a.get("description") or ""
+            source = (a.get("source") or {}).get("name")
+            published_at = a.get("publishedAt")
+            url_item = a.get("url")
+
+            text = f"{title} {desc}"
+            tags = tag_news_item(text)
+
+            if not tags:
+                continue
+
+            impact = "LOW"
+            if any(t in tags for t in ["FED_HAWKISH", "FED_DOVISH", "RATE_HIKE", "RATE_CUT", "WAR", "GEOPOLITICS"]):
+                impact = "HIGH"
+            elif any(t in tags for t in ["INFLATION", "INFLATION_HIGH", "CPI", "NFP", "CRYPTO"]):
+                impact = "MEDIUM"
+
             items.append({
-                "title": a.get("title"),
-                "desc": a.get("description"),
-                "source": a.get("source", {}).get("name"),
+                "title": title,
+                "desc": desc,
+                "source": source,
+                "published_at": published_at,
+                "url": url_item,
+                "tags": tags,
+                "impact": impact,
             })
 
+            if len(items) >= max_items:
+                break
+
+        _dbg(f"[NEWS BUILD] final tagged items = {len(items)}")
         return items
 
     except Exception as e:
