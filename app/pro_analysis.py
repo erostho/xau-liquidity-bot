@@ -10171,7 +10171,14 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "confidence": 0,
             "drivers": [f"macro error: {e}"],
         }
+    macro = meta.get("macro_v2") or {}
+    try:
+        macro_reason = explain_macro_reason_v1(macro)
+        meta["macro_reason_v1"] = macro_reason
+    except Exception:
+        meta["macro_reason_v1"] = []
 
+    
     try:
         meta = base.setdefault("meta", {})
         macro = meta.get("macro_v2") or {}
@@ -13818,6 +13825,14 @@ def format_signal(sig: Dict[str, Any]) -> str:
             push_conclusion("- Add position: BLOCK")
         for r in (mcf.get("reason") or [])[:3]:
             push_conclusion(f"- {r}")
+
+    mr = meta.get("macro_reason_v1") or []
+    if mr:
+        push_conclusion("")
+        push_conclusion("🧠 LÝ DO VĨ MÔ:")
+        for r in mr[:3]:
+            push_conclusion(f"- {r}")
+            
     # ===== PRACTICAL SUMMARY - BLOCK 3 =====
     try:
         mm1 = meta.get("market_mode_v1") or {}
