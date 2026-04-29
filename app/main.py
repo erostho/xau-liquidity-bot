@@ -1538,29 +1538,42 @@ def review_manual_trade(symbol: str, side: str, entry_lo: float, entry_hi: float
         lines.append(f"- Confidence: {me1.get('confidence', 'LOW')}")
         for s in (me1.get("reason") or [])[:3]:
             lines.append(f"- {s}")
-    rv2 = build_review_decision_engine_v2(sig)
-
-    lines.append("")
-    lines.append("🎯 QUYẾT ĐỊNH NHANH:")
-    lines.append(f"→ {rv2['decision']}")
+    # ===== REVIEW DECISION ENGINE V2 =====
+    try:
+        rv2 = build_review_decision_engine_v2(
+            side=side,
+            pos=pos,
+            gate=gate,
+            ex_state=ex_state,
+            trigger_state=trigger_state,
+            entry=entry,
+            cur=cur,
+        )
     
-    lines.append(f"📍 Entry quality: {rv2['entry_status']}")
-    lines.append(f"➕ Add position: {rv2['add_action']}")
+        lines.append("")
+        lines.append("🎯 QUYẾT ĐỊNH NHANH:")
+        lines.append(f"→ {rv2.get('decision', 'WAIT')}")
+        lines.append(f"📍 Entry quality: {rv2.get('entry_status', 'UNKNOWN')}")
+        lines.append(f"➕ Add position: {rv2.get('add_action', '❌ Không add')}")
     
-    if rv2["risk_note"]:
-        lines.append("⚠️ Risk:")
-        for r in rv2["risk_note"]:
-            lines.append(f"- {r}")
+        if rv2.get("risk_note"):
+            lines.append("⚠️ Risk:")
+            for r in rv2["risk_note"]:
+                lines.append(f"- {r}")
     
-    if rv2["wait_conditions"]:
-        lines.append("⏳ Cần thêm điều kiện:")
-        for w in rv2["wait_conditions"]:
-            lines.append(f"- {w}")
+        if rv2.get("wait_conditions"):
+            lines.append("⏳ Cần thêm điều kiện:")
+            for w in rv2["wait_conditions"]:
+                lines.append(f"- {w}")
     
-    if rv2["wrong_reasons"]:
-        lines.append("❌ Nếu lệnh sai → vì:")
-        for w in rv2["wrong_reasons"]:
-            lines.append(f"- {w}")
+        if rv2.get("wrong_reasons"):
+            lines.append("❌ Nếu lệnh sai → vì:")
+            for w in rv2["wrong_reasons"]:
+                lines.append(f"- {w}")
+    
+    except Exception as e:
+        lines.append("")
+        lines.append(f"🎯 QUYẾT ĐỊNH NHANH: lỗi engine ({e})")
     # dedupe blank lines
     out = []
     for line in lines:
