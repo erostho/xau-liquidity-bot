@@ -63,3 +63,42 @@ def build_macro_engine_v2(news_items: list) -> dict:
         ctx["confidence"] = 40
 
     return ctx
+
+def explain_macro_reason_v1(macro: dict) -> list:
+    macro = macro or {}
+    reasons = []
+
+    drivers = macro.get("drivers") or []
+    risk = macro.get("risk_mode")
+    gold = macro.get("gold_bias")
+    btc = macro.get("btc_bias")
+
+    # Geopolitics / war
+    if any("geo" in d or "war" in d for d in drivers):
+        if risk == "RISK_OFF":
+            reasons.append("Căng thẳng địa chính trị → market chuyển sang RISK_OFF")
+        if gold == "BUY":
+            reasons.append("Risk-off → dòng tiền trú ẩn vào GOLD")
+
+    # FED / lãi suất
+    if any("fed" in d or "rate" in d for d in drivers):
+        if "hawkish" in str(drivers).lower():
+            reasons.append("FED hawkish → lãi suất cao → USD mạnh")
+        if "dovish" in str(drivers).lower():
+            reasons.append("FED dovish → hỗ trợ tài sản rủi ro")
+
+    # Inflation
+    if any("inflation" in d or "cpi" in d for d in drivers):
+        reasons.append("Lạm phát cao → tăng nhu cầu hedge → hỗ trợ GOLD")
+
+    # Crypto
+    if btc == "SELL":
+        reasons.append("Macro không ủng hộ crypto → BTC yếu")
+    elif btc == "BUY":
+        reasons.append("Macro hỗ trợ dòng tiền vào crypto")
+
+    # fallback
+    if not reasons:
+        reasons.append("Chưa có yếu tố vĩ mô đủ mạnh")
+
+    return reasons
