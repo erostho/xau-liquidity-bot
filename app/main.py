@@ -367,7 +367,15 @@ def _trade_management_5_10_15(
         lines.append("Có rejection candle gần đây → cân nhắc harvest bớt vị thế.")
     return {"stage": "15", "label": "Harvest", "lines": lines}
 
-def build_review_decision_engine_v2(sig: dict) -> dict:
+def build_review_decision_engine_v2(
+    side,
+    pos,
+    gate,
+    ex_state,
+    trigger_state,
+    entry=None,
+    cur=None,
+):
     meta = sig.get("meta") or {}
 
     # ===== INPUT =====
