@@ -11817,27 +11817,37 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["wait_for_v1"] = wait_for_v1
 
     # ===== AUTO NEWS + MACRO ENGINE V2 =====
-    # ===== MACRO ENGINE V2 =====
+    # ===== AUTO NEWS + MACRO ENGINE V2 =====
     try:
         meta = base.setdefault("meta", {})
     
-        # 🔥 FETCH NEWS REAL
-        news_items = build_news_items()
+        try:
+            news_items = build_news_items()
+            print("DEBUG NEWS:", len(news_items))
+        except Exception:
+            news_items = []
     
-        # DEBUG
-        print("DEBUG NEWS:", len(news_items))
+        if not isinstance(news_items, list):
+            news_items = []
     
         macro_ctx = build_macro_engine_v2(news_items)
-    
-        # DEBUG
         print("DEBUG MACRO:", macro_ctx)
+        if not isinstance(macro_ctx, dict):
+            macro_ctx = {}
+    
+        macro_ctx.setdefault("macro_mode", "NEUTRAL")
+        macro_ctx.setdefault("usd_strength", 0)
+        macro_ctx.setdefault("risk_mode", "NEUTRAL")
+        macro_ctx.setdefault("gold_bias", "NEUTRAL")
+        macro_ctx.setdefault("btc_bias", "NEUTRAL")
+        macro_ctx.setdefault("confidence", 0)
+        macro_ctx.setdefault("drivers", [])
     
         meta["news_items"] = news_items
         meta["macro_v2"] = macro_ctx
     
     except Exception as e:
         print("MACRO ERROR:", e)
-    
         meta = base.setdefault("meta", {})
         meta["news_items"] = []
         meta["macro_v2"] = {
@@ -11847,9 +11857,9 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "gold_bias": "NEUTRAL",
             "btc_bias": "NEUTRAL",
             "confidence": 0,
-            "drivers": [str(e)],
+            "drivers": [f"macro error: {e}"],
         }
-        
+
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
@@ -13663,18 +13673,20 @@ def format_signal(sig: Dict[str, Any]) -> str:
 
     macro = meta.get("macro_v2") or {}
     news_items = meta.get("news_items") or []
+    
     push_conclusion("")
     push_conclusion("🌍 MACRO ENGINE V2:")
-    push_conclusion(f"- Mode: {macro.get('macro_mode')}")
-    push_conclusion(f"- USD strength: {macro.get('usd_strength')}")
-    push_conclusion(f"- Risk mode: {macro.get('risk_mode')}")
-    push_conclusion(f"- Gold bias: {macro.get('gold_bias')}")
-    push_conclusion(f"- BTC bias: {macro.get('btc_bias')}")
-    push_conclusion(f"- Confidence: {macro.get('confidence')}%")
+    push_conclusion(f"- Mode: {macro.get('macro_mode', 'NEUTRAL')}")
+    push_conclusion(f"- USD strength: {macro.get('usd_strength', 0)}")
+    push_conclusion(f"- Risk mode: {macro.get('risk_mode', 'NEUTRAL')}")
+    push_conclusion(f"- Gold bias: {macro.get('gold_bias', 'NEUTRAL')}")
+    push_conclusion(f"- BTC bias: {macro.get('btc_bias', 'NEUTRAL')}")
+    push_conclusion(f"- Confidence: {macro.get('confidence', 0)}%")
     push_conclusion(f"- News items: {len(news_items)}")
+    
     drivers = macro.get("drivers") or []
     if drivers:
-        push_conclusion(f"- Drivers: {', '.join(drivers[:3])}")
+        push_conclusion(f"- Drivers: {', '.join(str(x) for x in drivers[:3])}")
     # ===== PRACTICAL SUMMARY - BLOCK 3 =====
     try:
         mm1 = meta.get("market_mode_v1") or {}
