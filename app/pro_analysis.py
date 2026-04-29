@@ -7108,8 +7108,8 @@ def _attach_vnext_meta(
         base.setdefault("meta", {})["post_break_continuity_v1"] = continuity_v1
         meta["post_break_continuity_v1"] = continuity_v1
         
-        #_dbg(f"PBC META SAVED: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
-        #_dbg(
+        _dbg(f"PBC META SAVED: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
+        _dbg(
             f"PBC STATE: {continuity_v1.get('state','NONE')} | "
             f"SIDE: {continuity_v1.get('side','NONE')} | "
             f"REF: {continuity_v1.get('reference')}"
