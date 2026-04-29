@@ -13810,9 +13810,11 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion("")
         push_conclusion(f"🔥 MARKET MODE: lỗi render ({e})")
 
-    #MACRO ENGINE V2
+
+    # ===== MACRO ENGINE V2 =====
     macro = meta.get("macro_v2") or {}
     news_items = meta.get("news_items") or []
+    
     push_conclusion("")
     push_conclusion("🌍 MACRO ENGINE V2:")
     push_conclusion(f"- Mode: {macro.get('macro_mode', 'NEUTRAL')}")
@@ -13826,7 +13828,26 @@ def format_signal(sig: Dict[str, Any]) -> str:
     drivers = macro.get("drivers") or []
     if drivers:
         push_conclusion(f"- Drivers: {', '.join(str(x) for x in drivers[:3])}")
+    
+    # ===== MACRO REASON =====
+    exps = meta.get("macro_explain_tags_v1") or []
+    reasons = meta.get("macro_reason_v1") or []
+    
+    if exps or reasons:
+        push_conclusion("")
+        push_conclusion("🧠 LÝ DO VĨ MÔ:")
+    
+        shown = []
+        for e in (reasons + exps):
+            if e and e not in shown:
+                shown.append(e)
+    
+        for e in shown[:4]:
+            push_conclusion(f"- {e}")
+    
+    # ===== MACRO CONFLICT FILTER =====
     mcf = meta.get("macro_conflict_filter_v1") or {}
+    
     if mcf:
         push_conclusion("")
         push_conclusion("⚠️ MACRO CONFLICT FILTER:")
@@ -13835,16 +13856,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
         push_conclusion(f"- Severity: {mcf.get('severity', 'NONE')}")
         push_conclusion(f"- Action: {mcf.get('action', 'ALLOW')}")
         push_conclusion(f"- Score adjust: {mcf.get('score_adjust', 0)}")
+    
         if mcf.get("block_add"):
             push_conclusion("- Add position: BLOCK")
+    
         for r in (mcf.get("reason") or [])[:3]:
             push_conclusion(f"- {r}")
-    exps = meta.get("macro_explain_tags_v1") or []
-    if exps:
-        push_conclusion("")
-        push_conclusion("🧠 LÝ DO VĨ MÔ (từ tin):")
-        for e in exps[:3]:
-            push_conclusion(f"- {e}")
             
     # ===== PRACTICAL SUMMARY - BLOCK 3 =====
     try:
