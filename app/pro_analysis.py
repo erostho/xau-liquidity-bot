@@ -11761,13 +11761,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["decision_engine_v1"] = decision_engine_v1
     meta["wait_for_v1"] = wait_for_v1
 
-    # ===== MACRO ENGINE V2 =====
-    try:
-        news_items = base.get("news_items") or []  # hoặc bạn tự fetch
-        macro_ctx = build_macro_engine_v2(news_items)
-        base["meta"]["macro_v2"] = macro_ctx
-    except Exception:
-        base["meta"]["macro_v2"] = {}
+
     
     # ===== PRO DESK ADD =====
     market_state_machine_v1 = _market_state_machine_v1(
@@ -11815,7 +11809,13 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["decision_engine_v1"] = decision_engine_v1
     meta["wait_for_v1"] = wait_for_v1
 
-
+    # ===== MACRO ENGINE V2 =====
+    try:
+        news_items = base.get("news_items") or []  # hoặc bạn tự fetch
+        macro_ctx = build_macro_engine_v2(news_items)
+        base["meta"]["macro_v2"] = macro_ctx
+    except Exception:
+        base["meta"]["macro_v2"] = {}
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
