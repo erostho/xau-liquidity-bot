@@ -10101,6 +10101,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     htf_pressure_v4 = {}
     macro_v4 = {}
     
+
     # ===== AUTO NEWS + MACRO ENGINE V2 =====
     try:
         meta = base.setdefault("meta", {})
@@ -10109,23 +10110,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     
         try:
             news_items = build_news_items()
-            _dbg(f"[NEWS] fetched: {len(news_items) if isinstance(news_items, list) else 'BAD_TYPE'}")
-    
-            if isinstance(news_items, list):
-                for n in news_items[:3]:
-                    _dbg(
-                        f"[NEWS] item: {n.get('title')} | "
-                        f"tags={n.get('tags')} | impact={n.get('impact')}"
-                    )
-            else:
+            if not isinstance(news_items, list):
                 _dbg(f"[NEWS] bad return type: {type(news_items)}")
                 news_items = []
     
+            _dbg(f"[NEWS] fetched: {len(news_items)}")
+    
+            for n in news_items[:3]:
+                _dbg(
+                    f"[NEWS] item: {n.get('title')} | "
+                    f"tags={n.get('tags')} | impact={n.get('impact')}"
+                )
+    
         except Exception as e:
             _dbg(f"[NEWS ERROR] build_news_items failed: {e}")
-            news_items = []
-    
-        if not isinstance(news_items, list):
             news_items = []
     
         _dbg(f"[MACRO] input news count = {len(news_items)}")
@@ -10151,6 +10149,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         meta["news_items"] = news_items
         meta["macro_v2"] = macro_ctx
     
+        try:
+            meta["macro_explain_tags_v1"] = explain_tags_v1(news_items)
+        except Exception as e:
+            _dbg(f"[MACRO EXPLAIN TAG ERROR] {e}")
+            meta["macro_explain_tags_v1"] = []
+    
+        try:
+            meta["macro_reason_v1"] = explain_macro_reason_v1(macro_ctx)
+        except Exception as e:
+            _dbg(f"[MACRO REASON ERROR] {e}")
+            meta["macro_reason_v1"] = []
+    
         _dbg(
             f"[MACRO] SAVED mode={macro_ctx.get('macro_mode')} "
             f"gold={macro_ctx.get('gold_bias')} "
@@ -10171,38 +10181,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             "confidence": 0,
             "drivers": [f"macro error: {e}"],
         }
-    macro = meta.get("macro_v2") or {}
-    try:
-        macro_reason = explain_macro_reason_v1(macro)
-        meta["macro_reason_v1"] = macro_reason
-    except Exception:
+        meta["macro_explain_tags_v1"] = []
         meta["macro_reason_v1"] = []
-
-    
-    try:
-        meta = base.setdefault("meta", {})
-        macro = meta.get("macro_v2") or {}
-    
-        fs = str(
-            meta.get("final_side")
-            or meta.get("signal_consistency_v1", {}).get("final_side")
-            or meta.get("master_engine_v1", {}).get("best_side")
-            or base.get("side")
-            or "NONE"
-        ).upper()
-    
-        mcf = macro_conflict_filter_v1(symbol, fs, macro)
-        meta["macro_conflict_filter_v1"] = mcf
-    
-        cur_score = float(base.get("final_score") or 0)
-        base["final_score"] = max(0, min(100, cur_score + float(mcf.get("score_adjust") or 0)))
-    
-        if mcf.get("conflict") and mcf.get("severity") == "HIGH":
-            base["tradeable"] = False
-            meta["macro_block_reason"] = "Macro ngược hướng kỹ thuật mạnh"
-    
-    except Exception as e:
-        _dbg(f"[MACRO CONFLICT ERROR] {e}")
     # ---- Safety / normalize candles
     m15c = _safe_candles(m15)
     m30c = _safe_candles(m30)
@@ -11983,7 +11963,41 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["wait_for_v1"] = wait_for_v1
 
     # ===== AUTO NEWS + MACRO ENGINE V2 =====
-
+    # ===== MACRO CONFLICT FILTER V1 =====
+    try:
+        meta = base.setdefault("meta", {})
+        macro = meta.get("macro_v2") or {}
+    
+        fs = str(
+            meta.get("final_side")
+            or (meta.get("signal_consistency_v1") or {}).get("final_side")
+            or (meta.get("master_engine_v1") or {}).get("best_side")
+            or base.get("side")
+            or "NONE"
+        ).upper()
+    
+        mcf = macro_conflict_filter_v1(symbol, fs, macro)
+        meta["macro_conflict_filter_v1"] = mcf
+    
+        cur_score = float(base.get("final_score") or 0)
+        base["final_score"] = max(
+            0,
+            min(100, cur_score + float(mcf.get("score_adjust") or 0))
+        )
+    
+        if mcf.get("conflict") and mcf.get("severity") == "HIGH":
+            base["tradeable"] = False
+            meta["macro_block_reason"] = "Macro ngược hướng kỹ thuật mạnh"
+    
+        _dbg(
+            f"[MACRO CONFLICT] fs={fs} "
+            f"conflict={mcf.get('conflict')} "
+            f"severity={mcf.get('severity')} "
+            f"adjust={mcf.get('score_adjust')}"
+        )
+    
+    except Exception as e:
+        _dbg(f"[MACRO CONFLICT ERROR] {e}")
 
     # ===== VNEXT RENDER APPEND =====
     try:
@@ -13825,13 +13839,12 @@ def format_signal(sig: Dict[str, Any]) -> str:
             push_conclusion("- Add position: BLOCK")
         for r in (mcf.get("reason") or [])[:3]:
             push_conclusion(f"- {r}")
-
-    mr = meta.get("macro_reason_v1") or []
-    if mr:
+    exps = meta.get("macro_explain_tags_v1") or []
+    if exps:
         push_conclusion("")
-        push_conclusion("🧠 LÝ DO VĨ MÔ:")
-        for r in mr[:3]:
-            push_conclusion(f"- {r}")
+        push_conclusion("🧠 LÝ DO VĨ MÔ (từ tin):")
+        for e in exps[:3]:
+            push_conclusion(f"- {e}")
             
     # ===== PRACTICAL SUMMARY - BLOCK 3 =====
     try:
