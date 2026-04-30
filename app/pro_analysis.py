@@ -12416,7 +12416,14 @@ def build_view_engine_v1(sig: dict) -> str:
     key = meta.get("key_levels") or {}
     lo = key.get("M15_RANGE_LOW")
     hi = key.get("M15_RANGE_HIGH")
-
+    range_low_txt = _sf(lo)
+    range_high_txt = _sf(hi)
+    range_txt = _zone(lo, hi)
+    
+    break_up_txt = _sf(hi)
+    break_dn_txt = _sf(lo)
+    
+    decision_txt = _zone(zone_low, zone_high)
     try:
         range_pos = (float(price) - float(lo)) / max(float(hi) - float(lo), 1e-9)
         range_pct = max(0, min(100, range_pos * 100))
@@ -12440,24 +12447,45 @@ def build_view_engine_v1(sig: dict) -> str:
     trap = meta.get("trap_warning_v1") or {}
     trap_level = str(trap.get("level") or trap.get("risk") or "LOW").upper()
 
-    # ===== indicators =====
-    ema = meta.get("ema_filter_v1") or {}
+
+    # ===== indicators fallback =====
+    ema = sig.get("ema") or meta.get("ema") or meta.get("ema_filter_v1") or {}
+    
     ema_trend = str(ema.get("trend") or "UNKNOWN").upper()
-    ema_pos = str(ema.get("position") or ema.get("price_position") or "").upper()
-
-    rsi = meta.get("rsi_context_v1") or {}
-    rsi_val = (
-        rsi.get("rsi")
-        or rsi.get("value")
-        or meta.get("rsi15")
-        or meta.get("RSI15")
-    )
-
+    ema_pos = str(
+        ema.get("zone")
+        or ema.get("position")
+        or ema.get("price_position")
+        or ""
+    ).upper()
+    
+    # RSI lấy từ meta trước, nếu không có thì parse quality_lines
+    rsi_val = meta.get("rsi15") or meta.get("RSI15")
+    
+    if rsi_val is None:
+        for q in sig.get("quality_lines", []) or []:
+            s = str(q)
+            if "RSI(14)" in s:
+                try:
+                    rsi_val = float(s.split(":")[-1].strip())
+                    break
+                except Exception:
+                    pass
+    
+    # Bollinger / Ichimoku nếu chưa có engine thì ghi rõ là chưa có data
     boll = meta.get("bollinger_context_v1") or {}
-    boll_state = str(boll.get("state") or boll.get("band_state") or "n/a").upper()
-
+    boll_state = str(
+        boll.get("state")
+        or boll.get("band_state")
+        or "chưa có engine"
+    ).upper()
+    
     ichi = meta.get("ichimoku_context_v1") or {}
-    ichi_state = str(ichi.get("state") or ichi.get("position") or "n/a").upper()
+    ichi_state = str(
+        ichi.get("state")
+        or ichi.get("position")
+        or "chưa có engine"
+    ).upper()
 
     # ===== macro =====
     macro = meta.get("macro_v2") or {}
@@ -12562,33 +12590,51 @@ def build_view_engine_v1(sig: dict) -> str:
 
     else:
         quick_decision = "NO TRADE / WAIT EDGE"
-        playbook_main = "Không có side đủ rõ → chờ về biên hoặc break có giữ."
-
+        playbook_main = f"Không có side đủ rõ → chờ phản ứng tại biên {range_txt} hoặc break có giữ."
+        
         sc1 = {
             "name": "BREAK THẬT",
             "prob": "MID",
-            "condition": "Giá phá khỏi range và giữ được.",
-            "trigger": "Break + retest + follow-through.",
-            "action": "Đánh theo hướng break",
-            "target": "Vùng tiếp theo theo cấu trúc.",
+            "condition": (
+                f"Giá phá hẳn biên range M15: "
+                f"break lên trên {break_up_txt} hoặc break xuống dưới {break_dn_txt}."
+            ),
+            "trigger": (
+                f"M15 đóng ngoài range {range_txt}, sau đó retest giữ được "
+                f"trên {break_up_txt} / dưới {break_dn_txt}."
+            ),
+            "action": "Đánh theo hướng break sau retest, không vào ngay cây phá đầu tiên.",
+            "target": "Vùng tiếp theo theo cấu trúc / hỗ trợ-kháng cự kế tiếp.",
         }
+        
         sc2 = {
             "name": "SIDEWAY GIẾT TIME",
             "prob": "HIGH",
-            "condition": "Giá nằm giữa range.",
-            "trigger": "Không có nến xác nhận.",
-            "action": "NO TRADE",
-            "target": "Không có.",
+            "condition": (
+                f"Giá còn nằm trong range {range_txt}, đặc biệt quanh vùng giữa range "
+                f"hoặc vùng quyết định {decision_txt}."
+            ),
+            "trigger": "Không có nến đóng thoát range, không có follow-through.",
+            "action": "NO TRADE / WAIT",
+            "target": "Không ưu tiên TP; ưu tiên chờ giá về biên trên hoặc biên dưới.",
         }
+        
         sc3 = {
-            "name": "FALSE BREAK",
+            "name": "FALSE BREAK / BẪY BIÊN",
             "prob": "MID",
-            "condition": "Phá biên rồi quay lại range.",
-            "trigger": "Đóng lại trong range.",
-            "action": "Chờ phản ứng ngược lại",
-            "target": "Vùng cân bằng.",
+            "condition": (
+                f"Giá quét lên trên {break_up_txt} rồi đóng lại trong range, "
+                f"hoặc quét xuống dưới {break_dn_txt} rồi đóng lại trong range."
+            ),
+            "trigger": "Fake break + đóng lại trong range + nến sau không đi tiếp.",
+            "action": "Chờ phản ứng ngược lại sau trap.",
+            "target": f"Quay về vùng cân bằng/range giữa {range_txt}.",
         }
-        invalid = "Nếu market có trend rõ và giữ ngoài range → bỏ kịch bản sideway."
+        
+        invalid = (
+            f"Nếu M15/H1 đóng ngoài range {range_txt} và giữ được sau retest "
+            f"→ bỏ kịch bản sideway."
+        )
 
     # ===== output =====
     lines = []
