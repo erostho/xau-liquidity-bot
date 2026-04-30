@@ -12416,14 +12416,20 @@ def build_view_engine_v1(sig: dict) -> str:
     key = meta.get("key_levels") or {}
     lo = key.get("M15_RANGE_LOW")
     hi = key.get("M15_RANGE_HIGH")
+    
+    # ===== zones source =====
+    playbook = meta.get("playbook_v2") or {}
+    lo = key.get("M15_RANGE_LOW")
+    hi = key.get("M15_RANGE_HIGH")
+    zone_low = playbook.get("zone_low")
+    zone_high = playbook.get("zone_high")
     range_low_txt = _sf(lo)
     range_high_txt = _sf(hi)
     range_txt = _zone(lo, hi)
-    
     break_up_txt = _sf(hi)
     break_dn_txt = _sf(lo)
-    
     decision_txt = _zone(zone_low, zone_high)
+
     try:
         range_pos = (float(price) - float(lo)) / max(float(hi) - float(lo), 1e-9)
         range_pct = max(0, min(100, range_pos * 100))
