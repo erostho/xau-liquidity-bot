@@ -1,30 +1,4 @@
-TAG_EXPLANATION_MAP = {
-    "WAR": "Chiến tranh/căng thẳng → dòng tiền trú ẩn → hỗ trợ GOLD",
-    "GEOPOLITICS": "Rủi ro địa chính trị → market chuyển sang RISK_OFF",
-    
-    "FED_HAWKISH": "FED hawkish → lãi suất cao → USD mạnh → áp lực lên crypto",
-    "FED_DOVISH": "FED dovish → nới lỏng → hỗ trợ tài sản rủi ro",
 
-    "INFLATION_HIGH": "Lạm phát cao → nhu cầu hedge tăng → GOLD được hỗ trợ",
-    "CPI": "Dữ liệu CPI → ảnh hưởng kỳ vọng lãi suất",
-
-    "RATE_HIKE": "Tăng lãi suất → giảm thanh khoản → tài sản rủi ro bị bán",
-    "RATE_CUT": "Giảm lãi suất → tăng thanh khoản → hỗ trợ crypto và stocks",
-
-    "CRYPTO": "Tin tức crypto → ảnh hưởng trực tiếp BTC",
-}
-def explain_tags_v1(news_items: list) -> list:
-    explanations = []
-
-    for item in news_items:
-        tags = item.get("tags") or []
-
-        for t in tags:
-            exp = TAG_EXPLANATION_MAP.get(t)
-            if exp and exp not in explanations:
-                explanations.append(exp)
-
-    return explanations
 def build_macro_engine_v2(news_items: list) -> dict:
     ctx = {
         "macro_mode": "NEUTRAL",
@@ -88,7 +62,8 @@ def build_macro_engine_v2(news_items: list) -> dict:
     else:
         ctx["macro_mode"] = "NEUTRAL"
         ctx["confidence"] = 40
-
+    # ===== dedupe drivers =====
+    ctx["drivers"] = list(dict.fromkeys(ctx.get("drivers") or []))
     return ctx
 
 def explain_macro_reason_v1(macro: dict) -> list:
@@ -129,3 +104,31 @@ def explain_macro_reason_v1(macro: dict) -> list:
         reasons.append("Chưa có yếu tố vĩ mô đủ mạnh")
 
     return reasons
+    
+TAG_EXPLANATION_MAP = {
+    "WAR": "Chiến tranh/căng thẳng → dòng tiền trú ẩn → hỗ trợ GOLD",
+    "GEOPOLITICS": "Rủi ro địa chính trị → market chuyển sang RISK_OFF",
+    
+    "FED_HAWKISH": "FED hawkish → lãi suất cao → USD mạnh → áp lực lên crypto",
+    "FED_DOVISH": "FED dovish → nới lỏng → hỗ trợ tài sản rủi ro",
+
+    "INFLATION_HIGH": "Lạm phát cao → nhu cầu hedge tăng → GOLD được hỗ trợ",
+    "CPI": "Dữ liệu CPI → ảnh hưởng kỳ vọng lãi suất",
+
+    "RATE_HIKE": "Tăng lãi suất → giảm thanh khoản → tài sản rủi ro bị bán",
+    "RATE_CUT": "Giảm lãi suất → tăng thanh khoản → hỗ trợ crypto và stocks",
+
+    "CRYPTO": "Tin tức crypto → ảnh hưởng trực tiếp BTC",
+}
+def explain_tags_v1(news_items: list) -> list:
+    explanations = []
+
+    for item in news_items:
+        tags = item.get("tags") or []
+
+        for t in tags:
+            exp = TAG_EXPLANATION_MAP.get(t)
+            if exp and exp not in explanations:
+                explanations.append(exp)
+
+    return explanations
