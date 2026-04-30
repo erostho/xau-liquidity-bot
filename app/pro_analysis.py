@@ -12362,7 +12362,336 @@ def get_now_status(sig: Dict[str, Any]) -> Dict[str, Any]:
             "confidence_level": "LOW",
             "risk_level": "HIGH",
         }
-        
+def build_view_engine_v1(sig: dict) -> str:
+    sig = sig or {}
+    meta = sig.get("meta") or {}
+
+    symbol = sig.get("symbol") or "N/A"
+    tf = sig.get("tf") or "M30"
+
+    def _sf(x, nd=2, default="n/a"):
+        try:
+            if x is None:
+                return default
+            return f"{float(x):.{nd}f}".rstrip("0").rstrip(".")
+        except Exception:
+            return default
+
+    def _zone(a, b):
+        if a is None or b is None:
+            return "n/a"
+        return f"{_sf(a)} – {_sf(b)}"
+
+    price = (
+        sig.get("current_price")
+        or sig.get("last_price")
+        or sig.get("price")
+        or sig.get("entry")
+    )
+
+    # ===== basic context =====
+    h1_trend = str(meta.get("h1_trend") or meta.get("H1_TREND") or "UNKNOWN").upper()
+    h4_trend = str(meta.get("h4_trend") or meta.get("H4_TREND") or "UNKNOWN").upper()
+
+    if "BEAR" in h1_trend or "BEAR" in h4_trend or "SELL" in h1_trend or "SELL" in h4_trend:
+        big_trend = "DOWN"
+    elif "BULL" in h1_trend or "BULL" in h4_trend or "BUY" in h1_trend or "BUY" in h4_trend:
+        big_trend = "UP"
+    else:
+        big_trend = "MIXED"
+
+    mm = meta.get("market_mode_v1") or {}
+    market_mode = str(mm.get("mode") or "UNKNOWN").upper()
+    action_mode = str(mm.get("action_mode") or "WAIT").upper()
+    side_context = str(mm.get("side") or "NONE").upper()
+
+    sce = meta.get("signal_consistency_v1") or {}
+    final_side = str(
+        meta.get("final_side")
+        or sce.get("final_side")
+        or side_context
+        or "NONE"
+    ).upper()
+
+    key = meta.get("key_levels") or {}
+    lo = key.get("M15_RANGE_LOW")
+    hi = key.get("M15_RANGE_HIGH")
+
+    try:
+        range_pos = (float(price) - float(lo)) / max(float(hi) - float(lo), 1e-9)
+        range_pct = max(0, min(100, range_pos * 100))
+    except Exception:
+        range_pct = None
+
+    if range_pct is None:
+        near_where = "UNKNOWN"
+    elif range_pct <= 25:
+        near_where = "support / vùng thấp"
+    elif range_pct >= 75:
+        near_where = "resistance / vùng cao"
+    else:
+        near_where = "mid-range / giữa biên"
+
+    # ===== liquidity / trap =====
+    flow = meta.get("flow_imbalance_v1") or {}
+    liquidity = str(flow.get("liquidity") or "").upper()
+    sweep = "YES" if "SWEEP" in liquidity or "SPRING" in liquidity else "NO"
+
+    trap = meta.get("trap_warning_v1") or {}
+    trap_level = str(trap.get("level") or trap.get("risk") or "LOW").upper()
+
+    # ===== indicators =====
+    ema = meta.get("ema_filter_v1") or {}
+    ema_trend = str(ema.get("trend") or "UNKNOWN").upper()
+    ema_pos = str(ema.get("position") or ema.get("price_position") or "").upper()
+
+    rsi = meta.get("rsi_context_v1") or {}
+    rsi_val = (
+        rsi.get("rsi")
+        or rsi.get("value")
+        or meta.get("rsi15")
+        or meta.get("RSI15")
+    )
+
+    boll = meta.get("bollinger_context_v1") or {}
+    boll_state = str(boll.get("state") or boll.get("band_state") or "n/a").upper()
+
+    ichi = meta.get("ichimoku_context_v1") or {}
+    ichi_state = str(ichi.get("state") or ichi.get("position") or "n/a").upper()
+
+    # ===== macro =====
+    macro = meta.get("macro_v2") or {}
+    macro_reasons = meta.get("macro_reason_v1") or []
+    macro_exps = meta.get("macro_explain_tags_v1") or []
+
+    macro_reason_lines = []
+    for x in (macro_reasons + macro_exps):
+        if x and x not in macro_reason_lines:
+            macro_reason_lines.append(x)
+
+    # ===== zones =====
+    playbook = meta.get("playbook_v2") or {}
+    zone_low = playbook.get("zone_low")
+    zone_high = playbook.get("zone_high")
+
+    res_near = key.get("M15_RES_NEAR_LOW"), key.get("M15_RES_NEAR_HIGH")
+    sup_near = key.get("M15_SUP_NEAR_LOW"), key.get("M15_SUP_NEAR_HIGH")
+
+    balance_zone = _zone(lo, hi)
+    decision_zone = _zone(zone_low, zone_high)
+
+    try:
+        trap_pad = float(meta.get("atr15") or meta.get("ATR15") or 10)
+        if final_side == "SELL" and zone_high is not None:
+            trap_zone = _zone(float(zone_high), float(zone_high) + trap_pad)
+        elif final_side == "BUY" and zone_low is not None:
+            trap_zone = _zone(float(zone_low) - trap_pad, float(zone_low))
+        else:
+            trap_zone = "n/a"
+    except Exception:
+        trap_zone = "n/a"
+
+    # ===== meaning =====
+    if big_trend == "DOWN" and market_mode in ("RANGE_OR_CHOP", "PULLBACK_DOWN", "TREND_DAY_DOWN"):
+        meaning = "Sideway/hồi trong xu hướng giảm → chưa gọi là đảo chiều, ưu tiên sell-the-rally."
+    elif big_trend == "UP" and market_mode in ("RANGE_OR_CHOP", "PULLBACK_UP", "TREND_DAY_UP"):
+        meaning = "Sideway/hồi trong xu hướng tăng → ưu tiên buy-the-dip khi có trigger."
+    else:
+        meaning = "Bối cảnh chưa đồng thuận → ưu tiên chờ market lộ mặt."
+
+    # ===== playbook + scenarios =====
+    if final_side == "SELL" or side_context == "SELL" or big_trend == "DOWN":
+        quick_decision = "WAIT SELL ZONE / SELL THE RALLY"
+        playbook_main = "ƯU TIÊN SELL vùng cao, không SELL giữa range."
+
+        sc1 = {
+            "name": "HỒI XONG ĐẠP",
+            "prob": "HIGH",
+            "condition": f"Giá hồi lên vùng quyết định {decision_zone} rồi yếu lại.",
+            "trigger": "Fail break / râu trên / nến đỏ đóng lại dưới vùng.",
+            "action": "SELL",
+            "target": "Hỗ trợ gần / đáy range / TP theo plan.",
+        }
+        sc2 = {
+            "name": "SIDEWAY GIẾT TIME",
+            "prob": "MID",
+            "condition": "Giá lắc quanh vùng cân bằng, không phá rõ hai đầu.",
+            "trigger": "Không có rejection, không có follow-through.",
+            "action": "NO TRADE / WAIT",
+            "target": "Không ưu tiên TP, ưu tiên bảo toàn vốn.",
+        }
+        sc3 = {
+            "name": "LỪA BREAKOUT",
+            "prob": "MID",
+            "condition": "Giá phá lên vùng trap rồi không giữ được.",
+            "trigger": "Break lên nhưng đóng lại dưới / quét SL BUY xong đảo chiều.",
+            "action": "CHỜ TRAP → SELL",
+            "target": "Đạp ngược về vùng cân bằng/hỗ trợ.",
+        }
+        invalid = f"Nếu giá đóng và giữ trên vùng trap {trap_zone} → bias SELL yếu đi."
+
+    elif final_side == "BUY" or side_context == "BUY" or big_trend == "UP":
+        quick_decision = "WAIT BUY ZONE / BUY THE DIP"
+        playbook_main = "ƯU TIÊN BUY vùng thấp, không BUY đuổi giữa range."
+
+        sc1 = {
+            "name": "HỒI XONG BẬT",
+            "prob": "HIGH",
+            "condition": f"Giá hồi về vùng quyết định {decision_zone} rồi giữ được.",
+            "trigger": "Râu dưới / nến xanh xác nhận / reclaim vùng.",
+            "action": "BUY",
+            "target": "Kháng cự gần / đỉnh range / TP theo plan.",
+        }
+        sc2 = {
+            "name": "SIDEWAY GIẾT TIME",
+            "prob": "MID",
+            "condition": "Giá lắc quanh vùng cân bằng, không có break rõ.",
+            "trigger": "Không có follow-through.",
+            "action": "NO TRADE / WAIT",
+            "target": "Không ưu tiên TP, ưu tiên bảo toàn vốn.",
+        }
+        sc3 = {
+            "name": "LỪA BREAKDOWN",
+            "prob": "MID",
+            "condition": "Giá phá xuống vùng trap rồi không giữ được.",
+            "trigger": "Break xuống nhưng đóng lại trên / quét SL SELL xong bật.",
+            "action": "CHỜ TRAP → BUY",
+            "target": "Bật về vùng cân bằng/kháng cự.",
+        }
+        invalid = f"Nếu giá đóng và giữ dưới vùng trap {trap_zone} → bias BUY yếu đi."
+
+    else:
+        quick_decision = "NO TRADE / WAIT EDGE"
+        playbook_main = "Không có side đủ rõ → chờ về biên hoặc break có giữ."
+
+        sc1 = {
+            "name": "BREAK THẬT",
+            "prob": "MID",
+            "condition": "Giá phá khỏi range và giữ được.",
+            "trigger": "Break + retest + follow-through.",
+            "action": "Đánh theo hướng break",
+            "target": "Vùng tiếp theo theo cấu trúc.",
+        }
+        sc2 = {
+            "name": "SIDEWAY GIẾT TIME",
+            "prob": "HIGH",
+            "condition": "Giá nằm giữa range.",
+            "trigger": "Không có nến xác nhận.",
+            "action": "NO TRADE",
+            "target": "Không có.",
+        }
+        sc3 = {
+            "name": "FALSE BREAK",
+            "prob": "MID",
+            "condition": "Phá biên rồi quay lại range.",
+            "trigger": "Đóng lại trong range.",
+            "action": "Chờ phản ứng ngược lại",
+            "target": "Vùng cân bằng.",
+        }
+        invalid = "Nếu market có trend rõ và giữ ngoài range → bỏ kịch bản sideway."
+
+    # ===== output =====
+    lines = []
+    lines.append(f"📊 {symbol} VIEW TOÀN CẢNH | {tf}")
+    lines.append("")
+    lines.append("🧠 BẢN CHẤT THỊ TRƯỜNG")
+    lines.append(f"- Xu hướng lớn (H1/H4): {big_trend}")
+    lines.append(f"- Trạng thái hiện tại: {market_mode}")
+    lines.append(f"- Cấu trúc: {sce.get('current_move') or 'n/a'}")
+    lines.append("- Ý nghĩa:")
+    lines.append(f"  → {meaning}")
+
+    lines.append("")
+    lines.append("📍 VỊ TRÍ GIÁ")
+    lines.append(f"- Giá hiện tại: {_sf(price)}")
+    lines.append(f"- Vị trí trong range M15: {_sf(range_pct, 1)}%")
+    lines.append(f"- Gần vùng nào: {near_where}")
+
+    lines.append("")
+    lines.append("💧 THANH KHOẢN / TRAP")
+    lines.append(f"- Sweep: {sweep}")
+    lines.append(f"- Trap khả năng: {trap_level}")
+    lines.append("- Nhận định:")
+    if trap_level in ("HIGH", "MEDIUM"):
+        lines.append("  → Dễ có trap/fake break, không vào lệnh khi chưa có xác nhận.")
+    else:
+        lines.append("  → Chưa thấy trap rõ, vẫn cần chờ trigger tại vùng.")
+
+    lines.append("")
+    lines.append("📊 INDICATOR CONTEXT")
+    lines.append(f"- EMA: {ema_trend} {ema_pos}".strip())
+    lines.append(f"- RSI: {_sf(rsi_val, 1)}")
+    lines.append(f"- Bollinger: {boll_state}")
+    lines.append(f"- Ichimoku: {ichi_state}")
+    lines.append("→ Tổng hợp:")
+    lines.append("  → Ưu tiên context + vùng + trigger, không đánh theo 1 indicator riêng lẻ.")
+
+    lines.append("")
+    lines.append("🌍 MACRO CONTEXT")
+    lines.append(f"- Mode: {macro.get('macro_mode', 'NEUTRAL')}")
+    lines.append(f"- Risk: {macro.get('risk_mode', 'NEUTRAL')}")
+    lines.append(f"- USD: {macro.get('usd_strength', 0)}")
+    lines.append(f"- Gold bias: {macro.get('gold_bias', 'NEUTRAL')}")
+    lines.append(f"- BTC bias: {macro.get('btc_bias', 'NEUTRAL')}")
+    lines.append(f"- Confidence: {macro.get('confidence', 0)}%")
+
+    lines.append("")
+    lines.append("🧠 LÝ DO VĨ MÔ:")
+    if macro_reason_lines:
+        for r in macro_reason_lines[:4]:
+            lines.append(f"- {r}")
+    else:
+        lines.append("- Chưa có yếu tố vĩ mô đủ mạnh.")
+
+    lines.append("")
+    lines.append("📍 VÙNG QUAN TRỌNG")
+    lines.append(f"- Vùng cân bằng: {balance_zone}")
+    lines.append(f"- Vùng quyết định: {decision_zone}")
+    lines.append(f"- Vùng trap: {trap_zone}")
+
+    lines.append("")
+    lines.append("🔥 PLAYBOOK CHÍNH")
+    lines.append(f"→ {playbook_main}")
+
+    def _scenario_block(icon, title, sc):
+        lines.append("")
+        lines.append(f"{icon} {title} — {sc['name']}")
+        lines.append(f"- Xác suất: {sc['prob']}")
+        lines.append("- Điều kiện:")
+        lines.append(f"  {sc['condition']}")
+        lines.append("- Trigger:")
+        lines.append(f"  {sc['trigger']}")
+        lines.append("- Hành động:")
+        lines.append(f"  → {sc['action']}")
+        lines.append("- Target:")
+        lines.append(f"  → {sc['target']}")
+
+    lines.append("")
+    lines.append("🎯 3 KỊCH BẢN CHÍNH")
+    _scenario_block("🔴", "KỊCH BẢN 1", sc1)
+    _scenario_block("🟡", "KỊCH BẢN 2", sc2)
+    _scenario_block("🔥", "KỊCH BẢN 3", sc3)
+
+    lines.append("")
+    lines.append("⚠️ ĐIỀU KIỆN INVALID")
+    lines.append(f"- {invalid}")
+
+    lines.append("")
+    lines.append("🧠 QUYẾT ĐỊNH NHANH")
+    lines.append(f"→ {quick_decision}")
+
+    lines.append("")
+    lines.append("📌 Gợi ý hành động:")
+    lines.append(f"- {playbook_main}")
+
+    lines.append("")
+    lines.append("🚫 Không làm:")
+    lines.append("- Không FOMO.")
+    lines.append("- Không all-in.")
+    lines.append("- Không vào giữa range khi chưa có trigger.")
+    lines.append("- Không đánh ngược macro mạnh nếu chart chưa xác nhận.")
+
+    return "\n".join(lines)        
 def format_signal(sig: Dict[str, Any]) -> str:
     """Telegram formatter V5: dễ đọc hơn, giữ nguyên logic/meta hiện có."""
     def sf(x):
