@@ -2130,6 +2130,48 @@ async def cron_run(token: str = "", request: Request = None):
                         sig.setdefault("meta", {})["data_source"] = ds
                 except Exception:
                     pass
+
+                # ===== VIEW COMMAND =====
+                try:
+                    raw_text = str(text or "").strip().upper()
+                    parts = raw_text.split()
+                
+                    symbol_map = {
+                        "XAU": "XAU/USD",
+                        "GOLD": "XAU/USD",
+                        "BTC": "BTC/USD",
+                        "BITCOIN": "BTC/USD",
+                    }
+                
+                    if len(parts) >= 2 and parts[1] == "VIEW":
+                        sym = symbol_map.get(parts[0])
+                
+                        if not sym:
+                            _send_long_telegram("Không nhận ra symbol. Dùng: XAU VIEW hoặc BTC VIEW", chat_id=chat_id)
+                            return {"ok": True}
+                
+                        trip = _fetch_triplet(sym, limit=260)
+                
+                        sig = analyze_pro(
+                            sym,
+                            trip.get("m15") or [],
+                            trip.get("m30") or [],
+                            trip.get("h1") or [],
+                            trip.get("h4") or [],
+                            current_price=None,
+                        )
+                
+                        sig.setdefault("meta", {})["data_source"] = trip.get("data_source")
+                
+                        view_text = build_view_engine_v1(sig)
+                        _send_long_telegram(view_text, chat_id=chat_id)
+                
+                        return {"ok": True}
+                
+                except Exception as e:
+                    logger.exception("VIEW COMMAND ERROR")
+                    _send_long_telegram(f"❌ VIEW failed: {e}", chat_id=chat_id)
+                    return {"ok": True}
                 # ===== SCALE ALERT (separate from NOW) =====
                 scale_plan = None
                 should_send_scale = False
