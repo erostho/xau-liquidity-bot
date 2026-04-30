@@ -1928,6 +1928,56 @@ async def telegram_webhook(request: Request):
 
     if not text:
         return "OK"
+
+    # ===== VIEW COMMAND =====
+    try:
+        raw_text = str(text or "").strip().upper()
+        parts = raw_text.split()
+    
+        symbol_map = {
+            "XAU": "XAU/USD",
+            "GOLD": "XAU/USD",
+            "BTC": "BTC/USD",
+            "BITCOIN": "BTC/USD",
+        }
+    
+        if len(parts) >= 2 and parts[1] == "VIEW":
+            sym = symbol_map.get(parts[0])
+    
+            if not sym:
+                _send_long_telegram("Không nhận ra symbol. Dùng: XAU VIEW hoặc BTC VIEW", chat_id=chat_id)
+                return "OK"
+    
+            data = _fetch_triplet(sym, limit=260)
+            current_price = _cget(data["m15"][-1], "close", None) if data.get("m15") else None
+    
+            sig = analyze_pro(
+                sym,
+                data.get("m15") or [],
+                data.get("m30") or [],
+                data.get("h1") or [],
+                data.get("h4") or [],
+                current_price=current_price,
+            )
+    
+            if not isinstance(sig, dict):
+                _send_long_telegram(f"❌ VIEW lỗi: analyze_pro không trả dict cho {sym}", chat_id=chat_id)
+                return "OK"
+    
+            ds = data.get("data_source")
+            if ds:
+                sig["data_source"] = ds
+                sig.setdefault("meta", {})["data_source"] = ds
+    
+            view_text = build_view_engine_v1(sig)
+            _send_long_telegram(view_text, chat_id=chat_id)
+    
+            return "OK"
+    
+    except Exception as e:
+        logger.exception("VIEW COMMAND ERROR")
+        _send_long_telegram(f"❌ VIEW failed: {e}", chat_id=chat_id)
+        return "OK"
     # ===== SCALE V2 COMMAND =====
     if _is_scale_command(text):
         symbol = _parse_symbol_from_text(text)
@@ -2131,47 +2181,7 @@ async def cron_run(token: str = "", request: Request = None):
                 except Exception:
                     pass
 
-                # ===== VIEW COMMAND =====
-                try:
-                    raw_text = str(text or "").strip().upper()
-                    parts = raw_text.split()
-                
-                    symbol_map = {
-                        "XAU": "XAU/USD",
-                        "GOLD": "XAU/USD",
-                        "BTC": "BTC/USD",
-                        "BITCOIN": "BTC/USD",
-                    }
-                
-                    if len(parts) >= 2 and parts[1] == "VIEW":
-                        sym = symbol_map.get(parts[0])
-                
-                        if not sym:
-                            _send_long_telegram("Không nhận ra symbol. Dùng: XAU VIEW hoặc BTC VIEW", chat_id=chat_id)
-                            return {"ok": True}
-                
-                        trip = _fetch_triplet(sym, limit=260)
-                
-                        sig = analyze_pro(
-                            sym,
-                            trip.get("m15") or [],
-                            trip.get("m30") or [],
-                            trip.get("h1") or [],
-                            trip.get("h4") or [],
-                            current_price=None,
-                        )
-                
-                        sig.setdefault("meta", {})["data_source"] = trip.get("data_source")
-                
-                        view_text = build_view_engine_v1(sig)
-                        _send_long_telegram(view_text, chat_id=chat_id)
-                
-                        return {"ok": True}
-                
-                except Exception as e:
-                    logger.exception("VIEW COMMAND ERROR")
-                    _send_long_telegram(f"❌ VIEW failed: {e}", chat_id=chat_id)
-                    return {"ok": True}
+
                 # ===== SCALE ALERT (separate from NOW) =====
                 scale_plan = None
                 should_send_scale = False
