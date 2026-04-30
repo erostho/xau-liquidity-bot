@@ -10,7 +10,11 @@ from dataclasses import dataclass
 import logging
 #from app.news_fetcher_v1 import build_news_items_safe
 from app.news_fetcher_v1 import build_news_items
-from app.macro_engine_v2 import build_macro_engine_v2
+from app.macro_engine_v2 import (
+    build_macro_engine_v2,
+    explain_tags_v1,
+    explain_macro_reason_v1,
+)
 logger = logging.getLogger("app.pro_analysis")
 
 # --- Safe candle access helpers (dict / dataclass / object) ---
@@ -10183,6 +10187,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         }
         meta["macro_explain_tags_v1"] = []
         meta["macro_reason_v1"] = []
+
+    
     # ---- Safety / normalize candles
     m15c = _safe_candles(m15)
     m30c = _safe_candles(m30)
@@ -13828,26 +13834,23 @@ def format_signal(sig: Dict[str, Any]) -> str:
     drivers = macro.get("drivers") or []
     if drivers:
         push_conclusion(f"- Drivers: {', '.join(str(x) for x in drivers[:3])}")
-    
-    # ===== MACRO REASON =====
+    # ===== MACRO EXPLAIN (FIX HIỂN THỊ) =====
     exps = meta.get("macro_explain_tags_v1") or []
     reasons = meta.get("macro_reason_v1") or []
     
-    if exps or reasons:
+    shown = []
+    for x in (reasons + exps):
+        if x and x not in shown:
+            shown.append(x)
+    
+    if shown:
         push_conclusion("")
         push_conclusion("🧠 LÝ DO VĨ MÔ:")
-    
-        shown = []
-        for e in (reasons + exps):
-            if e and e not in shown:
-                shown.append(e)
-    
-        for e in shown[:4]:
-            push_conclusion(f"- {e}")
+        for x in shown[:4]:
+            push_conclusion(f"- {x}")
     
     # ===== MACRO CONFLICT FILTER =====
     mcf = meta.get("macro_conflict_filter_v1") or {}
-    
     if mcf:
         push_conclusion("")
         push_conclusion("⚠️ MACRO CONFLICT FILTER:")
