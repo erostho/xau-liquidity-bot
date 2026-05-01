@@ -10052,7 +10052,98 @@ def macro_conflict_filter_v1(symbol: str, final_side: str, macro: dict) -> dict:
         out["reason"].append("chỉ trade nếu có confirmation rất rõ")
 
     return out
-    
+def build_bollinger_context_v1(candles):
+    try:
+        closes = [float(c["close"]) for c in candles if c.get("close") is not None]
+        if len(closes) < 25:
+            return {"state": "NO_DATA"}
+
+        import numpy as np
+
+        arr = np.array(closes[-20:])
+        ma = arr.mean()
+        std = arr.std()
+
+        upper = ma + 2 * std
+        lower = ma - 2 * std
+        width = upper - lower
+
+        # so với lịch sử 20 nến trước
+        prev_widths = []
+        for i in range(20, len(closes)):
+            win = np.array(closes[i-20:i])
+            w = (win.mean() + 2*win.std()) - (win.mean() - 2*win.std())
+            prev_widths.append(w)
+
+        avg_width = np.mean(prev_widths[-20:]) if prev_widths else width
+
+        ratio = width / avg_width if avg_width > 0 else 1
+
+        if ratio < 0.7:
+            state = "SQUEEZE"
+        elif ratio > 1.3:
+            state = "EXPANSION"
+        else:
+            state = "NORMAL"
+
+        return {
+            "state": state,
+            "width": width,
+            "ratio": ratio,
+        }
+
+    except Exception as e:
+        return {"state": "ERROR", "error": str(e)}
+
+def build_ichimoku_context_v1(candles):
+    try:
+        highs = [float(c["high"]) for c in candles if c.get("high") is not None]
+        lows  = [float(c["low"]) for c in candles if c.get("low") is not None]
+        closes = [float(c["close"]) for c in candles if c.get("close") is not None]
+
+        if len(closes) < 60:
+            return {"state": "NO_DATA"}
+
+        import numpy as np
+
+        def mid(highs, lows, period):
+            return (max(highs[-period:]) + min(lows[-period:])) / 2
+
+        tenkan = mid(highs, lows, 9)
+        kijun  = mid(highs, lows, 26)
+        senkou_a = (tenkan + kijun) / 2
+        senkou_b = mid(highs, lows, 52)
+
+        price = closes[-1]
+
+        cloud_top = max(senkou_a, senkou_b)
+        cloud_bot = min(senkou_a, senkou_b)
+
+        if price > cloud_top:
+            state = "ABOVE_CLOUD"
+        elif price < cloud_bot:
+            state = "BELOW_CLOUD"
+        else:
+            state = "IN_CLOUD"
+
+        # độ dày mây
+        thickness = abs(senkou_a - senkou_b)
+
+        if thickness < (price * 0.002):
+            cloud_state = "THIN"
+        else:
+            cloud_state = "THICK"
+
+        return {
+            "state": state,
+            "cloud": cloud_state,
+            "tenkan": tenkan,
+            "kijun": kijun,
+        }
+
+    except Exception as e:
+        return {"state": "ERROR", "error": str(e)}
+        
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict], current_price: float | None = None) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -11737,6 +11828,21 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     )
     base.setdefault("meta", {})["gap_info_v1"] = gap_info_v1
     base.setdefault("meta", {})["flow_engine_v1"] = flow_engine_v1
+
+    # ===== INDICATOR ENGINE V1 =====
+    try:
+        meta = base.setdefault("meta", {})
+    
+        m15 = candles_m15 if 'candles_m15' in locals() else []
+    
+        bb = build_bollinger_context_v1(m15)
+        ichi = build_ichimoku_context_v1(m15)
+    
+        meta["bollinger_context_v1"] = bb
+        meta["ichimoku_context_v1"] = ichi
+    
+    except Exception as e:
+        _dbg(f"[INDICATOR ENGINE ERROR] {e}")
     # ===== ELLIOTT PHASE V1 =====
     try:
         meta = base.setdefault("meta", {})
@@ -12480,18 +12586,25 @@ def build_view_engine_v1(sig: dict) -> str:
     
     # Bollinger / Ichimoku nếu chưa có engine thì ghi rõ là chưa có data
     boll = meta.get("bollinger_context_v1") or {}
-    boll_state = str(
-        boll.get("state")
-        or boll.get("band_state")
-        or "chưa có engine"
-    ).upper()
-    
     ichi = meta.get("ichimoku_context_v1") or {}
-    ichi_state = str(
-        ichi.get("state")
-        or ichi.get("position")
-        or "chưa có engine"
-    ).upper()
+    boll_state = boll.get("state")
+    if boll_state == "SQUEEZE":
+        boll_txt = "SQUEEZE (chuẩn bị biến động mạnh)"
+    elif boll_state == "EXPANSION":
+        boll_txt = "EXPANSION (đang chạy mạnh)"
+    else:
+        boll_txt = "NORMAL"
+        
+    ichi_state = ichi.get("state")
+    cloud = ichi.get("cloud")
+    if ichi_state == "IN_CLOUD":
+        ichi_txt = f"TRONG MÂY ({cloud}) → tranh chấp"
+    elif ichi_state == "ABOVE_CLOUD":
+        ichi_txt = "TRÊN MÂY → bias tăng"
+    elif ichi_state == "BELOW_CLOUD":
+        ichi_txt = "DƯỚI MÂY → bias giảm"
+    else:
+        ichi_txt = "n/a"
 
     # ===== macro =====
     macro = meta.get("macro_v2") or {}
@@ -12673,8 +12786,8 @@ def build_view_engine_v1(sig: dict) -> str:
     lines.append("📊 INDICATOR CONTEXT")
     lines.append(f"- EMA: {ema_trend} {ema_pos}".strip())
     lines.append(f"- RSI: {_sf(rsi_val, 1)}")
-    lines.append(f"- Bollinger: {boll_state}")
-    lines.append(f"- Ichimoku: {ichi_state}")
+    lines.append(f"- Bollinger: {boll_txt}")
+    lines.append(f"- Ichimoku: {ichi_txt}")
     lines.append("→ Tổng hợp:")
     lines.append("  → Ưu tiên context + vùng + trigger, không đánh theo 1 indicator riêng lẻ.")
 
