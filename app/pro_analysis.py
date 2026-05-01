@@ -12687,6 +12687,8 @@ def build_view_engine_v1(sig: dict) -> str:
     rsi_div = meta.get("rsi_divergence_v1") or {}
     mom = meta.get("momentum_phase_v1") or {}
     vol = meta.get("volatility_regime_v1") or {}
+    phase = (mom or {}).get("phase") or "UNKNOWN"
+    vol_state = (vol or {}).get("state") or "UNKNOWN"
     sce = meta.get("signal_consistency_v1") or {}
     final_side = str(
         meta.get("final_side")
@@ -12824,6 +12826,9 @@ def build_view_engine_v1(sig: dict) -> str:
     else:
         meaning = "Bối cảnh chưa đồng thuận → ưu tiên chờ market lộ mặt."
     # ===== VIEW BIAS VERDICT V1 =====
+    boll_state = (boll or {}).get("state") or "NO_DATA"
+    ichi_state = (ichi or {}).get("state") or "NO_DATA"
+    phase = (mom or {}).get("phase") or "UNKNOWN"
     def _view_bias_verdict():
         sell_pts = 0
         buy_pts = 0
@@ -12855,7 +12860,8 @@ def build_view_engine_v1(sig: dict) -> str:
             reasons.append("EMA bullish")
     
         # Momentum
-        if phase == "EARLY":
+        _phase = str(phase or "UNKNOWN").upper()
+        if _phase == "EARLY":
             reasons.append("Momentum EARLY → sóng mới bắt đầu, chưa nên bắt ngược")
         elif phase == "LATE":
             reasons.append("Momentum LATE → dễ trap/đảo chiều, tránh đuổi")
