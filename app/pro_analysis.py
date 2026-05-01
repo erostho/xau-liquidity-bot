@@ -12712,12 +12712,12 @@ def build_view_engine_v1(sig: dict) -> str:
     # ===== FALLBACK LOGIC =====
     if zone_low is None or zone_high is None:
         if bias == "BUY" and lo is not None and hi is not None:
-            zone_low = lo + (hi - lo) * 0.3
-            zone_high = lo + (hi - lo) * 0.5
+            zone_low = lo + (hi - lo) * 0.2
+            zone_high = lo + (hi - lo) * 0.45
     
         elif bias == "SELL" and lo is not None and hi is not None:
-            zone_low = lo + (hi - lo) * 0.5
-            zone_high = lo + (hi - lo) * 0.7
+            zone_low = lo + (hi - lo) * 0.55
+            zone_high = lo + (hi - lo) * 0.80
     
         else:
             # fallback cuối nếu vẫn lỗi
