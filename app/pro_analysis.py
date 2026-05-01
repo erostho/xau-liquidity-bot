@@ -12705,8 +12705,24 @@ def build_view_engine_v1(sig: dict) -> str:
     playbook = meta.get("playbook_v2") or {}
     lo = key.get("M15_RANGE_LOW")
     hi = key.get("M15_RANGE_HIGH")
-    zone_low = playbook.get("zone_low")
-    zone_high = playbook.get("zone_high")
+    
+    zone_low = playbook.get("zone_low") or lo
+    zone_high = playbook.get("zone_high") or hi
+    
+    # ===== FALLBACK LOGIC =====
+    if zone_low is None or zone_high is None:
+        if bias == "BUY" and lo is not None and hi is not None:
+            zone_low = lo + (hi - lo) * 0.3
+            zone_high = lo + (hi - lo) * 0.5
+    
+        elif bias == "SELL" and lo is not None and hi is not None:
+            zone_low = lo + (hi - lo) * 0.5
+            zone_high = lo + (hi - lo) * 0.7
+    
+        else:
+            # fallback cuối nếu vẫn lỗi
+            zone_low = lo
+            zone_high = hi
     range_low_txt = _sf(lo)
     range_high_txt = _sf(hi)
     range_txt = _zone(lo, hi)
@@ -12798,8 +12814,8 @@ def build_view_engine_v1(sig: dict) -> str:
 
     # ===== zones =====
     playbook = meta.get("playbook_v2") or {}
-    zone_low = playbook.get("zone_low")
-    zone_high = playbook.get("zone_high")
+    zone_low = playbook.get("zone_low") or lo
+    zone_high = playbook.get("zone_high") or hi
 
     res_near = key.get("M15_RES_NEAR_LOW"), key.get("M15_RES_NEAR_HIGH")
     sup_near = key.get("M15_SUP_NEAR_LOW"), key.get("M15_SUP_NEAR_HIGH")
