@@ -12924,7 +12924,9 @@ def build_view_engine_v1(sig: dict) -> str:
         vol_txt = "EXPANSION (đang bung mạnh)"
     else:
         vol_txt = "NORMAL"
-    
+    lines.append(f"- EMA: {ema_trend} {ema_pos}".strip())
+    lines.append(f"- Bollinger: {boll_state}")
+    lines.append(f"- Ichimoku: {ichi_state}")    
     lines.append(f"- RSI divergence: {div_txt}")
     lines.append(f"- Momentum phase: {phase_txt}")
     lines.append(f"- Volatility: {vol_txt}")
