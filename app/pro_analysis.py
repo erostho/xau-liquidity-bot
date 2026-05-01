@@ -12983,7 +12983,7 @@ def build_view_engine_v1(sig: dict) -> str:
 
     else:
         quick_decision = view_verdict["quick"]
-        playbook_main = view_verdict["note"]
+        playbook_main = view_verdict.get("action_hint", "")
         
         sc1 = {
             "name": "BREAK THẬT",
