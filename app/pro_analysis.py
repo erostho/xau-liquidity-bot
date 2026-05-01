@@ -10143,55 +10143,25 @@ def build_ichimoku_context_v1(candles):
 
     except Exception as e:
         return {"state": "ERROR", "error": str(e)}
-def build_rsi_divergence_v1(candles, period=14):
-    try:
-        import numpy as np
-
-        closes = np.array([float(c["close"]) for c in candles if c.get("close")])
-        if len(closes) < period + 5:
-            return {"state": "NO_DATA"}
-
-        # ===== RSI =====
-        deltas = np.diff(closes)
-        gain = np.where(deltas > 0, deltas, 0)
-        loss = np.where(deltas < 0, -deltas, 0)
-
-        avg_gain = np.mean(gain[-period:])
-        avg_loss = np.mean(loss[-period:]) or 1e-9
-
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-
-        # ===== lấy 2 đỉnh/đáy gần =====
-        p1, p2 = closes[-5], closes[-1]
-
-        rsi_prev = rsi * (0.98)  # approx nhẹ
-        rsi_now = rsi
-
-        # ===== detect =====
-        if p2 > p1 and rsi_now < rsi_prev:
-            return {"state": "BEARISH", "rsi": rsi_now}
-
-        if p2 < p1 and rsi_now > rsi_prev:
-            return {"state": "BULLISH", "rsi": rsi_now}
-
-        return {"state": "NONE", "rsi": rsi_now}
-
-    except Exception as e:
-        return {"state": "ERROR", "error": str(e)}
 
 def build_momentum_phase_v1(candles):
     try:
         import numpy as np
 
-        closes = np.array([float(c["close"]) for c in candles if c.get("close")])
-        if len(closes) < 10:
-            return {"phase": "UNKNOWN"}
+        closes = [float(_c_val(c, "close", 0.0) or 0.0) for c in (candles or [])]
+        closes = [x for x in closes if x > 0]
 
-        moves = np.abs(np.diff(closes))
+        if len(closes) < 10:
+            return {"phase": "UNKNOWN", "reason": "not_enough_data"}
+
+        arr = np.array(closes)
+        moves = np.abs(np.diff(arr))
+
+        if len(moves) < 6:
+            return {"phase": "UNKNOWN", "reason": "not_enough_moves"}
+
         avg_move = np.mean(moves[:-3])
         recent_move = np.mean(moves[-3:])
-
         ratio = recent_move / (avg_move or 1e-9)
 
         if ratio < 0.7:
@@ -10201,28 +10171,27 @@ def build_momentum_phase_v1(candles):
         else:
             phase = "LATE"
 
-        return {
-            "phase": phase,
-            "ratio": ratio
-        }
+        return {"phase": phase, "ratio": float(ratio)}
 
     except Exception as e:
         return {"phase": "ERROR", "error": str(e)}
+
 
 def build_volatility_regime_v1(candles):
     try:
         import numpy as np
 
-        highs = np.array([float(c["high"]) for c in candles if c.get("high")])
-        lows  = np.array([float(c["low"]) for c in candles if c.get("low")])
+        highs = [float(_c_val(c, "high", 0.0) or 0.0) for c in (candles or [])]
+        lows = [float(_c_val(c, "low", 0.0) or 0.0) for c in (candles or [])]
 
-        if len(highs) < 20:
-            return {"state": "UNKNOWN"}
+        pairs = [(h, l) for h, l in zip(highs, lows) if h > 0 and l > 0 and h >= l]
 
-        atrs = highs[-20:] - lows[-20:]
-        avg_atr = np.mean(atrs[:-5])
-        recent_atr = np.mean(atrs[-5:])
+        if len(pairs) < 20:
+            return {"state": "UNKNOWN", "reason": "not_enough_data"}
 
+        ranges = np.array([h - l for h, l in pairs[-20:]])
+        avg_atr = np.mean(ranges[:-5])
+        recent_atr = np.mean(ranges[-5:])
         ratio = recent_atr / (avg_atr or 1e-9)
 
         if ratio < 0.7:
@@ -10232,14 +10201,39 @@ def build_volatility_regime_v1(candles):
         else:
             state = "EXPANSION"
 
-        return {
-            "state": state,
-            "ratio": ratio
-        }
+        return {"state": state, "ratio": float(ratio)}
 
     except Exception as e:
         return {"state": "ERROR", "error": str(e)}
 
+
+def build_rsi_divergence_v1(candles, period=14):
+    try:
+        import numpy as np
+
+        closes = [float(_c_val(c, "close", 0.0) or 0.0) for c in (candles or [])]
+        closes = [x for x in closes if x > 0]
+
+        if len(closes) < period + 5:
+            return {"state": "NO_DATA"}
+
+        rsi_now = _rsi(closes, period) or 50.0
+        p1, p2 = closes[-5], closes[-1]
+
+        # dùng RSI series có sẵn trong file cho sạch hơn
+        rsis = _rsi_series(closes, period=period)
+        rsi_prev = rsis[-5] if rsis and len(rsis) >= 5 else rsi_now
+
+        if p2 > p1 and rsi_now < rsi_prev:
+            return {"state": "BEARISH", "rsi": float(rsi_now)}
+
+        if p2 < p1 and rsi_now > rsi_prev:
+            return {"state": "BULLISH", "rsi": float(rsi_now)}
+
+        return {"state": "NONE", "rsi": float(rsi_now)}
+
+    except Exception as e:
+        return {"state": "ERROR", "error": str(e)}
 
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict], current_price: float | None = None) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
@@ -12200,56 +12194,51 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     try:
         meta = base.setdefault("meta", {})
     
-        # lấy candles an toàn
-        m15 = (
-            locals().get("candles_m15")
+        m15_src = (
+            locals().get("m15c")
+            or locals().get("candles_m15")
             or locals().get("m15")
             or []
         )
     
-        _dbg(f"[INDICATOR] m15 len = {len(m15)}")
+        _dbg(f"[INDICATOR] m15_src len = {len(m15_src)}")
     
-        if not m15:
-            _dbg("[INDICATOR] WARNING: m15 empty")
-    
-        # ===== CORE ENGINES =====
         try:
-            meta["rsi_divergence_v1"] = build_rsi_divergence_v1(m15)
+            meta["rsi_divergence_v1"] = build_rsi_divergence_v1(m15_src)
         except Exception as e:
             _dbg(f"[RSI DIV ERROR] {e}")
     
         try:
-            meta["momentum_phase_v1"] = build_momentum_phase_v1(m15)
+            meta["momentum_phase_v1"] = build_momentum_phase_v1(m15_src)
         except Exception as e:
             _dbg(f"[MOMENTUM ERROR] {e}")
     
         try:
-            meta["volatility_regime_v1"] = build_volatility_regime_v1(m15)
+            meta["volatility_regime_v1"] = build_volatility_regime_v1(m15_src)
         except Exception as e:
             _dbg(f"[VOL ERROR] {e}")
     
-        # ===== STRUCTURE ENGINES =====
         try:
-            bb = build_bollinger_context_v1(m15)
-            meta["bollinger_context_v1"] = bb
-            _dbg(f"[BOLLINGER] {bb}")
+            meta["bollinger_context_v1"] = build_bollinger_context_v1(m15_src)
+            _dbg(f"[BOLLINGER] {meta['bollinger_context_v1']}")
         except Exception as e:
             _dbg(f"[BOLLINGER ERROR] {e}")
     
         try:
-            ichi = build_ichimoku_context_v1(m15)
-            meta["ichimoku_context_v1"] = ichi
-            _dbg(f"[ICHIMOKU] {ichi}")
+            meta["ichimoku_context_v1"] = build_ichimoku_context_v1(m15_src)
+            _dbg(f"[ICHIMOKU] {meta['ichimoku_context_v1']}")
         except Exception as e:
             _dbg(f"[ICHIMOKU ERROR] {e}")
     
     except Exception as e:
         _dbg(f"[INDICATOR ENGINE FATAL] {e}")
+    
     meta.setdefault("rsi_divergence_v1", {"state": "NO_DATA"})
     meta.setdefault("momentum_phase_v1", {"phase": "UNKNOWN"})
     meta.setdefault("volatility_regime_v1", {"state": "UNKNOWN"})
     meta.setdefault("bollinger_context_v1", {"state": "NO_DATA"})
-    meta.setdefault("ichimoku_context_v1", {"state": "NO_DATA"})    
+    meta.setdefault("ichimoku_context_v1", {"state": "NO_DATA"})
+    
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
@@ -12960,8 +12949,8 @@ def build_view_engine_v1(sig: dict) -> str:
     else:
         vol_txt = "NORMAL"
     lines.append(f"- EMA: {ema_trend} {ema_pos}".strip())
-    lines.append(f"- Bollinger: {boll_state}")
-    lines.append(f"- Ichimoku: {ichi_state}")    
+    lines.append(f"- Bollinger: {boll_txt}")
+    lines.append(f"- Ichimoku: {ichi_txt}")
     lines.append(f"- RSI divergence: {div_txt}")
     lines.append(f"- Momentum phase: {phase_txt}")
     lines.append(f"- Volatility: {vol_txt}")
