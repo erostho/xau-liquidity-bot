@@ -7118,12 +7118,7 @@ def _attach_vnext_meta(
         base.setdefault("meta", {})["post_break_continuity_v1"] = continuity_v1
         meta["post_break_continuity_v1"] = continuity_v1
         
-        _dbg(f"PBC META SAVED: {(base.get('meta') or {}).get('post_break_continuity_v1')}")
-        _dbg(
-            f"PBC STATE: {continuity_v1.get('state','NONE')} | "
-            f"SIDE: {continuity_v1.get('side','NONE')} | "
-            f"REF: {continuity_v1.get('reference')}"
-        )
+
         # ===== SIGNAL CONSISTENCY SYNC WITH FINAL DECISION =====
         try:
             sce1 = meta.get("signal_consistency_v1") or {}
@@ -10291,34 +10286,21 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # ===== AUTO NEWS + MACRO ENGINE V2 =====
     try:
         meta = base.setdefault("meta", {})
-    
-        _dbg("[NEWS] START build_news_items()")
-    
+      
         try:
             news_items = build_news_items()
             if not isinstance(news_items, list):
-                _dbg(f"[NEWS] bad return type: {type(news_items)}")
                 news_items = []
-    
-            _dbg(f"[NEWS] fetched: {len(news_items)}")
-    
+       
             for n in news_items[:3]:
-                _dbg(
-                    f"[NEWS] item: {n.get('title')} | "
-                    f"tags={n.get('tags')} | impact={n.get('impact')}"
-                )
-    
+      
         except Exception as e:
-            _dbg(f"[NEWS ERROR] build_news_items failed: {e}")
             news_items = []
-    
-        _dbg(f"[MACRO] input news count = {len(news_items)}")
-    
+        
         try:
             macro_ctx = build_macro_engine_v2(news_items)
-            _dbg(f"[MACRO] raw ctx = {macro_ctx}")
+
         except Exception as e:
-            _dbg(f"[MACRO ERROR] build_macro_engine_v2 failed: {e}")
             macro_ctx = {}
     
         if not isinstance(macro_ctx, dict):
@@ -10338,24 +10320,17 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         try:
             meta["macro_explain_tags_v1"] = explain_tags_v1(news_items)
         except Exception as e:
-            _dbg(f"[MACRO EXPLAIN TAG ERROR] {e}")
+
             meta["macro_explain_tags_v1"] = []
     
         try:
             meta["macro_reason_v1"] = explain_macro_reason_v1(macro_ctx)
         except Exception as e:
-            _dbg(f"[MACRO REASON ERROR] {e}")
+
             meta["macro_reason_v1"] = []
     
-        _dbg(
-            f"[MACRO] SAVED mode={macro_ctx.get('macro_mode')} "
-            f"gold={macro_ctx.get('gold_bias')} "
-            f"btc={macro_ctx.get('btc_bias')} "
-            f"news={len(news_items)}"
-        )
-    
     except Exception as e:
-        _dbg(f"[MACRO FATAL] {e}")
+
         meta = base.setdefault("meta", {})
         meta["news_items"] = []
         meta["macro_v2"] = {
@@ -12191,6 +12166,15 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
         _dbg(f"[MACRO CONFLICT ERROR] {e}")
 
     # ===== INDICATOR ENGINE V1 (MERGED) =====
+    _dbg("===== INDICATOR DEBUG START =====")
+
+    _dbg(f"[CHECK] m15 exist: {'m15' in locals()}")
+    _dbg(f"[CHECK] m15c exist: {'m15c' in locals()}")
+    _dbg(f"[CHECK] candles_m15 exist: {'candles_m15' in locals()}")
+    
+    _dbg(f"[LEN] m15: {len(locals().get('m15', []))}")
+    _dbg(f"[LEN] m15c: {len(locals().get('m15c', []))}")
+    _dbg(f"[LEN] candles_m15: {len(locals().get('candles_m15', []))}")
     try:
         meta = base.setdefault("meta", {})
     
@@ -12201,15 +12185,20 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             or []
         )
     
-        _dbg(f"[INDICATOR] m15_src len = {len(m15_src)}")
+        _dbg(f"[SRC] using: {'m15c' if locals().get('m15c') else 'candles_m15' if locals().get('candles_m15') else 'm15'}")
+        _dbg(f"[SRC LEN] = {len(m15_src)}")
     
         try:
-            meta["rsi_divergence_v1"] = build_rsi_divergence_v1(m15_src)
+            rsi_div = build_rsi_divergence_v1(m15_src)
+            meta["rsi_divergence_v1"] = rsi_div
+            _dbg(f"[RSI DIV] {rsi_div}")
         except Exception as e:
             _dbg(f"[RSI DIV ERROR] {e}")
     
         try:
-            meta["momentum_phase_v1"] = build_momentum_phase_v1(m15_src)
+            mom = build_momentum_phase_v1(m15_src)
+            meta["momentum_phase_v1"] = mom
+            _dbg(f"[MOMENTUM] {mom}")
         except Exception as e:
             _dbg(f"[MOMENTUM ERROR] {e}")
     
@@ -12219,14 +12208,16 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
             _dbg(f"[VOL ERROR] {e}")
     
         try:
-            meta["bollinger_context_v1"] = build_bollinger_context_v1(m15_src)
-            _dbg(f"[BOLLINGER] {meta['bollinger_context_v1']}")
+            bb = build_bollinger_context_v1(m15_src)
+            meta["bollinger_context_v1"] = bb
+            _dbg(f"[BOLLINGER RESULT] {bb}")
         except Exception as e:
             _dbg(f"[BOLLINGER ERROR] {e}")
     
         try:
-            meta["ichimoku_context_v1"] = build_ichimoku_context_v1(m15_src)
-            _dbg(f"[ICHIMOKU] {meta['ichimoku_context_v1']}")
+            ichi = build_ichimoku_context_v1(m15_src)
+            meta["ichimoku_context_v1"] = ichi
+            _dbg(f"[ICHIMOKU RESULT] {ichi}")
         except Exception as e:
             _dbg(f"[ICHIMOKU ERROR] {e}")
     
@@ -12238,7 +12229,10 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta.setdefault("volatility_regime_v1", {"state": "UNKNOWN"})
     meta.setdefault("bollinger_context_v1", {"state": "NO_DATA"})
     meta.setdefault("ichimoku_context_v1", {"state": "NO_DATA"})
-    
+    _dbg(f"[META FINAL] keys = {list(meta.keys())}")
+    _dbg(f"[META BOLL] {meta.get('bollinger_context_v1')}")
+    _dbg(f"[META ICHI] {meta.get('ichimoku_context_v1')}")
+    _dbg(f"[META MOM] {meta.get('momentum_phase_v1')}")
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
