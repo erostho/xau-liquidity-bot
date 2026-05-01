@@ -10286,21 +10286,34 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     # ===== AUTO NEWS + MACRO ENGINE V2 =====
     try:
         meta = base.setdefault("meta", {})
-      
+    
+        _dbg("[NEWS] START build_news_items()")
+    
         try:
             news_items = build_news_items()
             if not isinstance(news_items, list):
+                _dbg(f"[NEWS] bad return type: {type(news_items)}")
                 news_items = []
-       
+    
+            _dbg(f"[NEWS] fetched: {len(news_items)}")
+    
             for n in news_items[:3]:
-      
+                _dbg(
+                    f"[NEWS] item: {n.get('title')} | "
+                    f"tags={n.get('tags')} | impact={n.get('impact')}"
+                )
+    
         except Exception as e:
+            _dbg(f"[NEWS ERROR] build_news_items failed: {e}")
             news_items = []
-        
+    
+        _dbg(f"[MACRO] input news count = {len(news_items)}")
+    
         try:
             macro_ctx = build_macro_engine_v2(news_items)
-
+            _dbg(f"[MACRO] raw ctx = {macro_ctx}")
         except Exception as e:
+            _dbg(f"[MACRO ERROR] build_macro_engine_v2 failed: {e}")
             macro_ctx = {}
     
         if not isinstance(macro_ctx, dict):
