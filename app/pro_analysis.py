@@ -11926,20 +11926,8 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base.setdefault("meta", {})["gap_info_v1"] = gap_info_v1
     base.setdefault("meta", {})["flow_engine_v1"] = flow_engine_v1
 
-    # ===== INDICATOR ENGINE V1 =====
-    try:
-        meta = base.setdefault("meta", {})
-    
-        m15 = candles_m15 if 'candles_m15' in locals() else []
-    
-        bb = build_bollinger_context_v1(m15)
-        ichi = build_ichimoku_context_v1(m15)
-    
-        meta["bollinger_context_v1"] = bb
-        meta["ichimoku_context_v1"] = ichi
-    
-    except Exception as e:
-        _dbg(f"[INDICATOR ENGINE ERROR] {e}")
+
+        
     # ===== ELLIOTT PHASE V1 =====
     try:
         meta = base.setdefault("meta", {})
@@ -12208,18 +12196,30 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     except Exception as e:
         _dbg(f"[MACRO CONFLICT ERROR] {e}")
 
+    # ===== INDICATOR ENGINE V1 =====
+    try:
+        meta = base.setdefault("meta", {})
+        m15 = candles_m15 if 'candles_m15' in locals() else []
+        meta["rsi_divergence_v1"] = build_rsi_divergence_v1(m15)
+        meta["momentum_phase_v1"] = build_momentum_phase_v1(m15)
+        meta["volatility_regime_v1"] = build_volatility_regime_v1(m15)
+    except Exception as e:
+        _dbg(f"[ADV ENGINE ERROR] {e}")
 
     try:
         meta = base.setdefault("meta", {})
     
         m15 = candles_m15 if 'candles_m15' in locals() else []
     
-        meta["rsi_divergence_v1"] = build_rsi_divergence_v1(m15)
-        meta["momentum_phase_v1"] = build_momentum_phase_v1(m15)
-        meta["volatility_regime_v1"] = build_volatility_regime_v1(m15)
+        bb = build_bollinger_context_v1(m15)
+        ichi = build_ichimoku_context_v1(m15)
+    
+        meta["bollinger_context_v1"] = bb
+        meta["ichimoku_context_v1"] = ichi
     
     except Exception as e:
-        _dbg(f"[ADV ENGINE ERROR] {e}")
+        _dbg(f"[INDICATOR ENGINE ERROR] {e}")
+        
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
