@@ -10047,44 +10047,63 @@ def macro_conflict_filter_v1(symbol: str, final_side: str, macro: dict) -> dict:
         out["reason"].append("chỉ trade nếu có confirmation rất rõ")
 
     return out
-def build_bollinger_context_v1(candles):
+def build_bollinger_context_v1(candles, period=20, mult=2.0):
     try:
-        closes = [float(c["close"]) for c in candles if c.get("close") is not None]
-        if len(closes) < 25:
-            return {"state": "NO_DATA"}
-
         import numpy as np
 
-        arr = np.array(closes[-20:])
-        ma = arr.mean()
-        std = arr.std()
+        closes = [
+            float(_c_val(c, "close", 0.0) or 0.0)
+            for c in (candles or [])
+        ]
+        closes = [x for x in closes if x > 0]
 
-        upper = ma + 2 * std
-        lower = ma - 2 * std
+        if len(closes) < period + 20:
+            return {"state": "NO_DATA", "reason": "not_enough_data", "len": len(closes)}
+
+        arr = np.array(closes[-period:])
+        ma = float(arr.mean())
+        std = float(arr.std())
+
+        upper = ma + mult * std
+        lower = ma - mult * std
         width = upper - lower
 
-        # so với lịch sử 20 nến trước
         prev_widths = []
-        for i in range(20, len(closes)):
-            win = np.array(closes[i-20:i])
-            w = (win.mean() + 2*win.std()) - (win.mean() - 2*win.std())
-            prev_widths.append(w)
+        for i in range(period, len(closes)):
+            win = np.array(closes[i-period:i])
+            w = (win.mean() + mult * win.std()) - (win.mean() - mult * win.std())
+            prev_widths.append(float(w))
 
-        avg_width = np.mean(prev_widths[-20:]) if prev_widths else width
+        avg_width = float(np.mean(prev_widths[-20:])) if prev_widths else width
+        ratio = width / (avg_width or 1e-9)
 
-        ratio = width / avg_width if avg_width > 0 else 1
+        price = closes[-1]
 
-        if ratio < 0.7:
+        if ratio < 0.70:
             state = "SQUEEZE"
-        elif ratio > 1.3:
+        elif ratio > 1.30:
             state = "EXPANSION"
         else:
             state = "NORMAL"
 
+        if price > upper:
+            position = "ABOVE_UPPER"
+        elif price < lower:
+            position = "BELOW_LOWER"
+        elif price >= ma:
+            position = "UPPER_HALF"
+        else:
+            position = "LOWER_HALF"
+
         return {
             "state": state,
-            "width": width,
-            "ratio": ratio,
+            "position": position,
+            "ma": ma,
+            "upper": float(upper),
+            "lower": float(lower),
+            "width": float(width),
+            "ratio": float(ratio),
+            "len": len(closes),
         }
 
     except Exception as e:
@@ -10092,25 +10111,41 @@ def build_bollinger_context_v1(candles):
 
 def build_ichimoku_context_v1(candles):
     try:
-        highs = [float(c["high"]) for c in candles if c.get("high") is not None]
-        lows  = [float(c["low"]) for c in candles if c.get("low") is not None]
-        closes = [float(c["close"]) for c in candles if c.get("close") is not None]
+        highs = [
+            float(_c_val(c, "high", 0.0) or 0.0)
+            for c in (candles or [])
+        ]
+        lows = [
+            float(_c_val(c, "low", 0.0) or 0.0)
+            for c in (candles or [])
+        ]
+        closes = [
+            float(_c_val(c, "close", 0.0) or 0.0)
+            for c in (candles or [])
+        ]
 
-        if len(closes) < 60:
-            return {"state": "NO_DATA"}
+        rows = [
+            (h, l, c)
+            for h, l, c in zip(highs, lows, closes)
+            if h > 0 and l > 0 and c > 0 and h >= l
+        ]
 
-        import numpy as np
+        if len(rows) < 60:
+            return {"state": "NO_DATA", "reason": "not_enough_data", "len": len(rows)}
 
-        def mid(highs, lows, period):
-            return (max(highs[-period:]) + min(lows[-period:])) / 2
+        highs = [x[0] for x in rows]
+        lows = [x[1] for x in rows]
+        closes = [x[2] for x in rows]
 
-        tenkan = mid(highs, lows, 9)
-        kijun  = mid(highs, lows, 26)
-        senkou_a = (tenkan + kijun) / 2
-        senkou_b = mid(highs, lows, 52)
+        def mid(period):
+            return (max(highs[-period:]) + min(lows[-period:])) / 2.0
+
+        tenkan = mid(9)
+        kijun = mid(26)
+        senkou_a = (tenkan + kijun) / 2.0
+        senkou_b = mid(52)
 
         price = closes[-1]
-
         cloud_top = max(senkou_a, senkou_b)
         cloud_bot = min(senkou_a, senkou_b)
 
@@ -10121,19 +10156,22 @@ def build_ichimoku_context_v1(candles):
         else:
             state = "IN_CLOUD"
 
-        # độ dày mây
         thickness = abs(senkou_a - senkou_b)
+        cloud = "THIN" if thickness < max(price * 0.002, 1e-9) else "THICK"
 
-        if thickness < (price * 0.002):
-            cloud_state = "THIN"
-        else:
-            cloud_state = "THICK"
+        tk_bias = "BULLISH" if tenkan > kijun else "BEARISH" if tenkan < kijun else "FLAT"
 
         return {
             "state": state,
-            "cloud": cloud_state,
-            "tenkan": tenkan,
-            "kijun": kijun,
+            "cloud": cloud,
+            "tk_bias": tk_bias,
+            "tenkan": float(tenkan),
+            "kijun": float(kijun),
+            "senkou_a": float(senkou_a),
+            "senkou_b": float(senkou_b),
+            "cloud_top": float(cloud_top),
+            "cloud_bot": float(cloud_bot),
+            "len": len(rows),
         }
 
     except Exception as e:
