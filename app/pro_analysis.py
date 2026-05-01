@@ -11908,7 +11908,110 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     base.setdefault("meta", {})["gap_info_v1"] = gap_info_v1
     base.setdefault("meta", {})["flow_engine_v1"] = flow_engine_v1
 
+    # ===== AUTO NEWS + MACRO ENGINE V2 =====
+    # ===== MACRO CONFLICT FILTER V1 =====
+    try:
+        meta = base.setdefault("meta", {})
+        macro = meta.get("macro_v2") or {}
+    
+        fs = str(
+            meta.get("final_side")
+            or (meta.get("signal_consistency_v1") or {}).get("final_side")
+            or (meta.get("master_engine_v1") or {}).get("best_side")
+            or base.get("side")
+            or "NONE"
+        ).upper()
+    
+        mcf = macro_conflict_filter_v1(symbol, fs, macro)
+        meta["macro_conflict_filter_v1"] = mcf
+    
+        cur_score = float(base.get("final_score") or 0)
+        base["final_score"] = max(
+            0,
+            min(100, cur_score + float(mcf.get("score_adjust") or 0))
+        )
+    
+        if mcf.get("conflict") and mcf.get("severity") == "HIGH":
+            base["tradeable"] = False
+            meta["macro_block_reason"] = "Macro ngược hướng kỹ thuật mạnh"
+    
+        _dbg(
+            f"[MACRO CONFLICT] fs={fs} "
+            f"conflict={mcf.get('conflict')} "
+            f"severity={mcf.get('severity')} "
+            f"adjust={mcf.get('score_adjust')}"
+        )
+    
+    except Exception as e:
+        _dbg(f"[MACRO CONFLICT ERROR] {e}")
 
+    # ===== INDICATOR ENGINE V1 (MERGED) =====
+    _dbg("===== INDICATOR DEBUG START =====")
+    _dbg(f"[CHECK] m15 exist: {'m15' in locals()}")
+    _dbg(f"[CHECK] m15c exist: {'m15c' in locals()}")
+    _dbg(f"[CHECK] candles_m15 exist: {'candles_m15' in locals()}")
+    
+    _dbg(f"[LEN] m15: {len(locals().get('m15', []))}")
+    _dbg(f"[LEN] m15c: {len(locals().get('m15c', []))}")
+    _dbg(f"[LEN] candles_m15: {len(locals().get('candles_m15', []))}")
+    try:
+        meta = base.setdefault("meta", {})
+    
+        m15_src = (
+            locals().get("m15c")
+            or locals().get("candles_m15")
+            or locals().get("m15")
+            or []
+        )
+    
+        _dbg(f"[SRC] using: {'m15c' if locals().get('m15c') else 'candles_m15' if locals().get('candles_m15') else 'm15'}")
+        _dbg(f"[SRC LEN] = {len(m15_src)}")
+    
+        try:
+            rsi_div = build_rsi_divergence_v1(m15_src)
+            meta["rsi_divergence_v1"] = rsi_div
+            _dbg(f"[RSI DIV] {rsi_div}")
+        except Exception as e:
+            _dbg(f"[RSI DIV ERROR] {e}")
+    
+        try:
+            mom = build_momentum_phase_v1(m15_src)
+            meta["momentum_phase_v1"] = mom
+            _dbg(f"[MOMENTUM] {mom}")
+        except Exception as e:
+            _dbg(f"[MOMENTUM ERROR] {e}")
+    
+        try:
+            meta["volatility_regime_v1"] = build_volatility_regime_v1(m15_src)
+        except Exception as e:
+            _dbg(f"[VOL ERROR] {e}")
+    
+        try:
+            bb = build_bollinger_context_v1(m15_src)
+            meta["bollinger_context_v1"] = bb
+            _dbg(f"[BOLLINGER RESULT] {bb}")
+        except Exception as e:
+            _dbg(f"[BOLLINGER ERROR] {e}")
+    
+        try:
+            ichi = build_ichimoku_context_v1(m15_src)
+            meta["ichimoku_context_v1"] = ichi
+            _dbg(f"[ICHIMOKU RESULT] {ichi}")
+        except Exception as e:
+            _dbg(f"[ICHIMOKU ERROR] {e}")
+    
+    except Exception as e:
+        _dbg(f"[INDICATOR ENGINE FATAL] {e}")
+    
+    meta.setdefault("rsi_divergence_v1", {"state": "NO_DATA"})
+    meta.setdefault("momentum_phase_v1", {"phase": "UNKNOWN"})
+    meta.setdefault("volatility_regime_v1", {"state": "UNKNOWN"})
+    meta.setdefault("bollinger_context_v1", {"state": "NO_DATA"})
+    meta.setdefault("ichimoku_context_v1", {"state": "NO_DATA"})
+    _dbg(f"[META FINAL] keys = {list(meta.keys())}")
+    _dbg(f"[META BOLL] {meta.get('bollinger_context_v1')}")
+    _dbg(f"[META ICHI] {meta.get('ichimoku_context_v1')}")
+    _dbg(f"[META MOM] {meta.get('momentum_phase_v1')}")
         
     # ===== ELLIOTT PHASE V1 =====
     try:
@@ -12141,111 +12244,7 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     meta["decision_engine_v1"] = decision_engine_v1
     meta["wait_for_v1"] = wait_for_v1
 
-    # ===== AUTO NEWS + MACRO ENGINE V2 =====
-    # ===== MACRO CONFLICT FILTER V1 =====
-    try:
-        meta = base.setdefault("meta", {})
-        macro = meta.get("macro_v2") or {}
-    
-        fs = str(
-            meta.get("final_side")
-            or (meta.get("signal_consistency_v1") or {}).get("final_side")
-            or (meta.get("master_engine_v1") or {}).get("best_side")
-            or base.get("side")
-            or "NONE"
-        ).upper()
-    
-        mcf = macro_conflict_filter_v1(symbol, fs, macro)
-        meta["macro_conflict_filter_v1"] = mcf
-    
-        cur_score = float(base.get("final_score") or 0)
-        base["final_score"] = max(
-            0,
-            min(100, cur_score + float(mcf.get("score_adjust") or 0))
-        )
-    
-        if mcf.get("conflict") and mcf.get("severity") == "HIGH":
-            base["tradeable"] = False
-            meta["macro_block_reason"] = "Macro ngược hướng kỹ thuật mạnh"
-    
-        _dbg(
-            f"[MACRO CONFLICT] fs={fs} "
-            f"conflict={mcf.get('conflict')} "
-            f"severity={mcf.get('severity')} "
-            f"adjust={mcf.get('score_adjust')}"
-        )
-    
-    except Exception as e:
-        _dbg(f"[MACRO CONFLICT ERROR] {e}")
 
-    # ===== INDICATOR ENGINE V1 (MERGED) =====
-    _dbg("===== INDICATOR DEBUG START =====")
-
-    _dbg(f"[CHECK] m15 exist: {'m15' in locals()}")
-    _dbg(f"[CHECK] m15c exist: {'m15c' in locals()}")
-    _dbg(f"[CHECK] candles_m15 exist: {'candles_m15' in locals()}")
-    
-    _dbg(f"[LEN] m15: {len(locals().get('m15', []))}")
-    _dbg(f"[LEN] m15c: {len(locals().get('m15c', []))}")
-    _dbg(f"[LEN] candles_m15: {len(locals().get('candles_m15', []))}")
-    try:
-        meta = base.setdefault("meta", {})
-    
-        m15_src = (
-            locals().get("m15c")
-            or locals().get("candles_m15")
-            or locals().get("m15")
-            or []
-        )
-    
-        _dbg(f"[SRC] using: {'m15c' if locals().get('m15c') else 'candles_m15' if locals().get('candles_m15') else 'm15'}")
-        _dbg(f"[SRC LEN] = {len(m15_src)}")
-    
-        try:
-            rsi_div = build_rsi_divergence_v1(m15_src)
-            meta["rsi_divergence_v1"] = rsi_div
-            _dbg(f"[RSI DIV] {rsi_div}")
-        except Exception as e:
-            _dbg(f"[RSI DIV ERROR] {e}")
-    
-        try:
-            mom = build_momentum_phase_v1(m15_src)
-            meta["momentum_phase_v1"] = mom
-            _dbg(f"[MOMENTUM] {mom}")
-        except Exception as e:
-            _dbg(f"[MOMENTUM ERROR] {e}")
-    
-        try:
-            meta["volatility_regime_v1"] = build_volatility_regime_v1(m15_src)
-        except Exception as e:
-            _dbg(f"[VOL ERROR] {e}")
-    
-        try:
-            bb = build_bollinger_context_v1(m15_src)
-            meta["bollinger_context_v1"] = bb
-            _dbg(f"[BOLLINGER RESULT] {bb}")
-        except Exception as e:
-            _dbg(f"[BOLLINGER ERROR] {e}")
-    
-        try:
-            ichi = build_ichimoku_context_v1(m15_src)
-            meta["ichimoku_context_v1"] = ichi
-            _dbg(f"[ICHIMOKU RESULT] {ichi}")
-        except Exception as e:
-            _dbg(f"[ICHIMOKU ERROR] {e}")
-    
-    except Exception as e:
-        _dbg(f"[INDICATOR ENGINE FATAL] {e}")
-    
-    meta.setdefault("rsi_divergence_v1", {"state": "NO_DATA"})
-    meta.setdefault("momentum_phase_v1", {"phase": "UNKNOWN"})
-    meta.setdefault("volatility_regime_v1", {"state": "UNKNOWN"})
-    meta.setdefault("bollinger_context_v1", {"state": "NO_DATA"})
-    meta.setdefault("ichimoku_context_v1", {"state": "NO_DATA"})
-    _dbg(f"[META FINAL] keys = {list(meta.keys())}")
-    _dbg(f"[META BOLL] {meta.get('bollinger_context_v1')}")
-    _dbg(f"[META ICHI] {meta.get('ichimoku_context_v1')}")
-    _dbg(f"[META MOM] {meta.get('momentum_phase_v1')}")
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
