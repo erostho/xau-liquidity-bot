@@ -10143,7 +10143,104 @@ def build_ichimoku_context_v1(candles):
 
     except Exception as e:
         return {"state": "ERROR", "error": str(e)}
-        
+def build_rsi_divergence_v1(candles, period=14):
+    try:
+        import numpy as np
+
+        closes = np.array([float(c["close"]) for c in candles if c.get("close")])
+        if len(closes) < period + 5:
+            return {"state": "NO_DATA"}
+
+        # ===== RSI =====
+        deltas = np.diff(closes)
+        gain = np.where(deltas > 0, deltas, 0)
+        loss = np.where(deltas < 0, -deltas, 0)
+
+        avg_gain = np.mean(gain[-period:])
+        avg_loss = np.mean(loss[-period:]) or 1e-9
+
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        # ===== lấy 2 đỉnh/đáy gần =====
+        p1, p2 = closes[-5], closes[-1]
+
+        rsi_prev = rsi * (0.98)  # approx nhẹ
+        rsi_now = rsi
+
+        # ===== detect =====
+        if p2 > p1 and rsi_now < rsi_prev:
+            return {"state": "BEARISH", "rsi": rsi_now}
+
+        if p2 < p1 and rsi_now > rsi_prev:
+            return {"state": "BULLISH", "rsi": rsi_now}
+
+        return {"state": "NONE", "rsi": rsi_now}
+
+    except Exception as e:
+        return {"state": "ERROR", "error": str(e)}
+
+def build_momentum_phase_v1(candles):
+    try:
+        import numpy as np
+
+        closes = np.array([float(c["close"]) for c in candles if c.get("close")])
+        if len(closes) < 10:
+            return {"phase": "UNKNOWN"}
+
+        moves = np.abs(np.diff(closes))
+        avg_move = np.mean(moves[:-3])
+        recent_move = np.mean(moves[-3:])
+
+        ratio = recent_move / (avg_move or 1e-9)
+
+        if ratio < 0.7:
+            phase = "EARLY"
+        elif ratio < 1.5:
+            phase = "MID"
+        else:
+            phase = "LATE"
+
+        return {
+            "phase": phase,
+            "ratio": ratio
+        }
+
+    except Exception as e:
+        return {"phase": "ERROR", "error": str(e)}
+
+def build_volatility_regime_v1(candles):
+    try:
+        import numpy as np
+
+        highs = np.array([float(c["high"]) for c in candles if c.get("high")])
+        lows  = np.array([float(c["low"]) for c in candles if c.get("low")])
+
+        if len(highs) < 20:
+            return {"state": "UNKNOWN"}
+
+        atrs = highs[-20:] - lows[-20:]
+        avg_atr = np.mean(atrs[:-5])
+        recent_atr = np.mean(atrs[-5:])
+
+        ratio = recent_atr / (avg_atr or 1e-9)
+
+        if ratio < 0.7:
+            state = "QUIET"
+        elif ratio < 1.5:
+            state = "NORMAL"
+        else:
+            state = "EXPANSION"
+
+        return {
+            "state": state,
+            "ratio": ratio
+        }
+
+    except Exception as e:
+        return {"state": "ERROR", "error": str(e)}
+
+
 def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Sequence[dict], h4: Sequence[dict], current_price: float | None = None) -> dict:
     """PRO analysis: Signal=M15, Entry=M30, Confirm=H1.
 
@@ -12111,6 +12208,18 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     except Exception as e:
         _dbg(f"[MACRO CONFLICT ERROR] {e}")
 
+
+    try:
+        meta = base.setdefault("meta", {})
+    
+        m15 = candles_m15 if 'candles_m15' in locals() else []
+    
+        meta["rsi_divergence_v1"] = build_rsi_divergence_v1(m15)
+        meta["momentum_phase_v1"] = build_momentum_phase_v1(m15)
+        meta["volatility_regime_v1"] = build_volatility_regime_v1(m15)
+    
+    except Exception as e:
+        _dbg(f"[ADV ENGINE ERROR] {e}")
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
@@ -12510,7 +12619,9 @@ def build_view_engine_v1(sig: dict) -> str:
     market_mode = str(mm.get("mode") or "UNKNOWN").upper()
     action_mode = str(mm.get("action_mode") or "WAIT").upper()
     side_context = str(mm.get("side") or "NONE").upper()
-
+    rsi_div = meta.get("rsi_divergence_v1") or {}
+    mom = meta.get("momentum_phase_v1") or {}
+    vol = meta.get("volatility_regime_v1") or {}
     sce = meta.get("signal_consistency_v1") or {}
     final_side = str(
         meta.get("final_side")
@@ -12784,39 +12895,46 @@ def build_view_engine_v1(sig: dict) -> str:
 
     lines.append("")
     lines.append("📊 INDICATOR CONTEXT")
-    lines.append(f"- EMA: {ema_trend} {ema_pos}".strip())
-    lines.append(f"- RSI: {_sf(rsi_val, 1)}")
-    lines.append(f"- Bollinger: {boll_txt}")
-    lines.append(f"- Ichimoku: {ichi_txt}")
-    lines.append("→ Tổng hợp:")
-    lines.append("  → Ưu tiên context + vùng + trigger, không đánh theo 1 indicator riêng lẻ.")
-
-    lines.append("")
-    lines.append("🌍 MACRO CONTEXT")
-    lines.append(f"- Mode: {macro.get('macro_mode', 'NEUTRAL')}")
-    lines.append(f"- Risk: {macro.get('risk_mode', 'NEUTRAL')}")
-    lines.append(f"- USD: {macro.get('usd_strength', 0)}")
-    lines.append(f"- Gold bias: {macro.get('gold_bias', 'NEUTRAL')}")
-    lines.append(f"- BTC bias: {macro.get('btc_bias', 'NEUTRAL')}")
-    lines.append(f"- Confidence: {macro.get('confidence', 0)}%")
-
-    lines.append("")
-    lines.append("🧠 LÝ DO VĨ MÔ:")
-    if macro_reason_lines:
-        for r in macro_reason_lines[:4]:
-            lines.append(f"- {r}")
+    
+    # RSI divergence
+    div_state = rsi_div.get("state")
+    if div_state == "BEARISH":
+        div_txt = "PHÂN KỲ GIẢM → đà yếu"
+    elif div_state == "BULLISH":
+        div_txt = "PHÂN KỲ TĂNG → đà yếu phía dưới"
     else:
-        lines.append("- Chưa có yếu tố vĩ mô đủ mạnh.")
+        div_txt = "KHÔNG CÓ PHÂN KỲ"
+    
+    # Momentum
+    phase = mom.get("phase")
+    if phase == "EARLY":
+        phase_txt = "EARLY (mới bắt đầu)"
+    elif phase == "MID":
+        phase_txt = "MID (đang chạy)"
+    elif phase == "LATE":
+        phase_txt = "LATE (dễ đảo / xả)"
+    else:
+        phase_txt = "UNKNOWN"
+    
+    # Volatility
+    vol_state = vol.get("state")
+    if vol_state == "QUIET":
+        vol_txt = "QUIET (tích lũy)"
+    elif vol_state == "EXPANSION":
+        vol_txt = "EXPANSION (đang bung mạnh)"
+    else:
+        vol_txt = "NORMAL"
+    
+    lines.append(f"- RSI divergence: {div_txt}")
+    lines.append(f"- Momentum phase: {phase_txt}")
+    lines.append(f"- Volatility: {vol_txt}")
+
 
     lines.append("")
     lines.append("📍 VÙNG QUAN TRỌNG")
     lines.append(f"- Vùng cân bằng: {balance_zone}")
     lines.append(f"- Vùng quyết định: {decision_zone}")
     lines.append(f"- Vùng trap: {trap_zone}")
-
-    lines.append("")
-    lines.append("🔥 PLAYBOOK CHÍNH")
-    lines.append(f"→ {playbook_main}")
 
     def _scenario_block(icon, title, sc):
         lines.append("")
@@ -12844,7 +12962,9 @@ def build_view_engine_v1(sig: dict) -> str:
     lines.append("")
     lines.append("🧠 QUYẾT ĐỊNH NHANH")
     lines.append(f"→ {quick_decision}")
-
+    lines.append("")
+    lines.append("🔥 PLAYBOOK CHÍNH")
+    lines.append(f"→ {playbook_main}")
     lines.append("")
     lines.append("📌 Gợi ý hành động:")
     lines.append(f"- {playbook_main}")
