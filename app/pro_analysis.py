@@ -12823,7 +12823,86 @@ def build_view_engine_v1(sig: dict) -> str:
         meaning = "Sideway/hồi trong xu hướng tăng → ưu tiên buy-the-dip khi có trigger."
     else:
         meaning = "Bối cảnh chưa đồng thuận → ưu tiên chờ market lộ mặt."
-
+    # ===== VIEW BIAS VERDICT V1 =====
+    def _view_bias_verdict():
+        sell_pts = 0
+        buy_pts = 0
+        reasons = []
+    
+        # Ichimoku
+        if ichi_state == "BELOW_CLOUD":
+            sell_pts += 2
+            reasons.append("Ichimoku dưới mây → SELL pressure")
+        elif ichi_state == "ABOVE_CLOUD":
+            buy_pts += 2
+            reasons.append("Ichimoku trên mây → BUY pressure")
+    
+        # Bollinger
+        if boll_state == "EXPANSION":
+            if range_pct is not None and range_pct <= 35:
+                sell_pts += 1
+                reasons.append("Bollinger expansion + giá vùng thấp → breakdown pressure")
+            elif range_pct is not None and range_pct >= 65:
+                buy_pts += 1
+                reasons.append("Bollinger expansion + giá vùng cao → breakout pressure")
+    
+        # EMA
+        if "BEAR" in ema_trend:
+            sell_pts += 1
+            reasons.append("EMA bearish")
+        elif "BULL" in ema_trend:
+            buy_pts += 1
+            reasons.append("EMA bullish")
+    
+        # Momentum
+        if phase == "EARLY":
+            reasons.append("Momentum EARLY → sóng mới bắt đầu, chưa nên bắt ngược")
+        elif phase == "LATE":
+            reasons.append("Momentum LATE → dễ trap/đảo chiều, tránh đuổi")
+    
+        # chọn bias
+        if sell_pts >= buy_pts + 2:
+            bias = "SELL"
+        elif buy_pts >= sell_pts + 2:
+            bias = "BUY"
+        else:
+            bias = "NONE"
+    
+        # vị trí
+        if bias == "SELL":
+            if range_pct is not None and range_pct <= 25:
+                action = "SELL_BIAS_WAIT_PULLBACK"
+                quick = "SELL BIAS (WAIT PULLBACK)"
+                note = "Có edge SELL nhưng giá đang thấp → không SELL đuổi."
+            else:
+                action = "SELL_BIAS_WAIT_TRIGGER"
+                quick = "SELL BIAS (WAIT TRIGGER)"
+                note = "Ưu tiên SELL khi có rejection/fail break."
+        elif bias == "BUY":
+            if range_pct is not None and range_pct >= 75:
+                action = "BUY_BIAS_WAIT_PULLBACK"
+                quick = "BUY BIAS (WAIT PULLBACK)"
+                note = "Có edge BUY nhưng giá đang cao → không BUY đuổi."
+            else:
+                action = "BUY_BIAS_WAIT_TRIGGER"
+                quick = "BUY BIAS (WAIT TRIGGER)"
+                note = "Ưu tiên BUY khi có reclaim/sweep low."
+        else:
+            action = "NO_EDGE_WAIT"
+            quick = "NO TRADE / WAIT EDGE"
+            note = "Chưa có side đủ rõ → chờ về biên hoặc break có giữ."
+    
+        return {
+            "bias": bias,
+            "action": action,
+            "quick": quick,
+            "note": note,
+            "sell_pts": sell_pts,
+            "buy_pts": buy_pts,
+            "reasons": reasons[:4],
+        }
+    
+    view_verdict = _view_bias_verdict()
     # ===== playbook + scenarios =====
     if final_side == "SELL" or side_context == "SELL" or big_trend == "DOWN":
         quick_decision = "WAIT SELL ZONE / SELL THE RALLY"
@@ -12886,8 +12965,8 @@ def build_view_engine_v1(sig: dict) -> str:
         invalid = f"Nếu giá đóng và giữ dưới vùng trap {trap_zone} → bias BUY yếu đi."
 
     else:
-        quick_decision = "NO TRADE / WAIT EDGE"
-        playbook_main = f"Không có side đủ rõ → chờ phản ứng tại biên {range_txt} hoặc break có giữ."
+        quick_decision = view_verdict["quick"]
+        playbook_main = view_verdict["note"]
         
         sc1 = {
             "name": "BREAK THẬT",
@@ -12906,7 +12985,7 @@ def build_view_engine_v1(sig: dict) -> str:
         
         sc2 = {
             "name": "SIDEWAY GIẾT TIME",
-            "prob": "HIGH",
+            "prob": "MID" if view_verdict["bias"] in ("SELL", "BUY") else "HIGH",
             "condition": (
                 f"Giá còn nằm trong range {range_txt}, đặc biệt quanh vùng giữa range "
                 f"hoặc vùng quyết định {decision_txt}."
@@ -13000,7 +13079,13 @@ def build_view_engine_v1(sig: dict) -> str:
     lines.append(f"- RSI divergence: {div_txt}")
     lines.append(f"- Momentum phase: {phase_txt}")
     lines.append(f"- Volatility: {vol_txt}")
-
+    lines.append("")
+    lines.append("🧠 VIEW VERDICT")
+    lines.append(f"- Bias đọc được: {view_verdict['bias']}")
+    lines.append(f"- Buy/Sell points: BUY={view_verdict['buy_pts']} | SELL={view_verdict['sell_pts']}")
+    lines.append(f"- Kết luận: {view_verdict['quick']}")
+    for r in view_verdict["reasons"]:
+        lines.append(f"- {r}")
 
     lines.append("")
     lines.append("📍 VÙNG QUAN TRỌNG")
