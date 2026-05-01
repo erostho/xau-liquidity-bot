@@ -12196,30 +12196,60 @@ def analyze_pro(symbol: str, m15: Sequence[dict], m30: Sequence[dict], h1: Seque
     except Exception as e:
         _dbg(f"[MACRO CONFLICT ERROR] {e}")
 
-    # ===== INDICATOR ENGINE V1 =====
-    try:
-        meta = base.setdefault("meta", {})
-        m15 = candles_m15 if 'candles_m15' in locals() else []
-        meta["rsi_divergence_v1"] = build_rsi_divergence_v1(m15)
-        meta["momentum_phase_v1"] = build_momentum_phase_v1(m15)
-        meta["volatility_regime_v1"] = build_volatility_regime_v1(m15)
-    except Exception as e:
-        _dbg(f"[ADV ENGINE ERROR] {e}")
-
+    # ===== INDICATOR ENGINE V1 (MERGED) =====
     try:
         meta = base.setdefault("meta", {})
     
-        m15 = candles_m15 if 'candles_m15' in locals() else []
+        # lấy candles an toàn
+        m15 = (
+            locals().get("candles_m15")
+            or locals().get("m15")
+            or []
+        )
     
-        bb = build_bollinger_context_v1(m15)
-        ichi = build_ichimoku_context_v1(m15)
+        _dbg(f"[INDICATOR] m15 len = {len(m15)}")
     
-        meta["bollinger_context_v1"] = bb
-        meta["ichimoku_context_v1"] = ichi
+        if not m15:
+            _dbg("[INDICATOR] WARNING: m15 empty")
+    
+        # ===== CORE ENGINES =====
+        try:
+            meta["rsi_divergence_v1"] = build_rsi_divergence_v1(m15)
+        except Exception as e:
+            _dbg(f"[RSI DIV ERROR] {e}")
+    
+        try:
+            meta["momentum_phase_v1"] = build_momentum_phase_v1(m15)
+        except Exception as e:
+            _dbg(f"[MOMENTUM ERROR] {e}")
+    
+        try:
+            meta["volatility_regime_v1"] = build_volatility_regime_v1(m15)
+        except Exception as e:
+            _dbg(f"[VOL ERROR] {e}")
+    
+        # ===== STRUCTURE ENGINES =====
+        try:
+            bb = build_bollinger_context_v1(m15)
+            meta["bollinger_context_v1"] = bb
+            _dbg(f"[BOLLINGER] {bb}")
+        except Exception as e:
+            _dbg(f"[BOLLINGER ERROR] {e}")
+    
+        try:
+            ichi = build_ichimoku_context_v1(m15)
+            meta["ichimoku_context_v1"] = ichi
+            _dbg(f"[ICHIMOKU] {ichi}")
+        except Exception as e:
+            _dbg(f"[ICHIMOKU ERROR] {e}")
     
     except Exception as e:
-        _dbg(f"[INDICATOR ENGINE ERROR] {e}")
-        
+        _dbg(f"[INDICATOR ENGINE FATAL] {e}")
+    meta.setdefault("rsi_divergence_v1", {"state": "NO_DATA"})
+    meta.setdefault("momentum_phase_v1", {"phase": "UNKNOWN"})
+    meta.setdefault("volatility_regime_v1", {"state": "UNKNOWN"})
+    meta.setdefault("bollinger_context_v1", {"state": "NO_DATA"})
+    meta.setdefault("ichimoku_context_v1", {"state": "NO_DATA"})    
     # ===== VNEXT RENDER APPEND =====
     try:
         cv = context_verdict_v1
@@ -12698,13 +12728,15 @@ def build_view_engine_v1(sig: dict) -> str:
     # Bollinger / Ichimoku nếu chưa có engine thì ghi rõ là chưa có data
     boll = meta.get("bollinger_context_v1") or {}
     ichi = meta.get("ichimoku_context_v1") or {}
-    boll_state = boll.get("state")
-    if boll_state == "SQUEEZE":
-        boll_txt = "SQUEEZE (chuẩn bị biến động mạnh)"
+    boll_state = (boll or {}).get("state")
+    if boll_state is None:
+        boll_txt = "NO DATA"
+    elif boll_state == "SQUEEZE":
+        boll_txt = "SQUEEZE (chuẩn bị biến động)"
     elif boll_state == "EXPANSION":
         boll_txt = "EXPANSION (đang chạy mạnh)"
     else:
-        boll_txt = "NORMAL"
+        boll_txt = str(boll_state)
         
     ichi_state = ichi.get("state")
     cloud = ichi.get("cloud")
@@ -12906,7 +12938,10 @@ def build_view_engine_v1(sig: dict) -> str:
         div_txt = "KHÔNG CÓ PHÂN KỲ"
     
     # Momentum
-    phase = mom.get("phase")
+    phase = (mom or {}).get("phase")
+
+    if not phase or phase == "UNKNOWN":
+        phase_txt = "UNKNOWN (thiếu dữ liệu)"
     if phase == "EARLY":
         phase_txt = "EARLY (mới bắt đầu)"
     elif phase == "MID":
