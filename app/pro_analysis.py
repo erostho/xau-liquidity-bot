@@ -12875,34 +12875,45 @@ def build_view_engine_v1(sig: dict) -> str:
             bias = "NONE"
     
         # vị trí
+        # vị trí
         if bias == "SELL":
+            note = "SELL THE RALLY → ưu tiên bán ở vùng cao, không đuổi giá."
+        
             if range_pct is not None and range_pct <= 25:
                 action = "SELL_BIAS_WAIT_PULLBACK"
                 quick = "SELL BIAS (WAIT PULLBACK)"
-                note = "Có edge SELL nhưng giá đang thấp → không SELL đuổi."
+                action_hint = f"Giá đang sát đáy → KHÔNG SELL. Chờ hồi lên vùng {decision_txt} rồi SELL."
             else:
                 action = "SELL_BIAS_WAIT_TRIGGER"
                 quick = "SELL BIAS (WAIT TRIGGER)"
-                note = "Ưu tiên SELL khi có rejection/fail break."
+                action_hint = f"Canh SELL nếu có rejection/fail break quanh {decision_txt}."
+        
         elif bias == "BUY":
+            note = "BUY THE DIP → ưu tiên mua ở vùng thấp, không đuổi giá."
+        
             if range_pct is not None and range_pct >= 75:
                 action = "BUY_BIAS_WAIT_PULLBACK"
                 quick = "BUY BIAS (WAIT PULLBACK)"
-                note = "Có edge BUY nhưng giá đang cao → không BUY đuổi."
+                action_hint = f"Giá đang vùng cao → KHÔNG BUY. Chờ hồi về vùng {decision_txt} rồi BUY."
             else:
                 action = "BUY_BIAS_WAIT_TRIGGER"
                 quick = "BUY BIAS (WAIT TRIGGER)"
-                note = "Ưu tiên BUY khi có reclaim/sweep low."
+                action_hint = f"Canh BUY nếu có reclaim/sweep low quanh {decision_txt}."
+        
         else:
+            note = "Không có edge rõ → đứng ngoài là chính."
             action = "NO_EDGE_WAIT"
             quick = "NO TRADE / WAIT EDGE"
-            note = "Chưa có side đủ rõ → chờ về biên hoặc break có giữ."
+            action_hint = f"Chờ giá về biên hoặc break rõ khỏi range {range_txt}."
     
         return {
             "bias": bias,
             "action": action,
             "quick": quick,
-            "note": note,
+        
+            "playbook": note,        # 🔥 dùng cho PLAYBOOK
+            "action_hint": action_hint,  # 📌 dùng cho ACTION
+        
             "sell_pts": sell_pts,
             "buy_pts": buy_pts,
             "reasons": reasons[:4],
@@ -13127,10 +13138,10 @@ def build_view_engine_v1(sig: dict) -> str:
     lines.append(f"→ {quick_decision}")
     lines.append("")
     lines.append("🔥 PLAYBOOK CHÍNH")
-    lines.append(f"→ {playbook_main}")
+    lines.append(f"→ {view_verdict.get('playbook')}")
     lines.append("")
     lines.append("📌 Gợi ý hành động:")
-    lines.append(f"- {playbook_main}")
+    lines.append(f"- {view_verdict.get('action_hint')}")
 
     lines.append("")
     lines.append("🚫 Không làm:")
